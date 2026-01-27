@@ -1,43 +1,105 @@
-import { FileText, Image as ImageIcon, Video, Clock, Activity, ListOrdered } from 'lucide-react';
-import { Card } from '@/components/ui/card';
+import { FileText, Image as ImageIcon, Video, Clock, Activity, ListOrdered, Globe, CheckCircle } from 'lucide-react';
 import type { ScrapingStats } from '@shared/schema';
 
 interface StatsCardsProps {
   stats: ScrapingStats | null;
+  urlCount?: number;
+  scrapedCount?: number;
   t: (key: any) => string;
 }
 
-export default function StatsCards({ stats, t }: StatsCardsProps) {
-  if (!stats) return null;
-  
-  const duration = stats.endTime 
+export default function StatsCards({ stats, urlCount = 0, scrapedCount = 0, t }: StatsCardsProps) {
+  const duration = stats?.endTime 
     ? (stats.endTime - stats.startTime) / 1000 
-    : (Date.now() - stats.startTime) / 1000;
-  
-  const cards = [
-    { label: t('sitemaps'), value: `${stats.processedSitemaps} / ${stats.totalSitemaps}`, icon: FileText, color: 'text-blue-500', bg: 'bg-blue-50 dark:bg-blue-950/30' },
-    { label: t('urlsFound'), value: stats.totalUrls.toLocaleString(), icon: ListOrdered, color: 'text-primary', bg: 'bg-primary/10' },
-    { label: t('images'), value: stats.totalImages.toLocaleString(), icon: ImageIcon, color: 'text-emerald-500', bg: 'bg-emerald-50 dark:bg-emerald-950/30' },
-    { label: t('videos'), value: stats.totalVideos.toLocaleString(), icon: Video, color: 'text-amber-500', bg: 'bg-amber-50 dark:bg-amber-950/30' },
-    { label: t('timeElapsed'), value: `${duration.toFixed(1)}s`, icon: Clock, color: 'text-muted-foreground', bg: 'bg-muted' },
-    { label: t('rate'), value: `${(stats.totalUrls / (duration || 1)).toFixed(1)}/s`, icon: Activity, color: 'text-rose-500', bg: 'bg-rose-50 dark:bg-rose-950/30' },
-  ];
+    : stats?.startTime 
+      ? (Date.now() - stats.startTime) / 1000
+      : 0;
 
   return (
-    <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
-      {cards.map((card, idx) => (
-        <Card key={idx} className="p-4 hover-elevate transition-transform" data-testid={`stat-card-${idx}`}>
-          <div className="flex flex-col items-center text-center space-y-2">
-            <div className={`${card.bg} ${card.color} p-2.5 rounded-xl`}>
-              <card.icon className="h-5 w-5" />
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="stat-card-green rounded-xl p-4">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-xs font-medium opacity-80 uppercase tracking-wide">{t('urlsFound')}</p>
+              <p className="text-3xl font-bold mt-1">{urlCount.toLocaleString()}</p>
             </div>
-            <div className="space-y-0.5">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{card.label}</p>
-              <p className="text-lg font-bold text-foreground tracking-tight">{card.value}</p>
-            </div>
+            <Globe className="w-6 h-6 opacity-60" />
           </div>
-        </Card>
-      ))}
+        </div>
+        
+        <div className="stat-card-purple rounded-xl p-4">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-xs font-medium opacity-80 uppercase tracking-wide">{t('images')}</p>
+              <p className="text-3xl font-bold mt-1">{(stats?.totalImages || 0).toLocaleString()}</p>
+            </div>
+            <ImageIcon className="w-6 h-6 opacity-60" />
+          </div>
+        </div>
+        
+        <div className="stat-card-orange rounded-xl p-4">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-xs font-medium opacity-80 uppercase tracking-wide">Scraped</p>
+              <p className="text-3xl font-bold mt-1">{scrapedCount}</p>
+            </div>
+            <CheckCircle className="w-6 h-6 opacity-60" />
+          </div>
+        </div>
+        
+        <div className="stat-card-blue rounded-xl p-4">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-xs font-medium opacity-80 uppercase tracking-wide">{t('sitemaps')}</p>
+              <p className="text-3xl font-bold mt-1">{stats?.processedSitemaps || 0}</p>
+            </div>
+            <FileText className="w-6 h-6 opacity-60" />
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="stat-card-neutral rounded-xl p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{t('videos')}</p>
+              <p className="text-2xl font-bold text-foreground mt-1">{stats?.totalVideos || 0}</p>
+            </div>
+            <Video className="w-5 h-5 text-muted-foreground" />
+          </div>
+        </div>
+        
+        <div className="stat-card-neutral rounded-xl p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{t('timeElapsed')}</p>
+              <p className="text-2xl font-bold text-foreground mt-1">{duration.toFixed(1)}s</p>
+            </div>
+            <Clock className="w-5 h-5 text-muted-foreground" />
+          </div>
+        </div>
+        
+        <div className="stat-card-neutral rounded-xl p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{t('rate')}</p>
+              <p className="text-2xl font-bold text-foreground mt-1">{(urlCount / (duration || 1)).toFixed(1)}/s</p>
+            </div>
+            <Activity className="w-5 h-5 text-muted-foreground" />
+          </div>
+        </div>
+        
+        <div className="stat-card-neutral rounded-xl p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Total Sitemaps</p>
+              <p className="text-2xl font-bold text-foreground mt-1">{stats?.totalSitemaps || 0}</p>
+            </div>
+            <ListOrdered className="w-5 h-5 text-muted-foreground" />
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

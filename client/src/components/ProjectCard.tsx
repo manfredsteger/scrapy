@@ -1,6 +1,5 @@
 import { useState } from 'react';
-import { Globe, Trash2, ChevronRight, Pencil, Check, X } from 'lucide-react';
-import { Card } from '@/components/ui/card';
+import { Globe, Trash2, ChevronRight, Pencil, Check, X, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import type { Project } from '@shared/schema';
@@ -35,23 +34,31 @@ export default function ProjectCard({ project, onSelect, onDelete, onRename, t }
     setIsEditing(true);
   };
 
+  const isActive = project.status !== 'idle';
+  const urlCount = project.results?.length || 0;
+  const scrapedCount = project.results?.filter(r => r.scrapedData).length || 0;
+
   return (
-    <Card
-      className="p-6 cursor-pointer hover:border-primary hover:shadow-lg transition-all group relative"
+    <div
+      className="bg-card border border-border rounded-xl p-5 cursor-pointer hover:border-primary/50 transition-all group"
       onClick={() => !isEditing && onSelect()}
       data-testid={`project-card-${project.id}`}
     >
-      <div className="flex justify-between items-start mb-4">
+      <div className="flex items-start justify-between mb-4">
         <div className="flex items-center gap-3 flex-1 min-w-0">
-          <div className={`p-3 rounded-xl shrink-0 ${project.status !== 'idle' ? 'bg-primary text-primary-foreground animate-pulse' : 'bg-muted text-muted-foreground'}`}>
-            <Globe className="h-6 w-6" />
+          <div className={`p-2.5 rounded-lg shrink-0 ${isActive ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground'}`}>
+            {isActive ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            ) : (
+              <Globe className="w-5 h-5" />
+            )}
           </div>
-          <div className="flex-1 min-w-0 pr-2">
+          <div className="flex-1 min-w-0">
             {isEditing ? (
               <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                 <Input 
                   autoFocus
-                  className="h-8 text-sm font-bold"
+                  className="h-8 text-sm font-medium bg-input"
                   value={editValue}
                   onChange={(e) => setEditValue(e.target.value)}
                   onKeyDown={(e) => {
@@ -60,29 +67,17 @@ export default function ProjectCard({ project, onSelect, onDelete, onRename, t }
                   }}
                   data-testid="edit-project-input"
                 />
-                <Button 
-                  size="icon" 
-                  variant="ghost" 
-                  className="h-8 w-8 text-emerald-500 hover:text-emerald-600"
-                  onClick={handleRename}
-                  data-testid="save-project-name"
-                >
-                  <Check className="h-4 w-4" />
+                <Button size="icon" variant="ghost" className="h-8 w-8 text-emerald-400" onClick={handleRename}>
+                  <Check className="w-4 h-4" />
                 </Button>
-                <Button 
-                  size="icon" 
-                  variant="ghost" 
-                  className="h-8 w-8"
-                  onClick={() => setIsEditing(false)}
-                  data-testid="cancel-edit"
-                >
-                  <X className="h-4 w-4" />
+                <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => setIsEditing(false)}>
+                  <X className="w-4 h-4" />
                 </Button>
               </div>
             ) : (
-              <div className="flex flex-col min-w-0">
-                <div className="flex items-center gap-2 group/title min-w-0">
-                  <h4 className="font-bold text-foreground truncate text-base group-hover:text-primary transition-colors leading-tight">
+              <>
+                <div className="flex items-center gap-2">
+                  <h4 className="font-semibold text-foreground truncate">
                     {project.displayName || project.domain}
                   </h4>
                   <Button 
@@ -92,45 +87,48 @@ export default function ProjectCard({ project, onSelect, onDelete, onRename, t }
                     onClick={handleEditClick}
                     data-testid="edit-project-button"
                   >
-                    <Pencil className="h-3 w-3" />
+                    <Pencil className="w-3 h-3" />
                   </Button>
                 </div>
-                <p className="text-[10px] text-muted-foreground font-medium uppercase mt-1 tracking-wider">
-                  {t('activity')}: {project.lastScraped ? new Date(project.lastScraped).toLocaleDateString() : '-'}
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {project.lastScraped ? new Date(project.lastScraped).toLocaleDateString('de-DE') : '-'}
                 </p>
-              </div>
+              </>
             )}
           </div>
         </div>
         <Button 
           size="icon"
           variant="ghost"
-          className="shrink-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+          className="shrink-0 h-8 w-8 text-muted-foreground hover:text-destructive"
           onClick={handleDelete}
           data-testid="delete-project"
         >
-          <Trash2 className="h-4 w-4" />
+          <Trash2 className="w-4 h-4" />
         </Button>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 mb-4 text-center">
-        <div className="bg-muted rounded-xl p-3">
-          <p className="text-[10px] font-medium text-muted-foreground uppercase mb-0.5">{t('urls')}</p>
-          <p className="text-lg font-bold text-foreground">{project.stats?.totalUrls?.toLocaleString() || 0}</p>
+      <div className="grid grid-cols-3 gap-3 mb-4">
+        <div className="bg-secondary rounded-lg p-3 text-center">
+          <p className="text-[10px] font-medium text-muted-foreground uppercase">{t('urls')}</p>
+          <p className="text-lg font-bold text-foreground">{urlCount}</p>
         </div>
-        <div className="bg-muted rounded-xl p-3">
-          <p className="text-[10px] font-medium text-muted-foreground uppercase mb-0.5">{t('status')}</p>
-          <p className={`text-[11px] font-bold uppercase tracking-widest ${project.status !== 'idle' ? 'text-primary' : 'text-emerald-600'}`}>
-            {t(project.status as any) || project.status}
+        <div className="bg-secondary rounded-lg p-3 text-center">
+          <p className="text-[10px] font-medium text-muted-foreground uppercase">Scraped</p>
+          <p className="text-lg font-bold text-foreground">{scrapedCount}</p>
+        </div>
+        <div className="bg-secondary rounded-lg p-3 text-center">
+          <p className="text-[10px] font-medium text-muted-foreground uppercase">{t('status')}</p>
+          <p className={`text-xs font-bold uppercase ${isActive ? 'text-primary' : 'text-emerald-400'}`}>
+            {isActive ? 'Active' : 'Idle'}
           </p>
         </div>
       </div>
 
-      <div className="flex items-center justify-between pt-3 border-t border-border text-sm font-bold text-primary">
-        <span className="flex items-center gap-1">
-          {t('detailedView')} <ChevronRight className="h-4 w-4" />
-        </span>
+      <div className="flex items-center justify-between text-sm text-primary font-medium pt-3 border-t border-border">
+        <span>{t('detailedView')}</span>
+        <ChevronRight className="w-4 h-4" />
       </div>
-    </Card>
+    </div>
   );
 }

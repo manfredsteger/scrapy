@@ -1,10 +1,9 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { 
-  Plus, Play, Square, Loader2, Upload, Download, Settings, 
-  Trash2, ScanText, Database, Layers, Globe, CheckCircle2, ArrowLeft 
+  Play, Square, Loader2, Download, Settings, 
+  Trash2, ScanText, Globe, ArrowLeft, Plus, RefreshCw
 } from 'lucide-react';
-import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
@@ -15,6 +14,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import Sidebar from '@/components/Sidebar';
 import Header from '@/components/Header';
 import StatsCards from '@/components/StatsCards';
 import UrlList from '@/components/UrlList';
@@ -23,7 +23,7 @@ import ProjectCard from '@/components/ProjectCard';
 import { useLanguage } from '@/hooks/use-language';
 import { useToast } from '@/hooks/use-toast';
 import { apiRequest, queryClient } from '@/lib/queryClient';
-import type { Project, SitemapUrlEntry, ScrapingError } from '@shared/schema';
+import type { Project, SitemapUrlEntry } from '@shared/schema';
 
 const BATCH_SIZE = 10;
 
@@ -33,6 +33,7 @@ export default function Home() {
   const [activeProjectId, setActiveProjectId] = useState<number | null>(null);
   const [domainInput, setDomainInput] = useState('');
   const [isCreating, setIsCreating] = useState(false);
+  const [showNewProject, setShowNewProject] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const processingRef = useRef(false);
 
@@ -75,6 +76,7 @@ export default function Home() {
       setActiveProjectId(project.id);
       setDomainInput('');
       setIsCreating(false);
+      setShowNewProject(false);
     },
     onError: () => {
       toast({ title: t('error'), description: t('initError'), variant: 'destructive' });
@@ -385,94 +387,108 @@ export default function Home() {
 
   if (langLoading || isLoading) {
     return (
-      <div className="min-h-screen flex flex-col bg-background text-foreground">
-        <div className="flex-1 flex items-center justify-center">
-          <div className="text-center">
-            <Loader2 className="h-12 w-12 animate-spin mx-auto mb-4 text-primary" />
-            <p className="font-bold text-muted-foreground uppercase tracking-widest text-xs">
-              {t('databaseSync')}
-            </p>
-          </div>
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="text-center">
+          <Loader2 className="w-10 h-10 animate-spin mx-auto mb-4 text-primary" />
+          <p className="text-sm text-muted-foreground">{t('loading')}</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-background text-foreground">
-      <Header 
-        onLogoClick={() => setActiveProjectId(null)}
-        language={language}
-        onLanguageChange={setLanguage}
+    <div className="min-h-screen flex bg-background">
+      <input 
+        type="file" 
+        ref={fileInputRef} 
+        onChange={handleImport} 
+        className="hidden" 
+        accept=".json,.xml" 
+      />
+      
+      <Sidebar 
+        activeView={activeProjectId ? 'project' : 'dashboard'}
+        onNavigate={() => setActiveProjectId(null)}
+        onImport={() => fileInputRef.current?.click()}
         t={t}
       />
       
-      <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-8">
-        {!activeProjectId ? (
-          <div className="space-y-10">
-            <Card className="p-8 text-center max-w-3xl mx-auto">
-              <div className="inline-flex p-4 rounded-2xl bg-primary text-primary-foreground mb-6">
-                <Database className="h-10 w-10" />
-              </div>
-              <h2 className="text-2xl font-bold text-foreground mb-2 tracking-tight">
-                {t('enterpriseCrawler')}
-              </h2>
-              <p className="text-muted-foreground mb-8">
-                {t('crawlerDescription')}
-              </p>
-              
-              <div className="flex flex-col md:flex-row gap-3 items-center">
-                <Input
-                  type="text"
-                  className="flex-1"
-                  placeholder={t('enterDomain')}
-                  value={domainInput}
-                  onChange={(e) => setDomainInput(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && domainInput && createProjectMutation.mutate(domainInput)}
-                  data-testid="domain-input"
-                />
-                <div className="flex gap-2 w-full md:w-auto">
-                  <Button
-                    onClick={() => createProjectMutation.mutate(domainInput)}
-                    disabled={!domainInput || isCreating}
-                    className="flex-1 md:flex-none gap-2"
-                    data-testid="scrape-button"
-                  >
-                    {isCreating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                    {t('scrape')}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="gap-2"
-                    data-testid="import-button"
-                  >
-                    <Upload className="h-4 w-4" />
-                    {t('import')}
-                  </Button>
-                  <input 
-                    type="file" 
-                    ref={fileInputRef} 
-                    onChange={handleImport} 
-                    className="hidden" 
-                    accept=".json,.xml" 
-                  />
+      <div className="flex-1 flex flex-col min-w-0">
+        <Header 
+          title={activeProject ? (activeProject.displayName || activeProject.domain) : 'Dashboard'}
+          subtitle={activeProject ? `${activeProject.results?.length || 0} URLs` : undefined}
+          language={language}
+          onLanguageChange={setLanguage}
+          t={t}
+        />
+        
+        <main className="flex-1 overflow-auto p-6">
+          {!activeProjectId ? (
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-xl font-semibold text-foreground">{t('recentProjects')}</h2>
+                  <p className="text-sm text-muted-foreground mt-0.5">
+                    {projects.length} {projects.length === 1 ? 'Projekt' : 'Projekte'}
+                  </p>
                 </div>
+                <Button 
+                  onClick={() => setShowNewProject(true)}
+                  className="gap-2"
+                  data-testid="new-project-button"
+                >
+                  <Plus className="w-4 h-4" />
+                  {t('newProject')}
+                </Button>
               </div>
-            </Card>
 
-            <div className="space-y-4">
-              <h3 className="text-lg font-bold text-foreground flex items-center gap-3 px-2">
-                <Layers className="h-5 w-5 text-primary" />
-                {t('recentProjects')}
-              </h3>
+              {showNewProject && (
+                <div className="bg-card border border-border rounded-xl p-6">
+                  <h3 className="text-sm font-medium text-foreground mb-4">{t('newProject')}</h3>
+                  <div className="flex gap-3">
+                    <Input
+                      type="text"
+                      className="flex-1 bg-input"
+                      placeholder={t('enterDomain')}
+                      value={domainInput}
+                      onChange={(e) => setDomainInput(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && domainInput && createProjectMutation.mutate(domainInput)}
+                      data-testid="domain-input"
+                    />
+                    <Button
+                      onClick={() => createProjectMutation.mutate(domainInput)}
+                      disabled={!domainInput || isCreating}
+                      className="gap-2"
+                      data-testid="scrape-button"
+                    >
+                      {isCreating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+                      {t('scrape')}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => setShowNewProject(false)}
+                    >
+                      {t('cancel')}
+                    </Button>
+                  </div>
+                </div>
+              )}
 
               {projects.length === 0 ? (
-                <Card className="border-dashed py-16 text-center">
-                  <p className="text-muted-foreground font-medium">{t('noProjects')}</p>
-                </Card>
+                <div className="bg-card border border-dashed border-border rounded-xl py-16 text-center">
+                  <Globe className="w-10 h-10 text-muted-foreground mx-auto mb-4" />
+                  <p className="text-muted-foreground">{t('noProjects')}</p>
+                  <Button 
+                    variant="outline" 
+                    className="mt-4 gap-2"
+                    onClick={() => setShowNewProject(true)}
+                  >
+                    <Plus className="w-4 h-4" />
+                    {t('newProject')}
+                  </Button>
+                </div>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                   {projects.map(project => (
                     <ProjectCard
                       key={project.id}
@@ -495,159 +511,151 @@ export default function Home() {
                 </div>
               )}
             </div>
-          </div>
-        ) : (
-          <div className="space-y-6">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <Button
-                variant="ghost"
-                onClick={() => setActiveProjectId(null)}
-                className="gap-2 w-fit"
-                data-testid="back-button"
-              >
-                <ArrowLeft className="h-4 w-4" />
-                {t('recentProjects')}
-              </Button>
-              
-              <div className="flex items-center gap-3">
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="outline" className="gap-2" data-testid="actions-menu">
-                      <Settings className="h-4 w-4" />
-                      {t('actionsMenu')}
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-56">
-                    <DropdownMenuItem onClick={startContentScrape} className="gap-2">
-                      <ScanText className="h-4 w-4" />
-                      {t('scrapeAllContent')}
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem 
-                      onClick={() => {
-                        if (confirm(t('wipeConfirm'))) {
-                          updateProjectMutation.mutate({
-                            id: activeProject!.id,
-                            updates: { 
-                              results: [], 
-                              stats: { 
-                                ...activeProject!.stats!, 
-                                totalUrls: 0, 
-                                totalImages: 0, 
-                                scrapedPages: 0 
-                              } 
-                            },
-                          });
-                        }
-                      }}
-                      className="gap-2 text-destructive"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                      {t('clearAllProgress')}
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-
-                <Button variant="outline" onClick={exportProject} className="gap-2" data-testid="export-button">
-                  <Download className="h-4 w-4" />
-                  {t('exportJson')}
+          ) : (
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <Button
+                  variant="ghost"
+                  onClick={() => setActiveProjectId(null)}
+                  className="gap-2 -ml-2"
+                  data-testid="back-button"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                  {t('recentProjects')}
                 </Button>
+                
+                <div className="flex items-center gap-2">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="outline" size="sm" className="gap-2" data-testid="actions-menu">
+                        <Settings className="w-4 h-4" />
+                        {t('actionsMenu')}
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-56">
+                      <DropdownMenuItem onClick={startContentScrape} className="gap-2">
+                        <ScanText className="w-4 h-4" />
+                        {t('scrapeAllContent')}
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem 
+                        onClick={() => {
+                          if (confirm(t('wipeConfirm'))) {
+                            updateProjectMutation.mutate({
+                              id: activeProject!.id,
+                              updates: { 
+                                results: [], 
+                                stats: { 
+                                  ...activeProject!.stats!, 
+                                  totalUrls: 0, 
+                                  totalImages: 0, 
+                                  scrapedPages: 0 
+                                } 
+                              },
+                            });
+                          }
+                        }}
+                        className="gap-2 text-destructive focus:text-destructive"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                        {t('clearAllProgress')}
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
 
-                {activeProject?.status !== 'idle' ? (
-                  <Button onClick={stopProcess} variant="secondary" className="gap-2" data-testid="stop-button">
-                    <Square className="h-4 w-4 fill-current" />
-                    {t('stopProcess')}
+                  <Button variant="outline" size="sm" onClick={exportProject} className="gap-2" data-testid="export-button">
+                    <Download className="w-4 h-4" />
+                    {t('exportJson')}
                   </Button>
-                ) : (
-                  <Button 
-                    onClick={() => {
-                      updateProjectMutation.mutate({
-                        id: activeProject!.id,
-                        updates: { 
-                          status: 'scraping', 
-                          processed: [],
-                          queue: activeProject?.queue || [],
-                          stats: { ...activeProject!.stats!, startTime: Date.now() }
-                        },
-                      });
-                    }}
-                    className="gap-2"
-                    data-testid="resync-button"
-                  >
-                    <Play className="h-4 w-4 fill-current" />
-                    {t('fullResync')}
-                  </Button>
-                )}
-              </div>
-            </div>
 
-            <Card className="p-6">
-              <div className="flex items-center gap-4 mb-6">
-                <div className="bg-primary/10 p-4 rounded-2xl text-primary border border-primary/20">
-                  <Globe className="h-8 w-8" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <h2 className="text-xl font-bold text-foreground tracking-tight truncate">
-                    {activeProject?.displayName || activeProject?.domain}
-                  </h2>
-                  <p className="text-sm text-muted-foreground font-medium flex items-center gap-2 mt-1">
-                    <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-                    {t('persistentEntry')} • {activeProject?.results?.length || 0} {t('foundLinks')}
-                  </p>
+                  {activeProject?.status !== 'idle' ? (
+                    <Button onClick={stopProcess} variant="secondary" size="sm" className="gap-2" data-testid="stop-button">
+                      <Square className="w-4 h-4" />
+                      {t('stopProcess')}
+                    </Button>
+                  ) : (
+                    <Button 
+                      size="sm"
+                      onClick={() => {
+                        updateProjectMutation.mutate({
+                          id: activeProject!.id,
+                          updates: { 
+                            status: 'scraping', 
+                            processed: [],
+                            queue: activeProject?.queue || [],
+                            stats: { ...activeProject!.stats!, startTime: Date.now() }
+                          },
+                        });
+                      }}
+                      className="gap-2"
+                      data-testid="resync-button"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      {t('fullResync')}
+                    </Button>
+                  )}
                 </div>
               </div>
 
               {activeProject?.status !== 'idle' && (
-                <div className="bg-primary rounded-xl p-6 mb-6 text-primary-foreground">
-                  <div className="flex items-center gap-4 mb-3">
-                    <Loader2 className="h-6 w-6 animate-spin" />
-                    <div className="flex-1">
-                      <div className="flex justify-between items-end mb-2">
-                        <p className="text-xs font-bold uppercase opacity-70">
-                          {activeProject.status === 'scraping' ? t('parallelAnalysis') : t('deepExtraction')} ({progressPercent}%)
+                <div className="bg-primary/10 border border-primary/20 rounded-xl p-4">
+                  <div className="flex items-center gap-4">
+                    <Loader2 className="w-5 h-5 animate-spin text-primary shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex justify-between items-center mb-2">
+                        <p className="text-sm font-medium text-foreground">
+                          {activeProject.status === 'scraping' ? t('parallelAnalysis') : t('deepExtraction')}
                         </p>
-                        <p className="text-[10px] font-bold uppercase opacity-70">
-                          {activeProject.processed?.length || 0} {t('items')}
-                        </p>
+                        <p className="text-xs text-muted-foreground">{progressPercent}%</p>
                       </div>
-                      <div className="w-full bg-primary-foreground/20 h-2 rounded-full overflow-hidden">
+                      <div className="w-full bg-secondary h-1.5 rounded-full overflow-hidden">
                         <div 
-                          className="bg-primary-foreground h-full transition-all duration-500" 
+                          className="bg-primary h-full transition-all duration-500" 
                           style={{ width: `${progressPercent}%` }}
                         />
                       </div>
                     </div>
                   </div>
-                  <div className="bg-primary-foreground/10 px-3 py-2 rounded-lg text-xs font-medium truncate">
-                    {t('activeBatch')}: {activeProject.queue?.slice(0, 5).join(', ')}
-                  </div>
                 </div>
               )}
 
-              <StatsCards stats={activeProject?.stats || null} t={t} />
-            </Card>
+              <StatsCards 
+                stats={activeProject?.stats || null} 
+                urlCount={activeProject?.results?.length || 0}
+                scrapedCount={activeProject?.results?.filter(r => r.scrapedData).length || 0}
+                t={t} 
+              />
 
-            <Card className="overflow-hidden min-h-[500px]">
-              <Tabs defaultValue="urls" className="flex flex-col h-full">
-                <TabsList className="w-full justify-start border-b border-border rounded-none bg-muted/50 p-1">
-                  <TabsTrigger value="urls" className="flex-1" data-testid="tab-urls">
-                    {t('analyzedPages')} ({activeProject?.results?.length || 0})
-                  </TabsTrigger>
-                  <TabsTrigger value="errors" className="flex-1" data-testid="tab-errors">
-                    {t('crawlFailures')} ({activeProject?.errors?.length || 0})
-                  </TabsTrigger>
-                </TabsList>
-                <TabsContent value="urls" className="flex-1 m-0">
-                  <UrlList urls={activeProject?.results || []} t={t} />
-                </TabsContent>
-                <TabsContent value="errors" className="flex-1 m-0">
-                  <ErrorLogs errors={activeProject?.errors || []} t={t} />
-                </TabsContent>
-              </Tabs>
-            </Card>
-          </div>
-        )}
-      </main>
+              <div className="bg-card border border-border rounded-xl overflow-hidden">
+                <Tabs defaultValue="urls" className="flex flex-col">
+                  <TabsList className="w-full justify-start border-b border-border rounded-none bg-transparent p-0">
+                    <TabsTrigger 
+                      value="urls" 
+                      className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent px-6 py-3"
+                      data-testid="tab-urls"
+                    >
+                      {t('analyzedPages')} ({activeProject?.results?.length || 0})
+                    </TabsTrigger>
+                    <TabsTrigger 
+                      value="errors" 
+                      className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent px-6 py-3"
+                      data-testid="tab-errors"
+                    >
+                      {t('crawlFailures')} ({activeProject?.errors?.length || 0})
+                    </TabsTrigger>
+                  </TabsList>
+                  <TabsContent value="urls" className="m-0 min-h-[400px]">
+                    <UrlList urls={activeProject?.results || []} t={t} />
+                  </TabsContent>
+                  <TabsContent value="errors" className="m-0 min-h-[400px]">
+                    <ErrorLogs errors={activeProject?.errors || []} t={t} />
+                  </TabsContent>
+                </Tabs>
+              </div>
+            </div>
+          )}
+        </main>
+      </div>
     </div>
   );
 }

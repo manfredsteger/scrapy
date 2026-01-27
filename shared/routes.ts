@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { insertUserSchema, users } from './schema';
+import { insertProjectSchema, sitemapUrlEntrySchema, scrapingErrorSchema, scrapingStatsSchema } from './schema';
 
 export const errorSchemas = {
   validation: z.object({
@@ -14,25 +14,140 @@ export const errorSchemas = {
   }),
 };
 
+// Project response schema
+const projectResponseSchema = z.object({
+  id: z.number(),
+  domain: z.string(),
+  displayName: z.string().nullable(),
+  lastScraped: z.string().nullable(),
+  status: z.string(),
+  queue: z.array(z.string()),
+  processed: z.array(z.string()),
+  results: z.array(sitemapUrlEntrySchema),
+  errors: z.array(scrapingErrorSchema),
+  stats: scrapingStatsSchema.nullable(),
+  createdAt: z.string().nullable(),
+});
+
 export const api = {
-  users: {
+  projects: {
     list: {
       method: 'GET' as const,
-      path: '/api/users',
+      path: '/api/projects',
       responses: {
-        200: z.array(z.custom<typeof users.$inferSelect>()),
+        200: z.array(projectResponseSchema),
+      },
+    },
+    get: {
+      method: 'GET' as const,
+      path: '/api/projects/:id',
+      responses: {
+        200: projectResponseSchema,
+        404: errorSchemas.notFound,
       },
     },
     create: {
       method: 'POST' as const,
-      path: '/api/users',
-      input: insertUserSchema,
+      path: '/api/projects',
+      input: z.object({
+        domain: z.string(),
+        displayName: z.string().optional(),
+        status: z.string().optional(),
+        queue: z.array(z.string()).optional(),
+        processed: z.array(z.string()).optional(),
+        results: z.array(sitemapUrlEntrySchema).optional(),
+        errors: z.array(scrapingErrorSchema).optional(),
+        stats: scrapingStatsSchema.optional(),
+      }),
       responses: {
-        201: z.custom<typeof users.$inferSelect>(),
+        201: projectResponseSchema,
         400: errorSchemas.validation,
       },
     },
-  }
+    update: {
+      method: 'PUT' as const,
+      path: '/api/projects/:id',
+      input: z.object({
+        domain: z.string().optional(),
+        displayName: z.string().optional(),
+        status: z.string().optional(),
+        queue: z.array(z.string()).optional(),
+        processed: z.array(z.string()).optional(),
+        results: z.array(sitemapUrlEntrySchema).optional(),
+        errors: z.array(scrapingErrorSchema).optional(),
+        stats: scrapingStatsSchema.optional(),
+      }),
+      responses: {
+        200: projectResponseSchema,
+        400: errorSchemas.validation,
+        404: errorSchemas.notFound,
+      },
+    },
+    delete: {
+      method: 'DELETE' as const,
+      path: '/api/projects/:id',
+      responses: {
+        204: z.void(),
+        404: errorSchemas.notFound,
+      },
+    },
+  },
+  settings: {
+    get: {
+      method: 'GET' as const,
+      path: '/api/settings/:key',
+      responses: {
+        200: z.object({ key: z.string(), value: z.string() }),
+        404: errorSchemas.notFound,
+      },
+    },
+    set: {
+      method: 'PUT' as const,
+      path: '/api/settings/:key',
+      input: z.object({ value: z.string() }),
+      responses: {
+        200: z.object({ key: z.string(), value: z.string() }),
+      },
+    },
+  },
+  scrape: {
+    discover: {
+      method: 'POST' as const,
+      path: '/api/scrape/discover',
+      input: z.object({ domain: z.string() }),
+      responses: {
+        200: z.object({ sitemaps: z.array(z.string()) }),
+        400: errorSchemas.validation,
+      },
+    },
+    fetchSitemap: {
+      method: 'POST' as const,
+      path: '/api/scrape/sitemap',
+      input: z.object({ url: z.string() }),
+      responses: {
+        200: z.object({ 
+          urls: z.array(sitemapUrlEntrySchema), 
+          subSitemaps: z.array(z.string()) 
+        }),
+        400: errorSchemas.validation,
+      },
+    },
+    fetchContent: {
+      method: 'POST' as const,
+      path: '/api/scrape/content',
+      input: z.object({ urls: z.array(z.string()) }),
+      responses: {
+        200: z.object({
+          results: z.array(z.object({
+            url: z.string(),
+            data: z.any().nullable(),
+            error: z.string().nullable(),
+          })),
+        }),
+        400: errorSchemas.validation,
+      },
+    },
+  },
 };
 
 export function buildUrl(path: string, params?: Record<string, string | number>): string {
@@ -46,3 +161,5 @@ export function buildUrl(path: string, params?: Record<string, string | number>)
   }
   return url;
 }
+
+export type ProjectResponse = z.infer<typeof projectResponseSchema>;

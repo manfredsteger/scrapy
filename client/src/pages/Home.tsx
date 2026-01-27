@@ -290,20 +290,78 @@ export default function Home() {
     reader.onload = async (event) => {
       try {
         const content = event.target?.result as string;
-        const imported = JSON.parse(content);
-        await apiRequest('POST', '/api/projects', {
-          domain: imported.domain,
-          displayName: imported.displayName || imported.domain,
-          status: 'idle',
-          queue: imported.queue || [],
-          processed: imported.processed || [],
-          results: imported.results || [],
-          errors: imported.errors || [],
-          stats: imported.stats,
-        });
+        
+        if (file.name.endsWith('.xml')) {
+          const parser = new DOMParser();
+          const doc = parser.parseFromString(content, 'text/xml');
+          const parseError = doc.querySelector('parsererror');
+          if (parseError) throw new Error('Invalid XML');
+          
+          const urls: SitemapUrlEntry[] = [];
+          doc.querySelectorAll('url').forEach(el => {
+            const loc = el.querySelector('loc')?.textContent?.trim();
+            if (!loc) return;
+            
+            const images: { loc: string }[] = [];
+            el.querySelectorAll('image').forEach(img => {
+              const iLoc = img.querySelector('loc')?.textContent?.trim();
+              if (iLoc) images.push({ loc: iLoc });
+            });
+            
+            urls.push({
+              loc,
+              lastmod: el.querySelector('lastmod')?.textContent?.trim(),
+              changefreq: el.querySelector('changefreq')?.textContent?.trim(),
+              priority: el.querySelector('priority')?.textContent?.trim(),
+              images,
+              videos: [],
+            });
+          });
+          
+          let domain = 'Imported XML';
+          if (urls.length > 0) {
+            try {
+              const firstUrl = new URL(urls[0].loc);
+              domain = firstUrl.hostname;
+            } catch {}
+          }
+          
+          await apiRequest('POST', '/api/projects', {
+            domain,
+            displayName: `${domain} (${file.name})`,
+            status: 'idle',
+            queue: [],
+            processed: [],
+            results: urls,
+            errors: [],
+            stats: {
+              totalSitemaps: 1,
+              processedSitemaps: 1,
+              totalUrls: urls.length,
+              totalImages: urls.reduce((acc, u) => acc + u.images.length, 0),
+              totalVideos: 0,
+              startTime: Date.now(),
+              endTime: Date.now(),
+            },
+          });
+        } else {
+          const imported = JSON.parse(content);
+          await apiRequest('POST', '/api/projects', {
+            domain: imported.domain,
+            displayName: imported.displayName || imported.domain,
+            status: 'idle',
+            queue: imported.queue || [],
+            processed: imported.processed || [],
+            results: imported.results || [],
+            errors: imported.errors || [],
+            stats: imported.stats,
+          });
+        }
+        
         queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
         toast({ title: t('success') });
-      } catch {
+      } catch (err) {
+        console.error('Import error:', err);
         toast({ title: t('error'), description: t('importFailed'), variant: 'destructive' });
       }
     };

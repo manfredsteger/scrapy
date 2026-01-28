@@ -54,6 +54,28 @@ Preferred communication style: Simple, everyday language.
 - **Component Library**: Shadcn/ui provides accessible, customizable components without external dependencies
 - **Build Optimization**: Production builds bundle critical dependencies to reduce cold start times
 
+## RAG Pack Feature
+
+The application includes a comprehensive RAG Pack generation system for AI/RAG workflows:
+
+### Chunking System
+- Token-based splitting using `gpt-tokenizer` for accurate GPT-4 token estimation
+- Configurable target tokens (default 350), overlap tokens (default 55), and minimum chunk tokens (default 50)
+- Sentence-based overlap for cleaner chunk boundaries
+- Heading hierarchy preservation for semantic context
+- SHA256 hashes for chunk integrity verification
+
+### RAG Pack Export Format
+The ZIP export includes:
+- `manifest.json` - Pack metadata with version, counts, and checksums
+- `documents.jsonl` - Document-level metadata (one JSON object per line)
+- `chunks.jsonl` - All text chunks with full metadata (one JSON object per line)
+- `schema/` folder with JSON schemas for validation
+
+### API Endpoints
+- `POST /api/projects/:id/chunks` - Generate chunks from scraped content
+- `GET /api/projects/:id/rag-pack` - Download RAG Pack as ZIP file
+
 ## External Dependencies
 
 ### Database

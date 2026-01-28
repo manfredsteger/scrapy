@@ -4,8 +4,259 @@ import { storage } from "./storage";
 import { api } from "@shared/routes";
 import { z } from "zod";
 import { JSDOM } from "jsdom";
+import { encode } from "gpt-tokenizer";
+import crypto from "crypto";
+import JSZip from "jszip";
+import type { RagChunk, ProjectSettings, ScrapedElement, SitemapUrlEntry } from "@shared/schema";
 
 const CONCURRENCY = 10;
+
+// Chunking utility functions
+function estimateTokens(text: string): number {
+  try {
+    return encode(text).length;
+  } catch {
+    // Fallback: ~4 chars per token
+    return Math.ceil(text.length / 4);
+  }
+}
+
+function sha256(text: string): string {
+  return crypto.createHash('sha256').update(text).digest('hex');
+}
+
+function extractTextFromElements(elements: ScrapedElement[]): { text: string; heading: string | null; headingPath: string[] }[] {
+  const sections: { text: string; heading: string | null; headingPath: string[] }[] = [];
+  let currentHeading: string | null = null;
+  let currentHeadingPath: string[] = [];
+  let currentText = '';
+
+  for (const el of elements) {
+    if (el.type === 'heading' && el.content) {
+      // Save previous section if has content
+      if (currentText.trim()) {
+        sections.push({ 
+          text: currentText.trim(), 
+          heading: currentHeading,
+          headingPath: [...currentHeadingPath]
+        });
+      }
+      currentHeading = el.content;
+      currentText = el.content + '\n\n';
+      
+      // Update heading path based on level
+      const level = el.level || 1;
+      currentHeadingPath = currentHeadingPath.slice(0, level - 1);
+      currentHeadingPath[level - 1] = el.content;
+    } else if (el.type === 'paragraph' && el.content) {
+      currentText += el.content + '\n\n';
+    } else if (el.type === 'list' && el.children) {
+      const listText = el.children.map((item: any) => `• ${typeof item === 'string' ? item : item.content || ''}`).join('\n');
+      currentText += listText + '\n\n';
+    } else if (el.type === 'blockquote' && el.content) {
+      currentText += `> ${el.content}\n\n`;
+    }
+  }
+
+  // Don't forget the last section
+  if (currentText.trim()) {
+    sections.push({ 
+      text: currentText.trim(), 
+      heading: currentHeading,
+      headingPath: [...currentHeadingPath]
+    });
+  }
+
+  return sections;
+}
+
+function getOverlapText(text: string, overlapTokens: number): string {
+  if (overlapTokens <= 0) return '';
+  
+  // Split by sentences for cleaner overlap
+  const sentences = text.split(/(?<=[.!?])\s+/);
+  let overlap = '';
+  let currentTokens = 0;
+  
+  // Work backwards from end to get overlap
+  for (let i = sentences.length - 1; i >= 0 && currentTokens < overlapTokens; i--) {
+    const sentenceTokens = estimateTokens(sentences[i]);
+    if (currentTokens + sentenceTokens <= overlapTokens * 1.5) {
+      overlap = sentences[i] + (overlap ? ' ' + overlap : '');
+      currentTokens += sentenceTokens;
+    } else {
+      break;
+    }
+  }
+  
+  return overlap;
+}
+
+function chunkText(
+  sections: { text: string; heading: string | null; headingPath: string[] }[],
+  targetTokens: number,
+  overlapTokens: number,
+  minChunkTokens: number
+): { text: string; heading: string | null; headingPath: string[] }[] {
+  const chunks: { text: string; heading: string | null; headingPath: string[] }[] = [];
+  let currentChunk = '';
+  let currentHeading: string | null = null;
+  let currentHeadingPath: string[] = [];
+
+  function saveChunk() {
+    if (currentChunk && estimateTokens(currentChunk) >= minChunkTokens) {
+      chunks.push({ 
+        text: currentChunk.trim(), 
+        heading: currentHeading,
+        headingPath: [...currentHeadingPath]
+      });
+      return true;
+    }
+    return false;
+  }
+
+  for (const section of sections) {
+    const sectionTokens = estimateTokens(section.text);
+    const currentTokens = estimateTokens(currentChunk);
+
+    // If section fits in current chunk
+    if (currentTokens + sectionTokens <= targetTokens) {
+      if (!currentChunk) {
+        currentHeading = section.heading;
+        currentHeadingPath = section.headingPath;
+      }
+      currentChunk += (currentChunk ? '\n\n' : '') + section.text;
+    } else if (sectionTokens > targetTokens) {
+      // Section is too large - need to split it by paragraphs
+      if (saveChunk()) {
+        const overlap = getOverlapText(currentChunk, overlapTokens);
+        currentChunk = overlap;
+      }
+      
+      currentHeading = section.heading;
+      currentHeadingPath = section.headingPath;
+      
+      const paragraphs = section.text.split(/\n\n+/);
+      for (const para of paragraphs) {
+        const paraTokens = estimateTokens(para);
+        const chunkTokens = estimateTokens(currentChunk);
+        
+        if (chunkTokens + paraTokens > targetTokens) {
+          if (saveChunk()) {
+            const overlap = getOverlapText(currentChunk, overlapTokens);
+            currentChunk = overlap + (overlap ? '\n\n' : '') + para;
+          } else {
+            currentChunk += (currentChunk ? '\n\n' : '') + para;
+          }
+        } else {
+          currentChunk += (currentChunk ? '\n\n' : '') + para;
+        }
+      }
+    } else {
+      // Section doesn't fit but isn't too large - save current and start new
+      if (saveChunk()) {
+        const overlap = getOverlapText(currentChunk, overlapTokens);
+        currentChunk = overlap + (overlap ? '\n\n' : '') + section.text;
+      } else {
+        currentChunk += (currentChunk ? '\n\n' : '') + section.text;
+      }
+      
+      currentHeading = section.heading;
+      currentHeadingPath = section.headingPath;
+    }
+  }
+
+  // Don't forget the last chunk
+  if (currentChunk) {
+    const tokens = estimateTokens(currentChunk);
+    if (tokens >= minChunkTokens) {
+      chunks.push({ 
+        text: currentChunk.trim(), 
+        heading: currentHeading,
+        headingPath: currentHeadingPath
+      });
+    } else if (chunks.length > 0) {
+      // Merge with previous chunk if too small
+      chunks[chunks.length - 1].text += '\n\n' + currentChunk.trim();
+    } else {
+      // Even if small, we need at least one chunk
+      chunks.push({ 
+        text: currentChunk.trim(), 
+        heading: currentHeading,
+        headingPath: currentHeadingPath
+      });
+    }
+  }
+
+  return chunks;
+}
+
+function generateChunksForProject(
+  results: SitemapUrlEntry[],
+  domain: string,
+  settings: ProjectSettings
+): RagChunk[] {
+  const allChunks: RagChunk[] = [];
+  const chunkingSettings = settings.chunking || {
+    targetTokens: 350,
+    overlapTokens: 55,
+    minChunkTokens: 50,
+    boundaryRules: ['paragraph', 'heading'],
+    preserveHeadingHierarchy: true,
+  };
+
+  for (const entry of results) {
+    if (!entry.scrapedData?.orderedElements) continue;
+
+    const docId = `doc_${sha256(entry.loc).slice(0, 12)}`;
+    const sections = extractTextFromElements(entry.scrapedData.orderedElements);
+    
+    const chunkedSections = chunkText(
+      sections,
+      chunkingSettings.targetTokens,
+      chunkingSettings.overlapTokens,
+      chunkingSettings.minChunkTokens
+    );
+
+    chunkedSections.forEach((chunk, index) => {
+      const chunkId = `${docId}::c${String(index).padStart(4, '0')}`;
+      const tokens = estimateTokens(chunk.text);
+      
+      let pathname = '/';
+      try {
+        pathname = new URL(entry.loc).pathname || '/';
+      } catch {}
+
+      const ragChunk: RagChunk = {
+        chunk_id: chunkId,
+        doc_id: docId,
+        chunk_index: index,
+        text: chunk.text,
+        location: {
+          url: entry.loc,
+          heading_path: chunkingSettings.preserveHeadingHierarchy ? chunk.headingPath.filter(Boolean) : undefined,
+        },
+        structure: {
+          section_path: chunk.headingPath.filter(Boolean).join(' > ') || null,
+          heading: chunk.heading,
+        },
+        language: 'de', // Could be detected
+        source: {
+          source_url: `https://${domain}`,
+        },
+        hashes: {
+          text_sha256: sha256(chunk.text),
+        },
+        tokens_estimate: tokens,
+        citation: `${entry.scrapedData.title || pathname}, ${chunk.heading || 'Inhalt'}`,
+      };
+
+      allChunks.push(ragChunk);
+    });
+  }
+
+  return allChunks;
+}
 
 async function fetchWithTimeout(url: string, timeout = 15000): Promise<string> {
   const controller = new AbortController();
@@ -419,6 +670,187 @@ export async function registerRoutes(
         });
       }
       res.status(400).json({ message: (err as Error).message });
+    }
+  });
+
+  // Generate chunks from scraped content
+  app.post('/api/projects/:id/chunks', async (req, res) => {
+    try {
+      const projectId = parseInt(req.params.id);
+      const project = await storage.getProject(projectId);
+      
+      if (!project) {
+        return res.status(404).json({ message: 'Project not found' });
+      }
+
+      const scrapedResults = (project.results || []).filter(r => r.scrapedData);
+      if (scrapedResults.length === 0) {
+        return res.status(400).json({ message: 'No scraped content available. Run deep scraping first.' });
+      }
+
+      const settings: ProjectSettings = project.projectSettings || {
+        scraping: { parallelRequests: 10, delayMs: 500, contentSelectors: [], excludeSelectors: [], maxDepth: 5 },
+        chunking: { targetTokens: 350, overlapTokens: 55, boundaryRules: ['paragraph', 'heading'], preserveHeadingHierarchy: true, minChunkTokens: 50 },
+        ai: { enabled: false, model: 'gpt-4o-mini', features: { semanticChunking: false, summaries: false, keywordExtraction: false } },
+      };
+
+      const chunks = generateChunksForProject(scrapedResults, project.domain, settings);
+
+      await storage.updateProject(projectId, { chunks });
+
+      res.json({ 
+        success: true, 
+        chunksGenerated: chunks.length,
+        pagesProcessed: scrapedResults.length,
+      });
+    } catch (err) {
+      console.error('Chunk generation error:', err);
+      res.status(500).json({ message: (err as Error).message });
+    }
+  });
+
+  // Export RAG Pack as ZIP
+  app.get('/api/projects/:id/rag-pack', async (req, res) => {
+    try {
+      const projectId = parseInt(req.params.id);
+      const project = await storage.getProject(projectId);
+      
+      if (!project) {
+        return res.status(404).json({ message: 'Project not found' });
+      }
+
+      const chunks = project.chunks || [];
+      if (chunks.length === 0) {
+        return res.status(400).json({ message: 'No chunks available. Generate chunks first.' });
+      }
+
+      const scrapedResults = (project.results || []).filter(r => r.scrapedData);
+      const zip = new JSZip();
+      const now = new Date().toISOString();
+
+      // Create documents.jsonl
+      const documentsJsonl = scrapedResults.map(entry => {
+        const docId = `doc_${sha256(entry.loc).slice(0, 12)}`;
+        return JSON.stringify({
+          doc_id: docId,
+          title: entry.scrapedData?.title || '',
+          url: entry.loc,
+          language: 'de',
+          source: {
+            source_type: 'website',
+            source_url: `https://${project.domain}`,
+          },
+          dates: {
+            scraped: entry.scrapedData?.timestamp || now,
+            ingested: now,
+          },
+          hashes: {
+            content_sha256: sha256(JSON.stringify(entry.scrapedData?.orderedElements || [])),
+          },
+        });
+      }).join('\n');
+
+      // Create chunks.jsonl
+      const chunksJsonl = chunks.map(chunk => JSON.stringify(chunk)).join('\n');
+
+      // Create manifest.json
+      const chunkingSettings = project.projectSettings?.chunking || {
+        targetTokens: 350,
+        overlapTokens: 55,
+        boundaryRules: ['paragraph', 'heading'],
+      };
+
+      const manifest = {
+        rag_pack_version: '1.0',
+        created_at: now,
+        generator: {
+          name: 'MapScraper Pro',
+          version: '1.0',
+        },
+        source: {
+          domain: project.domain,
+          project_name: project.displayName || project.domain,
+        },
+        chunking: {
+          target_tokens: chunkingSettings.targetTokens,
+          overlap_tokens: chunkingSettings.overlapTokens,
+          boundary_rules: chunkingSettings.boundaryRules,
+        },
+        counts: {
+          documents: scrapedResults.length,
+          chunks: chunks.length,
+        },
+        checksums: {
+          'documents.jsonl': `sha256:${sha256(documentsJsonl)}`,
+          'chunks.jsonl': `sha256:${sha256(chunksJsonl)}`,
+        },
+      };
+
+      // Schema files
+      const documentsSchema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "documents.jsonl schema",
+        "type": "object",
+        "required": ["doc_id", "title", "url", "language", "source", "dates", "hashes"],
+        "properties": {
+          "doc_id": { "type": "string" },
+          "title": { "type": "string" },
+          "url": { "type": "string" },
+          "language": { "type": "string" },
+          "source": { "type": "object" },
+          "dates": { "type": "object" },
+          "hashes": { "type": "object" },
+        },
+      };
+
+      const chunksSchema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "chunks.jsonl schema",
+        "type": "object",
+        "required": ["chunk_id", "doc_id", "chunk_index", "text", "location", "structure", "language", "source", "hashes"],
+        "properties": {
+          "chunk_id": { "type": "string" },
+          "doc_id": { "type": "string" },
+          "chunk_index": { "type": "integer", "minimum": 0 },
+          "text": { "type": "string", "minLength": 1 },
+          "location": { "type": "object" },
+          "structure": { "type": "object" },
+          "language": { "type": "string" },
+          "source": { "type": "object" },
+          "hashes": { "type": "object" },
+          "tokens_estimate": { "type": "integer" },
+          "citation": { "type": "string" },
+        },
+      };
+
+      const manifestSchema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "manifest.json schema",
+        "type": "object",
+        "required": ["rag_pack_version", "created_at", "generator", "source", "chunking", "counts", "checksums"],
+      };
+
+      // Add files to ZIP
+      zip.file('documents.jsonl', documentsJsonl);
+      zip.file('chunks.jsonl', chunksJsonl);
+      zip.file('manifest.json', JSON.stringify(manifest, null, 2));
+      zip.folder('schema')?.file('documents.schema.json', JSON.stringify(documentsSchema, null, 2));
+      zip.folder('schema')?.file('chunks.schema.json', JSON.stringify(chunksSchema, null, 2));
+      zip.folder('schema')?.file('manifest.schema.json', JSON.stringify(manifestSchema, null, 2));
+
+      // Generate ZIP buffer
+      const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+
+      // Set headers and send
+      const fileName = `rag_pack_${project.domain.replace(/[^a-z0-9]/gi, '_')}_${Date.now()}.zip`;
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader('Content-Length', zipBuffer.length);
+      res.send(zipBuffer);
+
+    } catch (err) {
+      console.error('RAG Pack export error:', err);
+      res.status(500).json({ message: (err as Error).message });
     }
   });
 

@@ -86,6 +86,8 @@ export const projects = pgTable("projects", {
   results: jsonb("results").$type<z.infer<typeof sitemapUrlEntrySchema>[]>().default([]),
   errors: jsonb("errors").$type<z.infer<typeof scrapingErrorSchema>[]>().default([]),
   stats: jsonb("stats").$type<z.infer<typeof scrapingStatsSchema>>(),
+  projectSettings: jsonb("project_settings").$type<z.infer<typeof projectSettingsSchema>>(),
+  chunks: jsonb("chunks").$type<z.infer<typeof ragChunkSchema>[]>().default([]),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -115,3 +117,64 @@ export const settings = pgTable("settings", {
 export const insertSettingsSchema = createInsertSchema(settings).omit({ id: true });
 export type Settings = typeof settings.$inferSelect;
 export type InsertSettings = z.infer<typeof insertSettingsSchema>;
+
+// Project settings schema for deep scraping and chunking configuration
+export const projectSettingsSchema = z.object({
+  // Deep Scraping Settings
+  scraping: z.object({
+    parallelRequests: z.number().min(1).max(20).default(10),
+    delayMs: z.number().min(0).max(10000).default(500),
+    contentSelectors: z.array(z.string()).default(['article', 'main', '.content', '#content']),
+    excludeSelectors: z.array(z.string()).default(['nav', 'footer', 'header', '.sidebar', '.ads']),
+    maxDepth: z.number().min(1).max(10).default(5),
+  }).default({}),
+  // Chunking Settings
+  chunking: z.object({
+    targetTokens: z.number().min(100).max(2000).default(350),
+    overlapTokens: z.number().min(0).max(200).default(55),
+    boundaryRules: z.array(z.enum(['paragraph', 'heading', 'sentence'])).default(['paragraph', 'heading']),
+    preserveHeadingHierarchy: z.boolean().default(true),
+    minChunkTokens: z.number().min(20).max(500).default(50),
+  }).default({}),
+  // AI Integration Settings (optional)
+  ai: z.object({
+    enabled: z.boolean().default(false),
+    endpoint: z.string().optional(),
+    bearerToken: z.string().optional(),
+    model: z.string().default('gpt-4o-mini'),
+    features: z.object({
+      semanticChunking: z.boolean().default(false),
+      summaries: z.boolean().default(false),
+      keywordExtraction: z.boolean().default(false),
+    }).default({}),
+  }).default({}),
+}).default({});
+
+export type ProjectSettings = z.infer<typeof projectSettingsSchema>;
+
+// RAG Pack chunk schema
+export const ragChunkSchema = z.object({
+  chunk_id: z.string(),
+  doc_id: z.string(),
+  chunk_index: z.number(),
+  text: z.string(),
+  location: z.object({
+    url: z.string(),
+    heading_path: z.array(z.string()).optional(),
+  }),
+  structure: z.object({
+    section_path: z.string().nullable(),
+    heading: z.string().nullable(),
+  }),
+  language: z.string(),
+  source: z.object({
+    source_url: z.string(),
+  }),
+  hashes: z.object({
+    text_sha256: z.string(),
+  }),
+  tokens_estimate: z.number(),
+  citation: z.string(),
+});
+
+export type RagChunk = z.infer<typeof ragChunkSchema>;

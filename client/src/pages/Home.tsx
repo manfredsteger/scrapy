@@ -2,7 +2,8 @@ import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { 
   Play, Square, Loader2, Download, Settings, 
-  Trash2, ScanText, Globe, ArrowLeft, Plus, RefreshCw, Pause, X
+  Trash2, ScanText, Globe, ArrowLeft, Plus, RefreshCw, Pause, X,
+  Layers, Package, Cog
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -21,10 +22,11 @@ import StatsCards from '@/components/StatsCards';
 import UrlList from '@/components/UrlList';
 import ErrorLogs from '@/components/ErrorLogs';
 import ProjectCard from '@/components/ProjectCard';
+import ProjectSettings from '@/components/ProjectSettings';
 import { useLanguage } from '@/hooks/use-language';
 import { useToast } from '@/hooks/use-toast';
 import { apiRequest, queryClient } from '@/lib/queryClient';
-import type { Project, SitemapUrlEntry } from '@shared/schema';
+import type { Project, SitemapUrlEntry, ProjectSettings as ProjectSettingsType } from '@shared/schema';
 
 const BATCH_SIZE = 10;
 
@@ -35,6 +37,7 @@ export default function Home() {
   const [domainInput, setDomainInput] = useState('');
   const [isCreating, setIsCreating] = useState(false);
   const [showNewProject, setShowNewProject] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const processingRef = useRef(false);
 
@@ -577,6 +580,47 @@ export default function Home() {
                         <ScanText className="w-4 h-4" />
                         {t('scrapeAllContent')}
                       </DropdownMenuItem>
+                      <DropdownMenuItem 
+                        onClick={async () => {
+                          const scrapedCount = activeProject?.results?.filter(r => r.scrapedData).length || 0;
+                          if (scrapedCount === 0) {
+                            toast({ title: t('deepScrapingRequired'), variant: 'destructive' });
+                            return;
+                          }
+                          toast({ title: t('generateChunks'), description: `${scrapedCount} Seiten werden verarbeitet...` });
+                          try {
+                            const res = await apiRequest('POST', `/api/projects/${activeProject!.id}/chunks`, {});
+                            const data = await res.json();
+                            queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
+                            toast({ 
+                              title: t('success'), 
+                              description: `${data.chunksGenerated} ${t('chunksGenerated')}` 
+                            });
+                          } catch (err) {
+                            toast({ title: t('error'), description: (err as Error).message, variant: 'destructive' });
+                          }
+                        }}
+                        className={`gap-2 ${(activeProject?.results?.filter(r => r.scrapedData).length || 0) === 0 ? 'opacity-50' : ''}`}
+                        disabled={(activeProject?.results?.filter(r => r.scrapedData).length || 0) === 0}
+                      >
+                        <Layers className="w-4 h-4" />
+                        {t('generateChunks')}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem 
+                        onClick={() => {
+                          if ((activeProject?.chunks?.length || 0) === 0) {
+                            toast({ title: t('noChunksYet'), variant: 'destructive' });
+                            return;
+                          }
+                          toast({ title: t('exportRagPack'), description: 'Export wird vorbereitet...' });
+                          window.open(`/api/projects/${activeProject!.id}/rag-pack`, '_blank');
+                        }}
+                        className={`gap-2 ${(activeProject?.chunks?.length || 0) === 0 ? 'opacity-50' : ''}`}
+                        disabled={(activeProject?.chunks?.length || 0) === 0}
+                      >
+                        <Package className="w-4 h-4" />
+                        {t('exportRagPack')}
+                      </DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem 
                         onClick={() => {
@@ -585,6 +629,7 @@ export default function Home() {
                               id: activeProject!.id,
                               updates: { 
                                 results: [], 
+                                chunks: [],
                                 stats: { 
                                   ...activeProject!.stats!, 
                                   totalUrls: 0, 
@@ -602,6 +647,17 @@ export default function Home() {
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
+
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => setShowSettings(true)} 
+                    className="gap-2" 
+                    data-testid="settings-button"
+                  >
+                    <Cog className="w-4 h-4" />
+                    {t('settings')}
+                  </Button>
 
                   <Button variant="outline" size="sm" onClick={exportProject} className="gap-2" data-testid="export-button">
                     <Download className="w-4 h-4" />
@@ -758,6 +814,20 @@ export default function Home() {
           )}
         </main>
       </div>
+
+      {showSettings && activeProject && (
+        <ProjectSettings
+          settings={activeProject.projectSettings}
+          onSave={(newSettings) => {
+            updateProjectMutation.mutate({
+              id: activeProject.id,
+              updates: { projectSettings: newSettings },
+            });
+          }}
+          onClose={() => setShowSettings(false)}
+          t={t}
+        />
+      )}
     </div>
   );
 }

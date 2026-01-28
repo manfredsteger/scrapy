@@ -26,22 +26,30 @@ export default function Sidebar({ activeView, onNavigate, onImport, t }: Sidebar
       }`}
     >
       <div className="h-14 flex items-center justify-between px-3 border-b border-border">
-        {!collapsed && (
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
+        {!collapsed ? (
+          <div className="flex items-center gap-2 flex-1 min-w-0">
+            <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center shrink-0">
               <Network className="w-4 h-4 text-primary-foreground" />
             </div>
-            <div className="leading-none">
+            <div className="leading-none min-w-0">
               <span className="text-sm font-bold text-foreground">MapScraper</span>
               <span className="text-[10px] text-muted-foreground block">Pro Edition</span>
             </div>
           </div>
-        )}
-        {collapsed && (
+        ) : (
           <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center mx-auto">
             <Network className="w-4 h-4 text-primary-foreground" />
           </div>
         )}
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => setCollapsed(!collapsed)}
+          className="shrink-0"
+          data-testid="toggle-sidebar"
+        >
+          {collapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
+        </Button>
       </div>
 
       <nav className="flex-1 p-2 space-y-1">
@@ -67,17 +75,6 @@ export default function Sidebar({ activeView, onNavigate, onImport, t }: Sidebar
         </button>
       </nav>
 
-      <div className="p-2 border-t border-border">
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => setCollapsed(!collapsed)}
-          className="w-full justify-center text-muted-foreground hover:text-foreground"
-          data-testid="toggle-sidebar"
-        >
-          {collapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
-        </Button>
-      </div>
     </aside>
   );
 }

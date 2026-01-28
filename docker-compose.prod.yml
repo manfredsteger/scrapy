@@ -1,0 +1,11 @@
+# MapScraper Pro - Production Overrides
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+services:
+  app:
+    build:
+      target: production
+    environment:
+      NODE_ENV: production
+    volumes: []
+    restart: always

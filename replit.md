@@ -101,3 +101,30 @@ The ZIP export includes:
 - **tsx**: TypeScript execution for development
 - **esbuild**: Production bundling for server code
 - **Drizzle Kit**: Database migration tooling
+
+## Docker Setup (Lokale Entwicklung)
+
+Die Anwendung kann vollständig offline mit Docker betrieben werden:
+
+### Dateien
+- `Dockerfile` - Multi-Architektur Image (AMD64, ARM64, ARMv7)
+- `docker-compose.yml` - Entwicklungsumgebung
+- `docker-compose.prod.yml` - Produktions-Overrides
+- `Makefile` - Entwickler-Befehle
+- `DOCKER-README.md` - Ausführliche Dokumentation
+
+### Wichtige Make-Befehle
+```bash
+make dev        # Startet Entwicklungsumgebung
+make start      # Startet im Hintergrund
+make stop       # Stoppt Container
+make reset      # Kompletter Neustart (löscht alles)
+make db-reset   # Nur Datenbank zurücksetzen
+make logs       # Live-Logs anzeigen
+make help       # Alle Befehle anzeigen
+```
+
+### Architektur-Support
+- linux/amd64 (Intel/AMD)
+- linux/arm64 (Apple Silicon, Raspberry Pi 4+)
+- linux/arm/v7 (Raspberry Pi 3, ältere ARM)

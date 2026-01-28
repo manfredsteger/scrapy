@@ -23,6 +23,7 @@ import UrlList from '@/components/UrlList';
 import ErrorLogs from '@/components/ErrorLogs';
 import ProjectCard from '@/components/ProjectCard';
 import ProjectSettings from '@/components/ProjectSettings';
+import ChunkingProgress from '@/components/ChunkingProgress';
 import { useLanguage } from '@/hooks/use-language';
 import { useToast } from '@/hooks/use-toast';
 import { apiRequest, queryClient } from '@/lib/queryClient';
@@ -38,6 +39,7 @@ export default function Home() {
   const [isCreating, setIsCreating] = useState(false);
   const [showNewProject, setShowNewProject] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showChunkingProgress, setShowChunkingProgress] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const processingRef = useRef(false);
 
@@ -581,24 +583,13 @@ export default function Home() {
                         {t('scrapeAllContent')}
                       </DropdownMenuItem>
                       <DropdownMenuItem 
-                        onClick={async () => {
+                        onClick={() => {
                           const scrapedCount = activeProject?.results?.filter(r => r.scrapedData).length || 0;
                           if (scrapedCount === 0) {
                             toast({ title: t('deepScrapingRequired'), variant: 'destructive' });
                             return;
                           }
-                          toast({ title: t('generateChunks'), description: `${scrapedCount} Seiten werden verarbeitet...` });
-                          try {
-                            const res = await apiRequest('POST', `/api/projects/${activeProject!.id}/chunks`, {});
-                            const data = await res.json();
-                            queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
-                            toast({ 
-                              title: t('success'), 
-                              description: `${data.chunksGenerated} ${t('chunksGenerated')}` 
-                            });
-                          } catch (err) {
-                            toast({ title: t('error'), description: (err as Error).message, variant: 'destructive' });
-                          }
+                          setShowChunkingProgress(true);
                         }}
                         className={`gap-2 ${(activeProject?.results?.filter(r => r.scrapedData).length || 0) === 0 ? 'opacity-50' : ''}`}
                         disabled={(activeProject?.results?.filter(r => r.scrapedData).length || 0) === 0}
@@ -825,6 +816,23 @@ export default function Home() {
             });
           }}
           onClose={() => setShowSettings(false)}
+          t={t}
+        />
+      )}
+
+      {showChunkingProgress && activeProject && (
+        <ChunkingProgress
+          open={showChunkingProgress}
+          onClose={() => setShowChunkingProgress(false)}
+          projectId={activeProject.id}
+          totalPages={activeProject.results?.filter(r => r.scrapedData).length || 0}
+          onComplete={(result) => {
+            queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
+            toast({ 
+              title: t('success'), 
+              description: `${result.chunksGenerated} ${t('chunksGenerated')}` 
+            });
+          }}
           t={t}
         />
       )}

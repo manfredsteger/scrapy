@@ -248,7 +248,7 @@ function generateChunksForProject(
           text_sha256: sha256(chunk.text),
         },
         tokens_estimate: tokens,
-        citation: `${entry.scrapedData.title || pathname}, ${chunk.heading || 'Inhalt'}`,
+        citation: `${entry.scrapedData?.title || pathname}, ${chunk.heading || 'Inhalt'}`,
       };
 
       allChunks.push(ragChunk);
@@ -308,7 +308,7 @@ async function discoverSitemaps(domain: string): Promise<string[]> {
     try {
       const content = await fetchWithTimeout(baseUrl + path);
       if (path === '/robots.txt') {
-        const matches = content.matchAll(/Sitemap:\s*(.*)/gi);
+        const matches = Array.from(content.matchAll(/Sitemap:\s*(.*)/gi));
         for (const match of matches) {
           if (match[1]) {
             const url = match[1].trim();
@@ -600,7 +600,8 @@ export async function registerRoutes(
   });
 
   app.get(api.settings.get.path, async (req, res) => {
-    const setting = await storage.getSetting(req.params.key);
+    const key = Array.isArray(req.params.key) ? req.params.key[0] : req.params.key;
+    const setting = await storage.getSetting(key);
     if (!setting) {
       return res.status(404).json({ message: 'Setting not found' });
     }
@@ -609,7 +610,8 @@ export async function registerRoutes(
 
   app.put(api.settings.set.path, async (req, res) => {
     const input = api.settings.set.input.parse(req.body);
-    const setting = await storage.setSetting(req.params.key, input.value);
+    const key = Array.isArray(req.params.key) ? req.params.key[0] : req.params.key;
+    const setting = await storage.setSetting(key, input.value);
     res.json(setting);
   });
 
@@ -673,7 +675,10 @@ export async function registerRoutes(
     }
   });
 
-  // Generate chunks from scraped content
+  // Track active chunking operations for cancellation
+  const activeChunkingJobs = new Map<number, { cancelled: boolean }>();
+
+  // Generate chunks from scraped content (original endpoint for backwards compatibility)
   app.post('/api/projects/:id/chunks', async (req, res) => {
     try {
       const projectId = parseInt(req.params.id);
@@ -706,6 +711,171 @@ export async function registerRoutes(
     } catch (err) {
       console.error('Chunk generation error:', err);
       res.status(500).json({ message: (err as Error).message });
+    }
+  });
+
+  // SSE endpoint for chunking with progress updates
+  app.get('/api/projects/:id/chunks/stream', async (req, res) => {
+    const projectId = parseInt(req.params.id);
+    
+    // Set SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    const jobState = { cancelled: false };
+    activeChunkingJobs.set(projectId, jobState);
+
+    const sendEvent = (data: object) => {
+      if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+      }
+    };
+
+    // Handle client disconnect
+    req.on('close', () => {
+      jobState.cancelled = true;
+      activeChunkingJobs.delete(projectId);
+    });
+
+    try {
+      const project = await storage.getProject(projectId);
+      
+      if (!project) {
+        sendEvent({ type: 'error', message: 'Project not found' });
+        res.end();
+        return;
+      }
+
+      const scrapedResults = (project.results || []).filter(r => r.scrapedData);
+      if (scrapedResults.length === 0) {
+        sendEvent({ type: 'error', message: 'No scraped content available. Run deep scraping first.' });
+        res.end();
+        return;
+      }
+
+      const settings: ProjectSettings = project.projectSettings || {
+        scraping: { parallelRequests: 10, delayMs: 500, contentSelectors: [], excludeSelectors: [], maxDepth: 5 },
+        chunking: { targetTokens: 350, overlapTokens: 55, boundaryRules: ['paragraph', 'heading'], preserveHeadingHierarchy: true, minChunkTokens: 50 },
+        ai: { enabled: false, model: 'gpt-4o-mini', features: { semanticChunking: false, summaries: false, keywordExtraction: false } },
+      };
+
+      const chunkingSettings = settings.chunking || {
+        targetTokens: 350,
+        overlapTokens: 55,
+        minChunkTokens: 50,
+        boundaryRules: ['paragraph', 'heading'],
+        preserveHeadingHierarchy: true,
+      };
+
+      const allChunks: RagChunk[] = [];
+      const total = scrapedResults.length;
+
+      for (let i = 0; i < scrapedResults.length; i++) {
+        // Check for cancellation
+        if (jobState.cancelled) {
+          sendEvent({ type: 'cancelled', chunksGenerated: allChunks.length, pagesProcessed: i });
+          res.end();
+          activeChunkingJobs.delete(projectId);
+          return;
+        }
+
+        const entry = scrapedResults[i];
+        
+        // Send progress update
+        sendEvent({
+          type: 'progress',
+          current: i + 1,
+          total,
+          chunksGenerated: allChunks.length,
+          currentUrl: entry.loc,
+        });
+
+        if (!entry.scrapedData?.orderedElements) continue;
+
+        const docId = `doc_${sha256(entry.loc).slice(0, 12)}`;
+        const sections = extractTextFromElements(entry.scrapedData.orderedElements);
+        
+        const chunkedSections = chunkText(
+          sections,
+          chunkingSettings.targetTokens,
+          chunkingSettings.overlapTokens,
+          chunkingSettings.minChunkTokens
+        );
+
+        chunkedSections.forEach((chunk, index) => {
+          const chunkId = `${docId}::c${String(allChunks.length).padStart(4, '0')}`;
+          const tokens = estimateTokens(chunk.text);
+          
+          let pathname = '/';
+          try {
+            pathname = new URL(entry.loc).pathname || '/';
+          } catch {}
+
+          const ragChunk: RagChunk = {
+            chunk_id: chunkId,
+            doc_id: docId,
+            chunk_index: index,
+            text: chunk.text,
+            location: {
+              url: entry.loc,
+              heading_path: chunkingSettings.preserveHeadingHierarchy ? chunk.headingPath.filter(Boolean) : undefined,
+            },
+            structure: {
+              section_path: chunk.headingPath.filter(Boolean).join(' > ') || null,
+              heading: chunk.heading,
+            },
+            language: 'de',
+            source: {
+              source_url: `https://${project.domain}`,
+            },
+            hashes: {
+              text_sha256: sha256(chunk.text),
+            },
+            tokens_estimate: tokens,
+            citation: `${entry.scrapedData?.title || pathname}, ${chunk.heading || 'Inhalt'}`,
+          };
+
+          allChunks.push(ragChunk);
+        });
+
+        // Small delay to not overwhelm the client
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+
+      // Save chunks to database
+      await storage.updateProject(projectId, { chunks: allChunks });
+
+      // Send completion event
+      sendEvent({
+        type: 'complete',
+        chunksGenerated: allChunks.length,
+        pagesProcessed: scrapedResults.length,
+        total: scrapedResults.length,
+      });
+
+      res.end();
+      activeChunkingJobs.delete(projectId);
+
+    } catch (err) {
+      console.error('Chunk generation error:', err);
+      sendEvent({ type: 'error', message: (err as Error).message });
+      res.end();
+      activeChunkingJobs.delete(projectId);
+    }
+  });
+
+  // Cancel chunking endpoint
+  app.post('/api/projects/:id/chunks/cancel', (req, res) => {
+    const projectId = parseInt(req.params.id);
+    const job = activeChunkingJobs.get(projectId);
+    
+    if (job) {
+      job.cancelled = true;
+      res.json({ success: true, message: 'Cancellation requested' });
+    } else {
+      res.json({ success: false, message: 'No active job found' });
     }
   });
 

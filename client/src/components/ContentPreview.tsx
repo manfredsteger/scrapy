@@ -1,12 +1,70 @@
-import { X, Image as ImageIcon, Video, FileText, Hash } from 'lucide-react';
+import { useState } from 'react';
+import { X, Image as ImageIcon, Video, FileText, Hash, Copy, Check, ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { ScrollArea } from '@/components/ui/scroll-area';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import type { SitemapUrlEntry, ScrapedElement } from '@shared/schema';
 
 interface ContentPreviewProps {
   entry: SitemapUrlEntry;
   onClose: () => void;
   t: (key: any) => string;
+}
+
+function elementToMarkdown(el: ScrapedElement): string {
+  if (el.type === 'heading') {
+    const level = parseInt(el.tag?.replace('h', '') || '2');
+    return '#'.repeat(level) + ' ' + el.content + '\n\n';
+  }
+  if (el.type === 'paragraph') {
+    return el.content + '\n\n';
+  }
+  if (el.type === 'list') {
+    const items = (el.children as string[] || []);
+    const prefix = el.tag === 'ol' ? (i: number) => `${i + 1}. ` : () => '- ';
+    return items.map((item, i) => prefix(i) + item).join('\n') + '\n\n';
+  }
+  if (el.type === 'blockquote') {
+    return '> ' + el.content + '\n\n';
+  }
+  if (el.type === 'code') {
+    return '```\n' + el.content + '\n```\n\n';
+  }
+  if (el.type === 'media') {
+    return el.tag === 'img' ? `![](${el.src})\n\n` : `[Video](${el.src})\n\n`;
+  }
+  return '';
+}
+
+function elementToHtml(el: ScrapedElement): string {
+  if (el.type === 'heading') {
+    const tag = el.tag || 'h2';
+    return `<${tag}>${el.content}</${tag}>\n`;
+  }
+  if (el.type === 'paragraph') {
+    return `<p>${el.content}</p>\n`;
+  }
+  if (el.type === 'list') {
+    const items = (el.children as string[] || []);
+    const tag = el.tag === 'ol' ? 'ol' : 'ul';
+    return `<${tag}>\n${items.map(item => `  <li>${item}</li>`).join('\n')}\n</${tag}>\n`;
+  }
+  if (el.type === 'blockquote') {
+    return `<blockquote>${el.content}</blockquote>\n`;
+  }
+  if (el.type === 'code') {
+    return `<pre><code>${el.content}</code></pre>\n`;
+  }
+  if (el.type === 'media') {
+    return el.tag === 'img' 
+      ? `<img src="${el.src}" alt="${el.alt || ''}" />\n`
+      : `<video src="${el.src}"></video>\n`;
+  }
+  return '';
 }
 
 function renderElement(el: ScrapedElement, idx: number) {
@@ -111,27 +169,82 @@ function renderElement(el: ScrapedElement, idx: number) {
 }
 
 export default function ContentPreview({ entry, onClose, t }: ContentPreviewProps) {
+  const [copied, setCopied] = useState<string | null>(null);
   const data = entry.scrapedData;
   
+  const copyContent = async (format: 'markdown' | 'json' | 'html') => {
+    if (!data) return;
+    
+    let content = '';
+    
+    if (format === 'markdown') {
+      content = `# ${data.title}\n\n`;
+      content += data.orderedElements.map(elementToMarkdown).join('');
+    } else if (format === 'json') {
+      content = JSON.stringify({
+        url: entry.loc,
+        title: data.title,
+        wordCount: data.wordCount,
+        elements: data.orderedElements,
+      }, null, 2);
+    } else if (format === 'html') {
+      content = `<!DOCTYPE html>\n<html>\n<head>\n  <title>${data.title}</title>\n</head>\n<body>\n`;
+      content += `<h1>${data.title}</h1>\n`;
+      content += data.orderedElements.map(elementToHtml).join('');
+      content += '</body>\n</html>';
+    }
+    
+    await navigator.clipboard.writeText(content);
+    setCopied(format);
+    setTimeout(() => setCopied(null), 2000);
+  };
+  
   return (
-    <div className="fixed inset-0 z-50 bg-background/90 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-card rounded-xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col border border-border shadow-2xl">
+    <div 
+      className="fixed inset-0 z-50 bg-background/90 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="bg-card rounded-xl w-full max-w-4xl max-h-[90vh] flex flex-col border border-border shadow-2xl">
         <div className="px-6 py-4 border-b border-border flex items-center justify-between shrink-0">
-          <div className="min-w-0 flex-1">
+          <div className="min-w-0 flex-1 mr-4">
             <h3 className="text-lg font-semibold text-foreground truncate">
               {data?.title}
             </h3>
             <p className="text-xs text-muted-foreground truncate mt-0.5">{entry.loc}</p>
           </div>
-          <Button 
-            variant="ghost" 
-            size="icon"
-            onClick={onClose}
-            className="shrink-0 ml-4"
-            data-testid="close-preview"
-          >
-            <X className="w-5 h-5" />
-          </Button>
+          <div className="flex items-center gap-2 shrink-0">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="gap-2" data-testid="copy-dropdown">
+                  {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                  {copied ? t('copied') : t('copyAs')}
+                  <ChevronDown className="w-3 h-3" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => copyContent('markdown')} data-testid="copy-markdown">
+                  <FileText className="w-4 h-4 mr-2" />
+                  {t('copyMarkdown')}
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => copyContent('json')} data-testid="copy-json">
+                  <FileText className="w-4 h-4 mr-2" />
+                  {t('copyJson')}
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => copyContent('html')} data-testid="copy-html">
+                  <FileText className="w-4 h-4 mr-2" />
+                  {t('copyHtml')}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <Button 
+              variant="ghost" 
+              size="icon"
+              onClick={onClose}
+              data-testid="close-preview"
+            >
+              <X className="w-5 h-5" />
+            </Button>
+          </div>
         </div>
         
         <div className="grid grid-cols-3 gap-4 p-4 border-b border-border shrink-0">
@@ -154,17 +267,15 @@ export default function ContentPreview({ entry, onClose, t }: ContentPreviewProp
           </div>
         </div>
 
-        <ScrollArea className="flex-1">
-          <div className="p-6">
-            {data?.orderedElements.map((el, i) => renderElement(el, i))}
-            
-            {(!data?.orderedElements || data.orderedElements.length === 0) && (
-              <div className="py-12 text-center">
-                <p className="text-muted-foreground">{t('noDataExtracted')}</p>
-              </div>
-            )}
-          </div>
-        </ScrollArea>
+        <div className="flex-1 overflow-y-auto p-6">
+          {data?.orderedElements.map((el, i) => renderElement(el, i))}
+          
+          {(!data?.orderedElements || data.orderedElements.length === 0) && (
+            <div className="py-12 text-center">
+              <p className="text-muted-foreground">{t('noDataExtracted')}</p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

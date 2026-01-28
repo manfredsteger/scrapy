@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { 
   Play, Square, Loader2, Download, Settings, 
-  Trash2, ScanText, Globe, ArrowLeft, Plus, RefreshCw
+  Trash2, ScanText, Globe, ArrowLeft, Plus, RefreshCw, Pause, X
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -272,8 +272,40 @@ export default function Home() {
     if (!activeProject) return;
     updateProjectMutation.mutate({
       id: activeProject.id,
-      updates: { status: 'idle' },
+      updates: { status: 'idle', queue: [] },
     });
+  }, [activeProject, updateProjectMutation]);
+
+  const pauseProcess = useCallback(() => {
+    if (!activeProject) return;
+    const currentStatus = activeProject.status;
+    if (currentStatus === 'content_scraping') {
+      updateProjectMutation.mutate({
+        id: activeProject.id,
+        updates: { status: 'content_paused' },
+      });
+    } else if (currentStatus === 'scraping') {
+      updateProjectMutation.mutate({
+        id: activeProject.id,
+        updates: { status: 'paused' },
+      });
+    }
+  }, [activeProject, updateProjectMutation]);
+
+  const resumeProcess = useCallback(() => {
+    if (!activeProject) return;
+    const currentStatus = activeProject.status;
+    if (currentStatus === 'content_paused') {
+      updateProjectMutation.mutate({
+        id: activeProject.id,
+        updates: { status: 'content_scraping' },
+      });
+    } else if (currentStatus === 'paused') {
+      updateProjectMutation.mutate({
+        id: activeProject.id,
+        updates: { status: 'scraping' },
+      });
+    }
   }, [activeProject, updateProjectMutation]);
 
   const exportProject = useCallback(() => {
@@ -373,17 +405,24 @@ export default function Home() {
 
   const progressPercent = useMemo(() => {
     if (!activeProject) return 0;
-    if (activeProject.status === 'scraping') {
+    if (activeProject.status === 'scraping' || activeProject.status === 'paused') {
       const total = (activeProject.processed?.length || 0) + (activeProject.queue?.length || 0);
       return total === 0 ? 0 : Math.min(100, Math.round(((activeProject.processed?.length || 0) / total) * 100));
     }
-    if (activeProject.status === 'content_scraping') {
+    if (activeProject.status === 'content_scraping' || activeProject.status === 'content_paused') {
       const scraped = (activeProject.results || []).filter(r => r.scrapedData).length;
       const total = (activeProject.results || []).length;
       return total === 0 ? 0 : Math.min(100, Math.round((scraped / total) * 100));
     }
     return 0;
   }, [activeProject]);
+
+  const isProcessing = activeProject?.status === 'scraping' || activeProject?.status === 'content_scraping';
+  const isPaused = activeProject?.status === 'paused' || activeProject?.status === 'content_paused';
+  const hasActiveProcess = isProcessing || isPaused;
+  const remainingUrls = activeProject?.queue?.length || 0;
+  const scrapedCount = (activeProject?.results || []).filter(r => r.scrapedData).length;
+  const pendingContentScrape = (activeProject?.results || []).filter(r => !r.scrapedData).length;
 
   if (langLoading || isLoading) {
     return (
@@ -568,12 +607,7 @@ export default function Home() {
                     {t('exportJson')}
                   </Button>
 
-                  {activeProject?.status !== 'idle' ? (
-                    <Button onClick={stopProcess} variant="secondary" size="sm" className="gap-2" data-testid="stop-button">
-                      <Square className="w-4 h-4" />
-                      {t('stopProcess')}
-                    </Button>
-                  ) : (
+                  {activeProject?.status === 'idle' && (
                     <Button 
                       size="sm"
                       onClick={() => {
@@ -597,24 +631,96 @@ export default function Home() {
                 </div>
               </div>
 
-              {activeProject?.status !== 'idle' && (
-                <div className="bg-primary/10 border border-primary/20 rounded-xl p-4">
+              {hasActiveProcess && (
+                <div className={`border rounded-xl p-4 ${isPaused ? 'bg-amber-500/10 border-amber-500/20' : 'bg-primary/10 border-primary/20'}`}>
                   <div className="flex items-center gap-4">
-                    <Loader2 className="w-5 h-5 animate-spin text-primary shrink-0" />
+                    <div className="flex items-center gap-2 shrink-0">
+                      {isPaused ? (
+                        <>
+                          <Button
+                            size="icon"
+                            variant="outline"
+                            onClick={resumeProcess}
+                            className="h-9 w-9 bg-emerald-500/20 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/30"
+                            data-testid="resume-button"
+                          >
+                            <Play className="w-4 h-4" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="outline"
+                            onClick={stopProcess}
+                            className="h-9 w-9 bg-destructive/20 border-destructive/40 text-destructive hover:bg-destructive/30"
+                            data-testid="cancel-button"
+                          >
+                            <X className="w-4 h-4" />
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <Loader2 className="w-5 h-5 animate-spin text-primary" />
+                          <Button
+                            size="icon"
+                            variant="outline"
+                            onClick={pauseProcess}
+                            className="h-9 w-9 bg-amber-500/20 border-amber-500/40 text-amber-400 hover:bg-amber-500/30"
+                            data-testid="pause-button"
+                          >
+                            <Pause className="w-4 h-4" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="outline"
+                            onClick={stopProcess}
+                            className="h-9 w-9 bg-destructive/20 border-destructive/40 text-destructive hover:bg-destructive/30"
+                            data-testid="stop-process-button"
+                          >
+                            <Square className="w-4 h-4" />
+                          </Button>
+                        </>
+                      )}
+                    </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex justify-between items-center mb-2">
-                        <p className="text-sm font-medium text-foreground">
-                          {activeProject.status === 'scraping' ? t('parallelAnalysis') : t('deepExtraction')}
-                        </p>
-                        <p className="text-xs text-muted-foreground">{progressPercent}%</p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-medium text-foreground">
+                            {(activeProject?.status === 'scraping' || activeProject?.status === 'paused') 
+                              ? t('parallelAnalysis') 
+                              : t('deepExtraction')}
+                          </p>
+                          {isPaused && (
+                            <span className="badge-yellow text-[10px]">{t('paused')}</span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                          <span>{t('remainingPages')}: {remainingUrls}</span>
+                          <span>{progressPercent}%</span>
+                        </div>
                       </div>
-                      <div className="w-full bg-secondary h-1.5 rounded-full overflow-hidden">
+                      <div className="w-full bg-secondary h-2 rounded-full overflow-hidden">
                         <div 
-                          className="bg-primary h-full transition-all duration-500" 
+                          className={`h-full transition-all duration-500 ${isPaused ? 'bg-amber-500' : 'bg-primary'}`}
                           style={{ width: `${progressPercent}%` }}
                         />
                       </div>
                     </div>
+                  </div>
+                </div>
+              )}
+
+              {!hasActiveProcess && activeProject?.status === 'idle' && pendingContentScrape > 0 && (
+                <div className="bg-card border border-border rounded-xl p-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-foreground">{t('deepExtraction')}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {pendingContentScrape} {t('pending')} | {scrapedCount} {t('sequentialDataReady')}
+                      </p>
+                    </div>
+                    <Button onClick={startContentScrape} className="gap-2" data-testid="start-extraction-button">
+                      <Play className="w-4 h-4" />
+                      {t('startExtraction')}
+                    </Button>
                   </div>
                 </div>
               )}

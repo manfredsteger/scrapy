@@ -2,6 +2,11 @@ import { useState, useMemo } from 'react';
 import { ExternalLink, CheckCircle, Clock, Search, Eye, ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import ContentPreview from './ContentPreview';
 import type { SitemapUrlEntry } from '@shared/schema';
 
@@ -127,13 +132,13 @@ export default function UrlList({ urls, t }: UrlListProps) {
       </div>
 
       <div className="flex-1 overflow-auto">
-        <table className="data-table">
+        <table className="data-table w-full table-fixed">
           <thead className="sticky top-0 bg-card z-10">
             <tr>
-              <th className="w-1/2">{t('targetPath')}</th>
-              <th className="w-32">Datum</th>
-              <th className="w-24">{t('status')}</th>
-              <th className="w-24 text-right">{t('action')}</th>
+              <th className="text-left" style={{ width: '55%' }}>{t('targetPath')}</th>
+              <th className="text-left" style={{ width: '15%' }}>Datum</th>
+              <th className="text-left" style={{ width: '15%' }}>{t('status')}</th>
+              <th className="text-right" style={{ width: '15%' }}>{t('action')}</th>
             </tr>
           </thead>
           <tbody>
@@ -143,20 +148,48 @@ export default function UrlList({ urls, t }: UrlListProps) {
                 displayPath = new URL(url.loc).pathname || '/';
               } catch {}
               
+              // Truncate long paths for display
+              const maxLength = 50;
+              const truncatedPath = displayPath.length > maxLength 
+                ? displayPath.slice(0, maxLength) + '...' 
+                : displayPath;
+              const needsTruncation = displayPath.length > maxLength;
+              
               return (
                 <tr key={idx} data-testid={`url-row-${idx}`}>
-                  <td>
+                  <td className="overflow-hidden">
                     <div className="flex items-center gap-2 min-w-0">
-                      <span className="text-sm font-medium text-foreground truncate" title={url.loc}>
-                        {displayPath}
-                      </span>
+                      {needsTruncation ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span 
+                              className="text-sm font-medium text-foreground cursor-help truncate block max-w-full"
+                              data-testid={`text-url-truncated-${idx}`}
+                            >
+                              {truncatedPath}
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent side="top" className="max-w-md break-all" data-testid={`text-url-full-${idx}`}>
+                            <p className="text-xs">{displayPath}</p>
+                            <p className="text-[10px] text-muted-foreground mt-1">{url.loc}</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      ) : (
+                        <span 
+                          className="text-sm font-medium text-foreground truncate block max-w-full" 
+                          title={url.loc}
+                          data-testid={`text-url-${idx}`}
+                        >
+                          {displayPath}
+                        </span>
+                      )}
                     </div>
                   </td>
                   <td>
                     {url.lastmod ? (
                       <span className="text-xs text-muted-foreground flex items-center gap-1">
-                        <Clock className="w-3 h-3" />
-                        {new Date(url.lastmod).toLocaleDateString('de-DE')}
+                        <Clock className="w-3 h-3 shrink-0" />
+                        <span className="whitespace-nowrap">{new Date(url.lastmod).toLocaleDateString('de-DE')}</span>
                       </span>
                     ) : (
                       <span className="text-xs text-muted-foreground">-</span>
@@ -164,12 +197,12 @@ export default function UrlList({ urls, t }: UrlListProps) {
                   </td>
                   <td>
                     {url.scrapedData ? (
-                      <span className="badge-green">
-                        <CheckCircle className="w-3 h-3" />
+                      <span className="badge-green whitespace-nowrap">
+                        <CheckCircle className="w-3 h-3 shrink-0" />
                         Scraped
                       </span>
                     ) : (
-                      <span className="badge-gray">Pending</span>
+                      <span className="badge-gray whitespace-nowrap">Pending</span>
                     )}
                   </td>
                   <td className="text-right">
@@ -178,7 +211,6 @@ export default function UrlList({ urls, t }: UrlListProps) {
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-8 w-8"
                           onClick={() => setPreviewEntry(url)}
                           data-testid={`view-content-${idx}`}
                         >
@@ -186,7 +218,7 @@ export default function UrlList({ urls, t }: UrlListProps) {
                         </Button>
                       )}
                       <a href={url.loc} target="_blank" rel="noopener noreferrer">
-                        <Button variant="ghost" size="icon" className="h-8 w-8" data-testid={`external-link-${idx}`}>
+                        <Button variant="ghost" size="icon" data-testid={`external-link-${idx}`}>
                           <ExternalLink className="w-4 h-4" />
                         </Button>
                       </a>

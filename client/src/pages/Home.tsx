@@ -5,6 +5,7 @@ import {
   Trash2, ScanText, Globe, ArrowLeft, Plus, RefreshCw, Pause, X
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import {
@@ -632,25 +633,22 @@ export default function Home() {
               </div>
 
               {hasActiveProcess && (
-                <div className={`border rounded-xl p-4 ${isPaused ? 'bg-amber-500/10 border-amber-500/20' : 'bg-primary/10 border-primary/20'}`}>
+                <div className={`border rounded-xl p-4 ${isPaused ? 'bg-muted border-border' : 'bg-primary/10 border-primary/20'}`}>
                   <div className="flex items-center gap-4">
                     <div className="flex items-center gap-2 shrink-0">
                       {isPaused ? (
                         <>
                           <Button
                             size="icon"
-                            variant="outline"
                             onClick={resumeProcess}
-                            className="h-9 w-9 bg-emerald-500/20 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/30"
                             data-testid="resume-button"
                           >
                             <Play className="w-4 h-4" />
                           </Button>
                           <Button
                             size="icon"
-                            variant="outline"
+                            variant="destructive"
                             onClick={stopProcess}
-                            className="h-9 w-9 bg-destructive/20 border-destructive/40 text-destructive hover:bg-destructive/30"
                             data-testid="cancel-button"
                           >
                             <X className="w-4 h-4" />
@@ -663,16 +661,14 @@ export default function Home() {
                             size="icon"
                             variant="outline"
                             onClick={pauseProcess}
-                            className="h-9 w-9 bg-amber-500/20 border-amber-500/40 text-amber-400 hover:bg-amber-500/30"
                             data-testid="pause-button"
                           >
                             <Pause className="w-4 h-4" />
                           </Button>
                           <Button
                             size="icon"
-                            variant="outline"
+                            variant="destructive"
                             onClick={stopProcess}
-                            className="h-9 w-9 bg-destructive/20 border-destructive/40 text-destructive hover:bg-destructive/30"
                             data-testid="stop-process-button"
                           >
                             <Square className="w-4 h-4" />
@@ -689,7 +685,7 @@ export default function Home() {
                               : t('deepExtraction')}
                           </p>
                           {isPaused && (
-                            <span className="badge-yellow text-[10px]">{t('paused')}</span>
+                            <Badge variant="secondary" className="text-[10px]">{t('paused')}</Badge>
                           )}
                         </div>
                         <div className="flex items-center gap-3 text-xs text-muted-foreground">
@@ -699,7 +695,7 @@ export default function Home() {
                       </div>
                       <div className="w-full bg-secondary h-2 rounded-full overflow-hidden">
                         <div 
-                          className={`h-full transition-all duration-500 ${isPaused ? 'bg-amber-500' : 'bg-primary'}`}
+                          className={`h-full transition-all duration-500 ${isPaused ? 'bg-muted-foreground' : 'bg-primary'}`}
                           style={{ width: `${progressPercent}%` }}
                         />
                       </div>

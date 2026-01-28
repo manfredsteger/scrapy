@@ -197,8 +197,35 @@ function scrapePageContent(html: string, url: string): any {
         orderedElements.push({ type: 'table', children: rows });
       }
     } else if (tag === 'img') {
-      const src = el.getAttribute('src') || el.getAttribute('data-src');
-      if (src) {
+      // Try multiple attributes for lazy-loaded images
+      let src = el.getAttribute('src');
+      
+      // Skip data URIs and placeholder images
+      const isDataUri = src?.startsWith('data:');
+      const isPlaceholder = src?.includes('placeholder') || src?.includes('blank') || src?.includes('1x1');
+      
+      if (!src || isDataUri || isPlaceholder) {
+        // Check alternative attributes for lazy-loaded images
+        src = el.getAttribute('data-src') 
+          || el.getAttribute('data-lazy-src')
+          || el.getAttribute('data-original')
+          || el.getAttribute('data-lazy')
+          || el.getAttribute('data-image');
+      }
+      
+      // Try srcset as fallback
+      if (!src) {
+        const srcset = el.getAttribute('srcset') || el.getAttribute('data-srcset');
+        if (srcset) {
+          // Get the first URL from srcset
+          const firstUrl = srcset.split(',')[0]?.trim().split(' ')[0];
+          if (firstUrl && !firstUrl.startsWith('data:')) {
+            src = firstUrl;
+          }
+        }
+      }
+      
+      if (src && !src.startsWith('data:')) {
         try {
           const absolute = new URL(src, url).href;
           orderedElements.push({ 

@@ -220,5 +220,5 @@ make help       # Alle Befehle anzeigen
 git clone <repo-url>
 cd mapscraper-pro
 make dev
-# Anwendung läuft auf http://localhost:5000
+# Anwendung läuft auf http://localhost:3333
 ```

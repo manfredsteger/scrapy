@@ -71,7 +71,7 @@ cd mapscraper-pro
 make dev
 ```
 
-Das war's! 🎉 Die Anwendung ist jetzt unter **http://localhost:5000** erreichbar.
+Das war's! 🎉 Die Anwendung ist jetzt unter **http://localhost:3333** erreichbar.
 
 ### 📋 Alle Make-Befehle
 
@@ -146,7 +146,7 @@ npm run db:push
 npm run dev
 ```
 
-Die Anwendung läuft auf **http://localhost:5000** 🎉
+Die Anwendung läuft auf **http://localhost:5000** (oder **http://localhost:3333** bei Docker) 🎉
 
 ---
 

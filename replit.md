@@ -1,12 +1,19 @@
 # MapScraper Pro
 
-## Overview
+## Überblick
 
-MapScraper Pro is an enterprise-grade web content crawler and sitemap scraper built with a React frontend and Express backend. The application discovers sitemaps from websites, extracts URLs, and performs deep content scraping to capture structured DOM data including text, images, and videos. It supports multi-language interfaces (German/English) and provides project-based organization for managing multiple scraping jobs.
+MapScraper Pro ist ein professioneller Web-Scraper mit RAG Pack Generation für AI/LLM-Workflows. Die Anwendung entdeckt Sitemaps von Websites, extrahiert URLs und führt tiefes Content-Scraping durch, um strukturierte DOM-Daten zu erfassen - einschließlich Text, Bilder und Videos. Die Benutzeroberfläche unterstützt Deutsch und Englisch.
 
-## User Preferences
+### Hauptfunktionen
+- **Projekt-basiertes Scraping** - Verwaltung mehrerer Scraping-Projekte
+- **Einzelseiten-Scraping** - Schnelles Scrapen einzelner URLs mit vollständiger RAG-Verarbeitung
+- **RAG Pack Generation** - Token-basiertes Chunking, Deduplizierung, AI-Anreicherung
+- **Multi-Format Export** - JSON, CSV, Parquet, Inkrementell
+- **Dark/Light Mode** - Modernes UI-Design
 
-Preferred communication style: Simple, everyday language.
+## Benutzer-Präferenzen
+
+Bevorzugte Kommunikation: Einfache, alltägliche Sprache (Deutsch).
 
 ## System Architecture
 
@@ -95,13 +102,37 @@ The ZIP export includes:
 - **Parquet**: Columnar format via parquetjs-lite for large datasets
 - **Incremental**: Only new/changed chunks since last export
 
-### API Endpoints
-- `POST /api/projects/:id/chunks` - Generate chunks from scraped content
-- `GET /api/projects/:id/chunks/stream` - SSE endpoint for real-time progress
-- `GET /api/projects/:id/rag-pack` - Download RAG Pack as ZIP file
-- `GET /api/projects/:id/export/csv` - Download as CSV
-- `GET /api/projects/:id/export/parquet` - Download as Parquet
-- `GET /api/projects/:id/export/incremental` - Get only changed chunks
+### API Endpoints - Projekte
+- `POST /api/projects/:id/chunks` - Chunks aus gescraptem Inhalt generieren
+- `GET /api/projects/:id/chunks/stream` - SSE-Endpunkt für Echtzeit-Fortschritt
+- `GET /api/projects/:id/rag-pack` - RAG Pack als ZIP herunterladen
+- `GET /api/projects/:id/export/csv` - Als CSV exportieren
+- `GET /api/projects/:id/export/parquet` - Als Parquet exportieren
+- `GET /api/projects/:id/export/incremental` - Nur geänderte Chunks
+
+## Einzelseiten-Scraping
+
+Ermöglicht schnelles Scrapen einzelner URLs mit vollständiger RAG-Verarbeitung:
+
+### Funktionsumfang
+- Automatische Inhaltsextraktion (Text, Bilder, Videos)
+- Vollständige Chunk-Generierung während des Scrapens
+- Deduplizierung und Qualitätsprüfung
+- RAG Pack Export für einzelne Seiten
+
+### API Endpoints - Einzelseiten
+- `GET /api/single-pages` - Alle Einzelseiten abrufen
+- `POST /api/single-pages` - Neue Seite scrapen
+- `GET /api/single-pages/:id` - Einzelseite abrufen
+- `DELETE /api/single-pages/:id` - Einzelseite löschen
+- `GET /api/single-pages/:id/rag-pack` - RAG Pack für Einzelseite
+
+### Status-Progression
+Während des Scrapens durchläuft eine Einzelseite folgende Status:
+1. `pending` - Warten auf Verarbeitung
+2. `scraping` - Inhalt wird extrahiert
+3. `chunking` - Chunks werden generiert
+4. `completed` - Fertig (oder `error` bei Fehlern)
 
 ## Advanced Scraping Features
 
@@ -150,27 +181,44 @@ The ZIP export includes:
 
 ## Docker Setup (Lokale Entwicklung)
 
-Die Anwendung kann vollständig offline mit Docker betrieben werden:
+Die Anwendung kann vollständig offline mit Docker betrieben werden.
+Detaillierte Anleitung: Siehe `README.md` für vollständige Docker-Dokumentation.
 
 ### Dateien
 - `Dockerfile` - Multi-Architektur Image (AMD64, ARM64, ARMv7)
 - `docker-compose.yml` - Entwicklungsumgebung
 - `docker-compose.prod.yml` - Produktions-Overrides
-- `Makefile` - Entwickler-Befehle
-- `DOCKER-README.md` - Ausführliche Dokumentation
+- `Makefile` - Entwickler-Befehle (verwendet Tabs, nicht Spaces!)
+- `docker/init-db.sql` - Datenbank-Initialisierung
+- `README.md` - Ausführliche Dokumentation mit Emojis
 
 ### Wichtige Make-Befehle
 ```bash
 make dev        # Startet Entwicklungsumgebung
 make start      # Startet im Hintergrund
 make stop       # Stoppt Container
-make reset      # Kompletter Neustart (löscht alles)
-make db-reset   # Nur Datenbank zurücksetzen
+make restart    # Neustart aller Container
 make logs       # Live-Logs anzeigen
+make db-reset   # Datenbank zurücksetzen
+make db-backup  # Datenbank-Backup erstellen
+make db-shell   # PostgreSQL Shell öffnen
+make status     # Container-Status anzeigen
+make health     # Service-Gesundheit prüfen
+make clean      # Docker-Ressourcen bereinigen
+make reset      # Kompletter Neustart (löscht alles)
+make prod       # Produktionsumgebung starten
 make help       # Alle Befehle anzeigen
 ```
 
 ### Architektur-Support
-- linux/amd64 (Intel/AMD)
-- linux/arm64 (Apple Silicon, Raspberry Pi 4+)
-- linux/arm/v7 (Raspberry Pi 3, ältere ARM)
+- linux/amd64 (Intel/AMD Server)
+- linux/arm64 (Apple Silicon M1/M2/M3, Raspberry Pi 4+)
+- linux/arm/v7 (Raspberry Pi 3, ältere ARM-Geräte)
+
+### Schnellstart
+```bash
+git clone <repo-url>
+cd mapscraper-pro
+make dev
+# Anwendung läuft auf http://localhost:5000
+```

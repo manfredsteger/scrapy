@@ -135,16 +135,72 @@ export const api = {
     fetchContent: {
       method: 'POST' as const,
       path: '/api/scrape/content',
-      input: z.object({ urls: z.array(z.string()) }),
+      input: z.object({ 
+        urls: z.array(z.string()),
+        projectId: z.number().optional(),
+      }),
       responses: {
         200: z.object({
           results: z.array(z.object({
             url: z.string(),
             data: z.any().nullable(),
             error: z.string().nullable(),
+            usedProxy: z.string().optional(),
           })),
+          rateLimitState: z.object({
+            currentDelay: z.number(),
+            baseDelay: z.number(),
+            maxDelay: z.number(),
+            backoffMultiplier: z.number(),
+            consecutiveErrors: z.number(),
+            lastRequestTime: z.number().optional(),
+          }).optional(),
+          proxyInfo: z.object({
+            enabled: z.boolean(),
+            totalProxies: z.number(),
+            availableProxies: z.number(),
+          }).optional(),
         }),
         400: errorSchemas.validation,
+      },
+    },
+  },
+  export: {
+    csv: {
+      method: 'GET' as const,
+      path: '/api/projects/:id/export/csv',
+      responses: {
+        200: z.string(),
+        400: errorSchemas.validation,
+        404: errorSchemas.notFound,
+      },
+    },
+    parquet: {
+      method: 'GET' as const,
+      path: '/api/projects/:id/export/parquet',
+      responses: {
+        200: z.any(),
+        400: errorSchemas.validation,
+        404: errorSchemas.notFound,
+      },
+    },
+    incremental: {
+      method: 'GET' as const,
+      path: '/api/projects/:id/export/incremental',
+      responses: {
+        200: z.object({
+          newChunks: z.array(z.any()),
+          updatedChunks: z.array(z.any()),
+          deletedChunkIds: z.array(z.string()),
+          exportedAt: z.string(),
+          stats: z.object({
+            totalNew: z.number(),
+            totalUpdated: z.number(),
+            totalDeleted: z.number(),
+          }),
+        }),
+        400: errorSchemas.validation,
+        404: errorSchemas.notFound,
       },
     },
   },
@@ -163,3 +219,4 @@ export function buildUrl(path: string, params?: Record<string, string | number>)
 }
 
 export type ProjectResponse = z.infer<typeof projectResponseSchema>;
+export type IncrementalUpdateResponse = z.infer<typeof incrementalUpdateResponseSchema>;

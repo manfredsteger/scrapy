@@ -15,6 +15,13 @@ interface ChunkingProgressProps {
 
 type ProgressStatus = 'idle' | 'processing' | 'completed' | 'error' | 'cancelled';
 
+interface EmbeddingsProgress {
+  processed: number;
+  total: number;
+  successful: number;
+  failed: number;
+}
+
 interface ProgressData {
   status: ProgressStatus;
   current: number;
@@ -22,6 +29,9 @@ interface ProgressData {
   chunksGenerated: number;
   currentUrl?: string;
   error?: string;
+  phase?: 'chunking' | 'deduplication' | 'embeddings';
+  embeddingsProgress?: EmbeddingsProgress;
+  warningMessage?: string;
 }
 
 export default function ChunkingProgress({ 
@@ -59,6 +69,13 @@ export default function ChunkingProgress({
               total: data.total,
               chunksGenerated: data.chunksGenerated,
               currentUrl: data.currentUrl,
+              phase: data.phase || 'chunking',
+              embeddingsProgress: data.embeddingsProgress,
+            }));
+          } else if (data.type === 'warning') {
+            setProgress(prev => ({
+              ...prev,
+              warningMessage: data.message,
             }));
           } else if (data.type === 'complete') {
             setProgress(prev => ({
@@ -169,6 +186,16 @@ export default function ChunkingProgress({
       case 'idle':
         return 'Starte Verarbeitung...';
       case 'processing':
+        if (progress.phase === 'embeddings') {
+          const ep = progress.embeddingsProgress;
+          if (ep) {
+            return `Generiere Embeddings (${ep.processed}/${ep.total})`;
+          }
+          return 'Generiere Embeddings...';
+        }
+        if (progress.phase === 'deduplication') {
+          return 'Dedupliziere Chunks...';
+        }
         return `Verarbeite Seite ${progress.current} von ${progress.total}`;
       case 'completed':
         return `Fertig! ${progress.chunksGenerated} Chunks generiert`;
@@ -213,6 +240,12 @@ export default function ChunkingProgress({
             </div>
           )}
 
+          {progress.warningMessage && (
+            <div className="text-xs bg-amber-500/10 text-amber-600 dark:text-amber-400 p-2 rounded border border-amber-500/20">
+              {progress.warningMessage}
+            </div>
+          )}
+
           <div className="bg-secondary rounded-lg p-4">
             <div className="grid grid-cols-2 gap-4 text-center">
               <div>
@@ -224,6 +257,18 @@ export default function ChunkingProgress({
                 <p className="text-xs text-muted-foreground">Seiten verarbeitet</p>
               </div>
             </div>
+            {progress.phase === 'embeddings' && progress.embeddingsProgress && (
+              <div className="grid grid-cols-2 gap-4 text-center mt-4 pt-4 border-t border-border">
+                <div>
+                  <p className="text-xl font-bold text-emerald-500">{progress.embeddingsProgress.successful}</p>
+                  <p className="text-xs text-muted-foreground">Embeddings erfolgreich</p>
+                </div>
+                <div>
+                  <p className="text-xl font-bold text-destructive">{progress.embeddingsProgress.failed}</p>
+                  <p className="text-xs text-muted-foreground">Embeddings fehlgeschlagen</p>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="flex justify-end gap-2">

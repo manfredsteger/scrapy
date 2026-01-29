@@ -35,6 +35,16 @@ export const scrapedElementSchema = z.object({
   level: z.number().optional(),
 });
 
+// Structured data extracted from pages (JSON-LD, Schema.org) - defined here before use
+export const structuredDataSchema = z.object({
+  jsonLd: z.array(z.any()).optional(),
+  schemaOrg: z.array(z.any()).optional(),
+  openGraph: z.record(z.string()).optional(),
+  twitterCard: z.record(z.string()).optional(),
+});
+
+export type StructuredData = z.infer<typeof structuredDataSchema>;
+
 // Scraped page content with DOM structure preserved
 export const scrapedDataSchema = z.object({
   title: z.string(),
@@ -42,6 +52,7 @@ export const scrapedDataSchema = z.object({
   timestamp: z.string(),
   wordCount: z.number(),
   rawHtml: z.string().optional(),
+  structuredData: structuredDataSchema.optional(),
 });
 
 // Sitemap URL entry
@@ -74,6 +85,10 @@ export const scrapingStatsSchema = z.object({
   scrapedPages: z.number().optional(),
 });
 
+// Exported chunk hash tracking for incremental updates
+export const exportedChunkHashSchema = z.record(z.string(), z.string());
+export type ExportedChunkHashes = z.infer<typeof exportedChunkHashSchema>;
+
 // Database table for projects
 export const projects = pgTable("projects", {
   id: serial("id").primaryKey(),
@@ -88,6 +103,8 @@ export const projects = pgTable("projects", {
   stats: jsonb("stats").$type<z.infer<typeof scrapingStatsSchema>>(),
   projectSettings: jsonb("project_settings").$type<z.infer<typeof projectSettingsSchema>>(),
   chunks: jsonb("chunks").$type<z.infer<typeof ragChunkSchema>[]>().default([]),
+  lastExportedAt: timestamp("last_exported_at"),
+  exportedChunkHashes: jsonb("exported_chunk_hashes").$type<z.infer<typeof exportedChunkHashSchema>>().default({}),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -210,16 +227,6 @@ export const projectSettingsSchema = z.object({
 }).default({});
 
 export type ProjectSettings = z.infer<typeof projectSettingsSchema>;
-
-// Structured data extracted from pages (JSON-LD, Schema.org)
-export const structuredDataSchema = z.object({
-  jsonLd: z.array(z.any()).optional(),
-  schemaOrg: z.array(z.any()).optional(),
-  openGraph: z.record(z.string()).optional(),
-  twitterCard: z.record(z.string()).optional(),
-});
-
-export type StructuredData = z.infer<typeof structuredDataSchema>;
 
 // Table chunk metadata
 export const tableChunkSchema = z.object({

@@ -650,10 +650,79 @@ export default function Home() {
                     {t('settings')}
                   </Button>
 
-                  <Button variant="outline" size="sm" onClick={exportProject} className="gap-2" data-testid="export-button">
-                    <Download className="w-4 h-4" />
-                    {t('exportJson')}
-                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="outline" size="sm" className="gap-2" data-testid="export-button">
+                        <Download className="w-4 h-4" />
+                        {t('exportJson')}
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-48">
+                      <DropdownMenuItem onClick={exportProject} className="gap-2" data-testid="export-json">
+                        <Download className="w-4 h-4" />
+                        {t('exportJson')}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem 
+                        onClick={() => {
+                          if (!activeProject) return;
+                          const results = activeProject.results || [];
+                          const csvData = results.map(r => ({
+                            url: r.loc,
+                            lastmod: r.lastmod || '',
+                            title: r.scrapedData?.title || '',
+                            wordCount: r.scrapedData?.wordCount || 0,
+                            images: r.images?.length || 0,
+                          }));
+                          const headers = ['url', 'lastmod', 'title', 'wordCount', 'images'];
+                          const csv = [
+                            headers.join(','),
+                            ...csvData.map(row => headers.map(h => `"${String((row as any)[h]).replace(/"/g, '""')}"`).join(','))
+                          ].join('\n');
+                          const dataStr = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
+                          const a = document.createElement('a');
+                          a.href = dataStr;
+                          a.download = `${(activeProject.displayName || activeProject.domain).replace(/[^a-z0-9]/gi, '_')}-export.csv`;
+                          a.click();
+                        }} 
+                        className="gap-2" 
+                        data-testid="export-csv"
+                      >
+                        <Download className="w-4 h-4" />
+                        {t('exportCsv')}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem 
+                        onClick={() => {
+                          if (!activeProject) return;
+                          toast({ 
+                            title: t('exportParquet'), 
+                            description: 'Parquet export wird vom Server generiert...' 
+                          });
+                          window.open(`/api/projects/${activeProject.id}/export/parquet`, '_blank');
+                        }} 
+                        className="gap-2" 
+                        data-testid="export-parquet"
+                      >
+                        <Download className="w-4 h-4" />
+                        {t('exportParquet')}
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem 
+                        onClick={() => {
+                          if (!activeProject) return;
+                          toast({ 
+                            title: t('exportIncremental'), 
+                            description: 'Inkrementeller Export wird vorbereitet...' 
+                          });
+                          window.open(`/api/projects/${activeProject.id}/export/incremental`, '_blank');
+                        }} 
+                        className="gap-2" 
+                        data-testid="export-incremental"
+                      >
+                        <RefreshCw className="w-4 h-4" />
+                        {t('exportIncremental')}
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
 
                   {activeProject?.status === 'idle' && (
                     <Button 

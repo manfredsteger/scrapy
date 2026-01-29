@@ -100,13 +100,20 @@ export default function Home() {
     mutationFn: async (domain: string) => {
       setIsCreating(true);
       const discoverRes = await apiRequest('POST', '/api/scrape/discover', { domain });
-      const { sitemaps } = await discoverRes.json();
+      const discoverData = await discoverRes.json();
+      const { sitemaps, wikiJsPages, isWikiJs } = discoverData;
       
-      // If no sitemaps found, crawl the base URL to discover internal links
+      // If Wiki.js site detected, use the discovered pages directly
       let initialQueue = sitemaps;
       let useCrawlMode = false;
+      let isWikiJsSite = isWikiJs || false;
       
-      if (sitemaps.length === 0) {
+      if (isWikiJs && wikiJsPages && wikiJsPages.length > 0) {
+        // Wiki.js site - use all discovered pages directly
+        initialQueue = wikiJsPages;
+        useCrawlMode = false;
+        console.log(`[Wiki.js] Using ${wikiJsPages.length} discovered pages`);
+      } else if (sitemaps.length === 0) {
         // No sitemaps found - use crawl mode starting from base URL
         let baseUrl = domain.trim();
         if (!baseUrl.startsWith('http')) baseUrl = `https://${baseUrl}`;
@@ -124,25 +131,31 @@ export default function Home() {
         results: [],
         errors: [],
         stats: {
-          totalSitemaps: sitemaps.length,
+          totalSitemaps: isWikiJsSite ? 0 : sitemaps.length,
           processedSitemaps: 0,
-          totalUrls: useCrawlMode ? 1 : 0,
+          totalUrls: isWikiJsSite ? wikiJsPages?.length || 0 : (useCrawlMode ? 1 : 0),
           totalImages: 0,
           totalVideos: 0,
           startTime: Date.now(),
         },
       });
-      return project.json();
+      const projectData = await project.json();
+      return { ...projectData, isWikiJs: isWikiJsSite, wikiPageCount: wikiJsPages?.length || 0 };
     },
-    onSuccess: (project) => {
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
-      setActiveProjectId(project.id);
+      setActiveProjectId(result.id);
       setDomainInput('');
       setIsCreating(false);
       setShowNewProject(false);
       
-      // Show info toast if crawl mode was used
-      if (project.status === 'crawling') {
+      // Show info toast based on mode
+      if (result.isWikiJs) {
+        toast({ 
+          title: 'Wiki.js erkannt', 
+          description: `${result.wikiPageCount} Seiten gefunden und werden gescrapt.`,
+        });
+      } else if (result.status === 'crawling') {
         toast({ 
           title: t('noSitemapFound'), 
           description: t('crawlModeActive'),
@@ -182,13 +195,20 @@ export default function Home() {
       if (!domain.startsWith('http')) domain = `https://${domain}`;
       
       const discoverRes = await apiRequest('POST', '/api/scrape/discover', { domain });
-      const { sitemaps } = await discoverRes.json();
+      const discoverData = await discoverRes.json();
+      const { sitemaps, wikiJsPages, isWikiJs } = discoverData;
       
-      // If no sitemaps found, use crawl mode
+      // If Wiki.js site detected, use the discovered pages directly
       let initialQueue = sitemaps;
       let useCrawlMode = false;
+      let isWikiJsSite = isWikiJs || false;
       
-      if (sitemaps.length === 0) {
+      if (isWikiJs && wikiJsPages && wikiJsPages.length > 0) {
+        // Wiki.js site - use all discovered pages directly
+        initialQueue = wikiJsPages;
+        useCrawlMode = false;
+        console.log(`[Wiki.js] Resync: Using ${wikiJsPages.length} discovered pages`);
+      } else if (sitemaps.length === 0) {
         let baseUrl = domain.trim();
         if (!baseUrl.startsWith('http')) baseUrl = `https://${baseUrl}`;
         baseUrl = baseUrl.replace(/\/$/, '');
@@ -204,20 +224,30 @@ export default function Home() {
         results: [],
         errors: [],
         stats: {
-          totalSitemaps: sitemaps.length,
+          totalSitemaps: isWikiJsSite ? 0 : sitemaps.length,
           processedSitemaps: 0,
-          totalUrls: useCrawlMode ? 1 : 0,
+          totalUrls: isWikiJsSite ? wikiJsPages?.length || 0 : (useCrawlMode ? 1 : 0),
           totalImages: 0,
           totalVideos: 0,
           startTime: Date.now(),
         },
       });
-      return { project: await res.json(), useCrawlMode };
+      return { 
+        project: await res.json(), 
+        useCrawlMode, 
+        isWikiJs: isWikiJsSite, 
+        wikiPageCount: wikiJsPages?.length || 0 
+      };
     },
-    onSuccess: ({ useCrawlMode }) => {
+    onSuccess: ({ useCrawlMode, isWikiJs, wikiPageCount }) => {
       queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
       
-      if (useCrawlMode) {
+      if (isWikiJs) {
+        toast({ 
+          title: 'Wiki.js erkannt', 
+          description: `${wikiPageCount} Seiten gefunden und werden gescrapt.`,
+        });
+      } else if (useCrawlMode) {
         toast({ 
           title: t('noSitemapFound'), 
           description: t('crawlModeActive'),

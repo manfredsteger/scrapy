@@ -2433,6 +2433,105 @@ export async function registerRoutes(
     res.status(204).send();
   });
 
+  app.get("/api/single-pages/:id/rag-pack", async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ message: 'Invalid ID' });
+      }
+
+      const singlePage = await storage.getSinglePage(id);
+      if (!singlePage) {
+        return res.status(404).json({ message: 'Single page not found' });
+      }
+
+      const chunks = singlePage.chunks || [];
+      if (chunks.length === 0) {
+        return res.status(400).json({ message: 'No chunks available.' });
+      }
+
+      const zip = new JSZip();
+      const now = new Date().toISOString();
+      const docId = `doc_${sha256(singlePage.url).slice(0, 12)}`;
+
+      const documentObj = {
+        doc_id: docId,
+        title: singlePage.title || '',
+        url: singlePage.url,
+        domain: singlePage.domain,
+        language: 'de',
+        source: {
+          source_type: 'single_page',
+          source_url: singlePage.url,
+        },
+        dates: {
+          scraped: singlePage.createdAt || now,
+          ingested: now,
+        },
+        statistics: {
+          word_count: singlePage.wordCount || 0,
+          image_count: singlePage.imageCount || 0,
+          video_count: singlePage.videoCount || 0,
+          chunk_count: chunks.length,
+        },
+        hashes: {
+          content_sha256: sha256(JSON.stringify(singlePage.scrapedData?.orderedElements || [])),
+        },
+      };
+
+      const documentsJsonl = JSON.stringify(documentObj);
+      const chunksJsonl = chunks.map(chunk => {
+        const { embedding, ...chunkWithoutEmbedding } = chunk;
+        return JSON.stringify(chunkWithoutEmbedding);
+      }).join('\n');
+
+      const manifest = {
+        version: '1.0',
+        created_at: now,
+        source: {
+          url: singlePage.url,
+          domain: singlePage.domain,
+          type: 'single_page',
+        },
+        counts: {
+          documents: 1,
+          chunks: chunks.length,
+        },
+        checksums: {
+          documents_sha256: sha256(documentsJsonl),
+          chunks_sha256: sha256(chunksJsonl),
+        },
+      };
+
+      zip.file('manifest.json', JSON.stringify(manifest, null, 2));
+      zip.file('documents.jsonl', documentsJsonl);
+      zip.file('chunks.jsonl', chunksJsonl);
+
+      const schemaFolder = zip.folder('schema');
+      schemaFolder?.file('manifest.schema.json', JSON.stringify({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "version": { "type": "string" },
+          "created_at": { "type": "string", "format": "date-time" },
+        }
+      }, null, 2));
+
+      const content = await zip.generateAsync({ type: 'nodebuffer' });
+      const filename = `rag-pack-single-${singlePage.domain}-${singlePage.id}.zip`;
+
+      res.set({
+        'Content-Type': 'application/zip',
+        'Content-Disposition': `attachment; filename="${filename}"`,
+        'Content-Length': content.length,
+      });
+      res.send(content);
+    } catch (err) {
+      console.error('Error generating single page RAG pack:', err);
+      res.status(500).json({ message: (err as Error).message });
+    }
+  });
+
   app.post(api.scrape.discover.path, async (req, res) => {
     try {
       const input = api.scrape.discover.input.parse(req.body);

@@ -3,7 +3,7 @@ import { useQuery, useMutation } from '@tanstack/react-query';
 import { queryClient, apiRequest } from '@/lib/queryClient';
 import { 
   ArrowLeft, Download, FileText, Image as ImageIcon, Video, Layers,
-  Loader2, AlertCircle, ExternalLink, RefreshCw, Settings, MoreVertical, Trash2
+  Loader2, AlertCircle, ExternalLink, RefreshCw, Settings, MoreVertical, Trash2, Package
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -275,6 +275,14 @@ export default function SinglePageDetail() {
               <DropdownMenuItem onClick={reScrape} className="gap-2" data-testid="action-rescrape">
                 <RefreshCw className="w-4 h-4" />
                 {t('reScrape')}
+              </DropdownMenuItem>
+              <DropdownMenuItem 
+                onClick={() => window.open(`/api/single-pages/${id}/rag-pack`, '_blank')} 
+                className="gap-2" 
+                data-testid="action-save-ragpack"
+              >
+                <Package className="w-4 h-4" />
+                {t('exportRagPack')}
               </DropdownMenuItem>
               <DropdownMenuItem 
                 onClick={() => {

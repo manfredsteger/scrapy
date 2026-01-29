@@ -161,6 +161,65 @@ export default function Home() {
     },
   });
 
+  const resyncProjectMutation = useMutation({
+    mutationFn: async (project: Project) => {
+      // Re-discover sitemaps/URLs for the project
+      let domain = project.domain;
+      if (!domain.startsWith('http')) domain = `https://${domain}`;
+      
+      const discoverRes = await apiRequest('POST', '/api/scrape/discover', { domain });
+      const { sitemaps } = await discoverRes.json();
+      
+      // If no sitemaps found, use crawl mode
+      let initialQueue = sitemaps;
+      let useCrawlMode = false;
+      
+      if (sitemaps.length === 0) {
+        let baseUrl = domain.trim();
+        if (!baseUrl.startsWith('http')) baseUrl = `https://${baseUrl}`;
+        baseUrl = baseUrl.replace(/\/$/, '');
+        initialQueue = [baseUrl];
+        useCrawlMode = true;
+      }
+      
+      // Update project with new queue and reset stats
+      const res = await apiRequest('PUT', `/api/projects/${project.id}`, {
+        status: useCrawlMode ? 'crawling' : 'scraping',
+        queue: initialQueue,
+        processed: [],
+        results: [],
+        errors: [],
+        stats: {
+          totalSitemaps: sitemaps.length,
+          processedSitemaps: 0,
+          totalUrls: useCrawlMode ? 1 : 0,
+          totalImages: 0,
+          totalVideos: 0,
+          startTime: Date.now(),
+        },
+      });
+      return { project: await res.json(), useCrawlMode };
+    },
+    onSuccess: ({ useCrawlMode }) => {
+      queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
+      
+      if (useCrawlMode) {
+        toast({ 
+          title: t('noSitemapFound'), 
+          description: t('crawlModeActive'),
+        });
+      } else {
+        toast({ 
+          title: t('success'), 
+          description: t('resyncStarted') || 'Synchronisation gestartet',
+        });
+      }
+    },
+    onError: () => {
+      toast({ title: t('error'), description: t('initError'), variant: 'destructive' });
+    },
+  });
+
   const processStep = useCallback(async () => {
     if (processingRef.current) return;
     
@@ -964,21 +1023,16 @@ export default function Home() {
                   {activeProject?.status === 'idle' && (
                     <Button 
                       size="sm"
-                      onClick={() => {
-                        updateProjectMutation.mutate({
-                          id: activeProject!.id,
-                          updates: { 
-                            status: 'scraping', 
-                            processed: [],
-                            queue: activeProject?.queue || [],
-                            stats: { ...activeProject!.stats!, startTime: Date.now() }
-                          },
-                        });
-                      }}
+                      onClick={() => resyncProjectMutation.mutate(activeProject)}
+                      disabled={resyncProjectMutation.isPending}
                       className="gap-2"
                       data-testid="resync-button"
                     >
-                      <RefreshCw className="w-4 h-4" />
+                      {resyncProjectMutation.isPending ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <RefreshCw className="w-4 h-4" />
+                      )}
                       {t('fullResync')}
                     </Button>
                   )}

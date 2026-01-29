@@ -206,6 +206,11 @@ export const translations = {
     includeEmbeddingsInfo: 'Vektoreinbettungen im Export speichern',
     incrementalUpdates: 'Inkrementelle Updates',
     incrementalUpdatesInfo: 'Nur geänderte Chunks exportieren',
+    singleScrape: 'Einzelseite',
+    enterUrl: 'URL eingeben',
+    scrapeUrl: 'Seite scrapen',
+    singlePages: 'Einzelseiten',
+    noSinglePages: 'Keine Einzelseiten vorhanden',
   },
   en: {
     appTitle: 'MapScraper Pro',
@@ -412,6 +417,11 @@ export const translations = {
     includeEmbeddingsInfo: 'Store vector embeddings in export',
     incrementalUpdates: 'Incremental Updates',
     incrementalUpdatesInfo: 'Export only changed chunks',
+    singleScrape: 'Single Page',
+    enterUrl: 'Enter URL',
+    scrapeUrl: 'Scrape Page',
+    singlePages: 'Single Pages',
+    noSinglePages: 'No single pages',
   },
 } as const;
 

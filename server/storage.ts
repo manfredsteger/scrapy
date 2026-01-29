@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { projects, settings, type Project, type InsertProject, type Settings, type InsertSettings } from "@shared/schema";
+import { projects, settings, singlePages, type Project, type InsertProject, type Settings, type InsertSettings, type SinglePage, type InsertSinglePage } from "@shared/schema";
 import { eq, desc } from "drizzle-orm";
 
 export interface IStorage {
@@ -10,6 +10,11 @@ export interface IStorage {
   deleteProject(id: number): Promise<void>;
   getSetting(key: string): Promise<Settings | undefined>;
   setSetting(key: string, value: string): Promise<Settings>;
+  getSinglePages(): Promise<SinglePage[]>;
+  getSinglePage(id: number): Promise<SinglePage | undefined>;
+  createSinglePage(data: InsertSinglePage): Promise<SinglePage>;
+  updateSinglePage(id: number, data: Partial<SinglePage>): Promise<SinglePage | undefined>;
+  deleteSinglePage(id: number): Promise<boolean>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -58,6 +63,33 @@ export class DatabaseStorage implements IStorage {
     }
     const [created] = await db.insert(settings).values({ key, value }).returning();
     return created;
+  }
+
+  async getSinglePages(): Promise<SinglePage[]> {
+    return await db.select().from(singlePages).orderBy(desc(singlePages.createdAt));
+  }
+
+  async getSinglePage(id: number): Promise<SinglePage | undefined> {
+    const [singlePage] = await db.select().from(singlePages).where(eq(singlePages.id, id));
+    return singlePage;
+  }
+
+  async createSinglePage(data: InsertSinglePage): Promise<SinglePage> {
+    const [singlePage] = await db.insert(singlePages).values(data).returning();
+    return singlePage;
+  }
+
+  async updateSinglePage(id: number, data: Partial<SinglePage>): Promise<SinglePage | undefined> {
+    const [singlePage] = await db.update(singlePages)
+      .set(data)
+      .where(eq(singlePages.id, id))
+      .returning();
+    return singlePage;
+  }
+
+  async deleteSinglePage(id: number): Promise<boolean> {
+    const result = await db.delete(singlePages).where(eq(singlePages.id, id));
+    return true;
   }
 }
 

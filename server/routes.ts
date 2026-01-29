@@ -2177,6 +2177,86 @@ export async function registerRoutes(
     res.json(setting);
   });
 
+  // Single Page Scraping endpoints
+  app.get("/api/single-pages", async (req, res) => {
+    const singlePages = await storage.getSinglePages();
+    res.json(singlePages);
+  });
+
+  app.post("/api/single-pages", async (req, res) => {
+    try {
+      const { url } = req.body;
+      if (!url || typeof url !== 'string') {
+        return res.status(400).json({ message: 'URL is required' });
+      }
+
+      // Parse URL to get domain
+      let parsedUrl: URL;
+      try {
+        parsedUrl = new URL(url.startsWith('http') ? url : `https://${url}`);
+      } catch {
+        return res.status(400).json({ message: 'Invalid URL format' });
+      }
+
+      const domain = parsedUrl.hostname;
+
+      // Create the single page record with status "scraping"
+      const singlePage = await storage.createSinglePage({
+        url: parsedUrl.href,
+        domain,
+        status: 'scraping',
+      });
+
+      // Scrape the page content
+      try {
+        const response = await fetch(parsedUrl.href, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (compatible; SitemapScraper/1.0)',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          },
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const html = await response.text();
+        const scrapedResult = scrapePageContent(html, parsedUrl.href, true);
+
+        // Update with scraped data
+        const updatedPage = await storage.updateSinglePage(singlePage.id, {
+          title: scrapedResult.title,
+          scrapedData: scrapedResult,
+          structuredData: scrapedResult.structuredData,
+          wordCount: scrapedResult.wordCount,
+          status: 'completed',
+        });
+
+        res.status(201).json(updatedPage);
+      } catch (scrapeError) {
+        // Update with error status
+        const updatedPage = await storage.updateSinglePage(singlePage.id, {
+          status: 'error',
+          error: (scrapeError as Error).message,
+        });
+
+        res.status(201).json(updatedPage);
+      }
+    } catch (err) {
+      res.status(500).json({ message: (err as Error).message });
+    }
+  });
+
+  app.delete("/api/single-pages/:id", async (req, res) => {
+    const id = Number(req.params.id);
+    if (isNaN(id)) {
+      return res.status(400).json({ message: 'Invalid ID' });
+    }
+
+    const deleted = await storage.deleteSinglePage(id);
+    res.status(204).send();
+  });
+
   app.post(api.scrape.discover.path, async (req, res) => {
     try {
       const input = api.scrape.discover.input.parse(req.body);

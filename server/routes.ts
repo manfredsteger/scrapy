@@ -8,7 +8,7 @@ import { encode } from "gpt-tokenizer";
 import crypto from "crypto";
 import JSZip from "jszip";
 import { ProxyAgent, fetch as undiciFetch } from "undici";
-import type { RagChunk, ProjectSettings, ScrapedElement, SitemapUrlEntry, StructuredData, ChunkQuality, TableChunk, CodeBlock, RateLimitState, ProxyConfig } from "@shared/schema";
+import type { RagChunk, ProjectSettings, ScrapedElement, SitemapUrlEntry, StructuredData, ChunkQuality, TableChunk, CodeBlock, RateLimitState, ProxyConfig, ChunkStats } from "@shared/schema";
 
 const CONCURRENCY = 10;
 
@@ -2183,6 +2183,20 @@ export async function registerRoutes(
     res.json(singlePages);
   });
 
+  app.get("/api/single-pages/:id", async (req, res) => {
+    const id = Number(req.params.id);
+    if (isNaN(id)) {
+      return res.status(400).json({ message: 'Invalid ID' });
+    }
+
+    const singlePage = await storage.getSinglePage(id);
+    if (!singlePage) {
+      return res.status(404).json({ message: 'Single page not found' });
+    }
+
+    res.json(singlePage);
+  });
+
   app.post("/api/single-pages", async (req, res) => {
     try {
       const { url } = req.body;
@@ -2223,12 +2237,174 @@ export async function registerRoutes(
         const html = await response.text();
         const scrapedResult = scrapePageContent(html, parsedUrl.href, true);
 
-        // Update with scraped data
-        const updatedPage = await storage.updateSinglePage(singlePage.id, {
+        // Count images and videos from scraped data
+        const imageCount = scrapedResult.orderedElements?.filter((el: any) => el.type === 'media' && el.tag === 'img').length || 0;
+        const videoCount = scrapedResult.orderedElements?.filter((el: any) => el.type === 'media' && el.tag === 'video').length || 0;
+
+        // Update status to chunking
+        await storage.updateSinglePage(singlePage.id, {
           title: scrapedResult.title,
           scrapedData: scrapedResult,
           structuredData: scrapedResult.structuredData,
           wordCount: scrapedResult.wordCount,
+          imageCount,
+          videoCount,
+          status: 'chunking',
+        });
+
+        // Run RAG processing
+        const settings = getDefaultSettings();
+        const chunkingSettings = settings.chunking;
+
+        // Extract sections from scraped elements
+        const sections = extractTextFromElements(scrapedResult.orderedElements || [], {
+          preserveTables: chunkingSettings.preserveTables,
+          preserveCodeBlocks: chunkingSettings.preserveCodeBlocks,
+        });
+
+        // Run chunking
+        const chunkedSections = chunkText(
+          sections,
+          chunkingSettings.targetTokens,
+          chunkingSettings.overlapTokens,
+          chunkingSettings.minChunkTokens
+        );
+
+        // Create RAG chunks
+        const docId = `doc_${sha256(parsedUrl.href).slice(0, 12)}`;
+        const useMultiLang = chunkingSettings.multiLanguageTokenization ?? true;
+        const qualityChecksEnabled = chunkingSettings.qualityChecks?.enabled ?? true;
+
+        let allChunks: RagChunk[] = chunkedSections.map((chunk, index) => {
+          const chunkId = `${docId}::c${String(index).padStart(4, '0')}`;
+          const tokens = estimateTokens(chunk.text, useMultiLang);
+
+          let pathname = '/';
+          try {
+            pathname = new URL(parsedUrl.href).pathname || '/';
+          } catch {}
+
+          let quality: ChunkQuality | undefined;
+          if (qualityChecksEnabled) {
+            quality = calculateChunkQuality(chunk.text, {
+              minWordCount: chunkingSettings.qualityChecks?.minWordCount ?? 10,
+              targetTokens: chunkingSettings.targetTokens,
+              warnOnShortChunks: chunkingSettings.qualityChecks?.warnOnShortChunks ?? true,
+              warnOnNoContent: chunkingSettings.qualityChecks?.warnOnNoContent ?? true,
+            });
+          }
+
+          return {
+            chunk_id: chunkId,
+            doc_id: docId,
+            chunk_index: index,
+            text: chunk.text,
+            location: {
+              url: parsedUrl.href,
+              heading_path: chunkingSettings.preserveHeadingHierarchy ? chunk.headingPath.filter(Boolean) : undefined,
+            },
+            structure: {
+              section_path: chunk.headingPath.filter(Boolean).join(' > ') || null,
+              heading: chunk.heading,
+            },
+            language: 'de',
+            source: {
+              source_url: `https://${domain}`,
+            },
+            hashes: {
+              text_sha256: sha256(chunk.text),
+            },
+            tokens_estimate: tokens,
+            citation: `${scrapedResult.title || pathname}, ${chunk.heading || 'Inhalt'}`,
+            chunk_type: chunk.type,
+            table_data: chunk.tableData,
+            code_block: chunk.codeBlock,
+            quality,
+            content_hash: sha256(chunk.text),
+            created_at: new Date().toISOString(),
+          };
+        });
+
+        // Run deduplication
+        let deduplicationStats = { totalChunks: allChunks.length, exactDuplicates: 0, nearDuplicates: 0, uniqueChunks: allChunks.length };
+        if (chunkingSettings.deduplication?.enabled) {
+          const threshold = chunkingSettings.deduplication?.similarityThreshold ?? 0.95;
+          const result = deduplicateChunks(allChunks, threshold);
+          allChunks = result.chunks;
+          deduplicationStats = result.stats;
+        }
+
+        // Calculate chunk statistics
+        const textChunks = allChunks.filter(c => c.chunk_type === 'text' || !c.chunk_type).length;
+        const tableChunks = allChunks.filter(c => c.chunk_type === 'table').length;
+        const codeChunks = allChunks.filter(c => c.chunk_type === 'code').length;
+        const totalTokens = allChunks.reduce((sum, c) => sum + c.tokens_estimate, 0);
+
+        let chunkStats: ChunkStats = {
+          totalChunks: allChunks.length,
+          textChunks,
+          tableChunks,
+          codeChunks,
+          exactDuplicates: deduplicationStats.exactDuplicates,
+          nearDuplicates: deduplicationStats.nearDuplicates,
+          uniqueChunks: deduplicationStats.uniqueChunks,
+          totalTokens,
+          avgTokensPerChunk: allChunks.length > 0 ? Math.round(totalTokens / allChunks.length) : 0,
+        };
+
+        // Check for OPENAI_API_KEY and run AI features if available
+        const openaiApiKey = process.env.OPENAI_API_KEY;
+        if (openaiApiKey) {
+          // Generate embeddings
+          try {
+            const embeddingSettings = settings.ai.embeddings;
+            const embeddingResult = await generateEmbeddingsForChunks(
+              allChunks.filter(c => !c.is_duplicate),
+              { model: embeddingSettings.model, dimensions: embeddingSettings.dimensions },
+              openaiApiKey
+            );
+            
+            // Merge embeddings back into all chunks
+            const embeddedMap = new Map(embeddingResult.chunks.map(c => [c.chunk_id, c]));
+            allChunks = allChunks.map(c => embeddedMap.get(c.chunk_id) || c);
+            chunkStats.embeddingsGenerated = embeddingResult.stats.successful;
+          } catch (err) {
+            console.log(`[SinglePage] Embeddings failed: ${(err as Error).message}`);
+          }
+
+          // Run AI enrichment (keywords, summaries)
+          try {
+            const enrichmentSettings = {
+              extractKeywords: settings.ai.metadataEnrichment.extractKeywords,
+              generateSummary: settings.ai.metadataEnrichment.generateSummary,
+              detectCategory: false,
+              extractEntities: false,
+            };
+            
+            const enrichmentResult = await enrichChunkMetadata(
+              allChunks.filter(c => !c.is_duplicate),
+              enrichmentSettings,
+              settings.ai.model,
+              openaiApiKey
+            );
+            
+            // Merge enriched data back
+            const enrichedMap = new Map(enrichmentResult.chunks.map(c => [c.chunk_id, c]));
+            allChunks = allChunks.map(c => enrichedMap.get(c.chunk_id) || c);
+            
+            chunkStats.enrichmentStats = {
+              keywordsExtracted: enrichmentResult.stats.keywordsExtracted,
+              summariesGenerated: enrichmentResult.stats.summariesGenerated,
+            };
+          } catch (err) {
+            console.log(`[SinglePage] Enrichment failed: ${(err as Error).message}`);
+          }
+        }
+
+        // Update with final data
+        const updatedPage = await storage.updateSinglePage(singlePage.id, {
+          chunks: allChunks,
+          chunkStats,
           status: 'completed',
         });
 

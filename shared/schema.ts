@@ -324,6 +324,26 @@ export const rateLimitStateSchema = z.object({
 
 export type RateLimitState = z.infer<typeof rateLimitStateSchema>;
 
+// Chunk statistics schema
+export const chunkStatsSchema = z.object({
+  totalChunks: z.number(),
+  textChunks: z.number(),
+  tableChunks: z.number(),
+  codeChunks: z.number(),
+  exactDuplicates: z.number(),
+  nearDuplicates: z.number(),
+  uniqueChunks: z.number(),
+  totalTokens: z.number(),
+  avgTokensPerChunk: z.number(),
+  embeddingsGenerated: z.number().optional(),
+  enrichmentStats: z.object({
+    keywordsExtracted: z.number(),
+    summariesGenerated: z.number(),
+  }).optional(),
+});
+
+export type ChunkStats = z.infer<typeof chunkStatsSchema>;
+
 // Single page scraping table
 export const singlePages = pgTable("single_pages", {
   id: serial("id").primaryKey(),
@@ -333,7 +353,11 @@ export const singlePages = pgTable("single_pages", {
   scrapedData: jsonb("scraped_data").$type<ScrapedData>(),
   structuredData: jsonb("structured_data").$type<StructuredData>(),
   wordCount: integer("word_count").default(0),
-  status: text("status").notNull().default("pending"), // pending, scraping, completed, error
+  imageCount: integer("image_count").default(0),
+  videoCount: integer("video_count").default(0),
+  chunks: jsonb("chunks").$type<RagChunk[]>(),
+  chunkStats: jsonb("chunk_stats").$type<ChunkStats>(),
+  status: text("status").notNull().default("pending"), // pending, scraping, chunking, completed, error
   error: text("error"),
   createdAt: timestamp("created_at").defaultNow(),
 });

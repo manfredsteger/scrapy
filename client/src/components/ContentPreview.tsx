@@ -37,7 +37,52 @@ function elementToMarkdown(el: ScrapedElement): string {
   if (el.type === 'media') {
     return el.tag === 'img' ? `![](${el.src})\n\n` : `[Video](${el.src})\n\n`;
   }
+  if (el.type === 'table') {
+    const headers = (el as any).headers as string[] || [];
+    const rows = (el as any).rows as string[][] || el.children as string[][] || [];
+    let md = '';
+    if (headers.length > 0) {
+      md += '| ' + headers.join(' | ') + ' |\n';
+      md += '| ' + headers.map(() => '---').join(' | ') + ' |\n';
+    }
+    rows.forEach(row => {
+      if (Array.isArray(row)) {
+        md += '| ' + row.join(' | ') + ' |\n';
+      }
+    });
+    return md + '\n';
+  }
   return '';
+}
+
+async function copyToClipboard(text: string): Promise<boolean> {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Fallback
+    }
+  }
+  
+  // Fallback for HTTP contexts or when clipboard API fails
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  textarea.style.top = '-9999px';
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  
+  try {
+    document.execCommand('copy');
+    document.body.removeChild(textarea);
+    return true;
+  } catch {
+    document.body.removeChild(textarea);
+    return false;
+  }
 }
 
 function elementToHtml(el: ScrapedElement): string {
@@ -63,6 +108,26 @@ function elementToHtml(el: ScrapedElement): string {
     return el.tag === 'img' 
       ? `<img src="${el.src}" alt="${el.alt || ''}" />\n`
       : `<video src="${el.src}"></video>\n`;
+  }
+  if (el.type === 'table') {
+    const headers = (el as any).headers as string[] || [];
+    const rows = (el as any).rows as string[][] || el.children as string[][] || [];
+    let html = '<table>\n';
+    if (headers.length > 0) {
+      html += '  <thead>\n    <tr>\n';
+      headers.forEach(h => { html += `      <th>${h}</th>\n`; });
+      html += '    </tr>\n  </thead>\n';
+    }
+    html += '  <tbody>\n';
+    rows.forEach(row => {
+      if (Array.isArray(row)) {
+        html += '    <tr>\n';
+        row.forEach(cell => { html += `      <td>${cell}</td>\n`; });
+        html += '    </tr>\n';
+      }
+    });
+    html += '  </tbody>\n</table>\n';
+    return html;
   }
   return '';
 }
@@ -194,9 +259,11 @@ export default function ContentPreview({ entry, onClose, t }: ContentPreviewProp
       content += '</body>\n</html>';
     }
     
-    await navigator.clipboard.writeText(content);
-    setCopied(format);
-    setTimeout(() => setCopied(null), 2000);
+    const success = await copyToClipboard(content);
+    if (success) {
+      setCopied(format);
+      setTimeout(() => setCopied(null), 2000);
+    }
   };
   
   return (

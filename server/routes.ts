@@ -2038,20 +2038,66 @@ function scrapePageContent(html: string, url: string, extractStructuredDataFlag:
         });
       }
     } else if (tag === 'table') {
-      // Extract table with headers, rows, and caption separately
+      // Enhanced table extraction - handles complex tables with images and rich content
       const caption = el.querySelector('caption')?.textContent?.trim();
       const headers: string[] = [];
       const dataRows: string[][] = [];
+      const tableImages: { src: string; alt?: string; rowIndex: number; cellIndex: number }[] = [];
+      
+      // Helper arrow function to extract cell content (text + image info)
+      const extractCellContent = (cell: Element, rowIdx: number, cellIdx: number): string => {
+        // Check for images in the cell
+        const img = cell.querySelector('img');
+        if (img) {
+          let imgSrc = img.getAttribute('src');
+          // Check for lazy-loaded images
+          if (!imgSrc || imgSrc.startsWith('data:')) {
+            imgSrc = img.getAttribute('data-src') 
+              || img.getAttribute('data-lazy-src')
+              || img.getAttribute('data-original')
+              || img.getAttribute('data-lazy');
+          }
+          if (imgSrc && !imgSrc.startsWith('data:')) {
+            try {
+              const absoluteSrc = new URL(imgSrc, url).href;
+              tableImages.push({ 
+                src: absoluteSrc, 
+                alt: img.getAttribute('alt') || undefined,
+                rowIndex: rowIdx,
+                cellIndex: cellIdx
+              });
+            } catch {}
+          }
+        }
+        
+        // Get text content, but also check for links
+        let text = '';
+        const link = cell.querySelector('a');
+        if (link) {
+          text = link.textContent?.trim() || '';
+        }
+        if (!text) {
+          text = cell.textContent?.trim() || '';
+        }
+        
+        // If cell has image but no text, use alt text or "[Image]"
+        if (!text && img) {
+          text = img.getAttribute('alt') || '[Image]';
+        }
+        
+        return text;
+      }
       
       // Extract headers from thead or first row with th elements
       const thead = el.querySelector('thead');
       if (thead) {
-        thead.querySelectorAll('th').forEach(th => {
-          headers.push(th.textContent?.trim() || '');
+        thead.querySelectorAll('th').forEach((th, idx) => {
+          headers.push(extractCellContent(th, -1, idx));
         });
       }
       
       // Extract all rows
+      let rowIndex = 0;
       el.querySelectorAll('tbody tr, tr').forEach(tr => {
         // Skip if this is a header row we already processed
         if (tr.closest('thead')) return;
@@ -2061,16 +2107,19 @@ function scrapePageContent(html: string, url: string, extractStructuredDataFlag:
         
         // If first row has only th cells and no headers extracted yet, use as headers
         if (hasOnlyTh && headers.length === 0) {
-          tr.querySelectorAll('th').forEach(th => {
-            headers.push(th.textContent?.trim() || '');
+          tr.querySelectorAll('th').forEach((th, idx) => {
+            headers.push(extractCellContent(th, -1, idx));
           });
           return;
         }
         
-        tr.querySelectorAll('td, th').forEach(cell => {
-          cells.push(cell.textContent?.trim() || '');
+        tr.querySelectorAll('td, th').forEach((cell, cellIdx) => {
+          cells.push(extractCellContent(cell, rowIndex, cellIdx));
         });
-        if (cells.length > 0) dataRows.push(cells);
+        if (cells.length > 0) {
+          dataRows.push(cells);
+          rowIndex++;
+        }
       });
       
       if (dataRows.length > 0 || headers.length > 0) {
@@ -2081,6 +2130,18 @@ function scrapePageContent(html: string, url: string, extractStructuredDataFlag:
           rows: dataRows,
           caption,
           children: dataRows, // Keep for backwards compatibility
+          images: tableImages.length > 0 ? tableImages : undefined,
+        });
+        
+        // Also add table images as separate media elements for RAG processing
+        tableImages.forEach(img => {
+          orderedElements.push({
+            type: 'media',
+            tag: 'img',
+            src: img.src,
+            alt: img.alt,
+            context: 'table',
+          });
         });
       }
     } else if (tag === 'img') {

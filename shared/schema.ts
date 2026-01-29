@@ -118,6 +118,16 @@ export const insertSettingsSchema = createInsertSchema(settings).omit({ id: true
 export type Settings = typeof settings.$inferSelect;
 export type InsertSettings = z.infer<typeof insertSettingsSchema>;
 
+// Proxy configuration (must be defined before projectSettingsSchema)
+export const proxyConfigSchema = z.object({
+  url: z.string(),
+  username: z.string().optional(),
+  password: z.string().optional(),
+  protocol: z.enum(['http', 'https', 'socks5']).default('http'),
+});
+
+export type ProxyConfig = z.infer<typeof proxyConfigSchema>;
+
 // Project settings schema for deep scraping and chunking configuration
 export const projectSettingsSchema = z.object({
   // Deep Scraping Settings
@@ -127,6 +137,18 @@ export const projectSettingsSchema = z.object({
     contentSelectors: z.array(z.string()).default(['article', 'main', '.content', '#content']),
     excludeSelectors: z.array(z.string()).default(['nav', 'footer', 'header', '.sidebar', '.ads']),
     maxDepth: z.number().min(1).max(10).default(5),
+    // Rate limiting with auto-adjustment
+    rateLimiting: z.object({
+      enabled: z.boolean().default(true),
+      baseDelayMs: z.number().min(100).max(10000).default(500),
+      maxDelayMs: z.number().min(1000).max(60000).default(30000),
+      backoffMultiplier: z.number().min(1.5).max(5).default(2),
+    }).default({}),
+    // Proxy rotation
+    proxies: z.array(proxyConfigSchema).default([]),
+    rotateProxies: z.boolean().default(false),
+    // Structured data extraction
+    extractStructuredData: z.boolean().default(true),
   }).default({}),
   // Chunking Settings
   chunking: z.object({
@@ -135,6 +157,23 @@ export const projectSettingsSchema = z.object({
     boundaryRules: z.array(z.enum(['paragraph', 'heading', 'sentence'])).default(['paragraph', 'heading']),
     preserveHeadingHierarchy: z.boolean().default(true),
     minChunkTokens: z.number().min(20).max(500).default(50),
+    // Table and code handling
+    preserveTables: z.boolean().default(true),
+    preserveCodeBlocks: z.boolean().default(true),
+    // Multi-language support
+    multiLanguageTokenization: z.boolean().default(true),
+    // Quality checks
+    qualityChecks: z.object({
+      enabled: z.boolean().default(true),
+      minWordCount: z.number().min(5).max(100).default(10),
+      warnOnShortChunks: z.boolean().default(true),
+      warnOnNoContent: z.boolean().default(true),
+    }).default({}),
+    // Deduplication
+    deduplication: z.object({
+      enabled: z.boolean().default(true),
+      similarityThreshold: z.number().min(0.7).max(1).default(0.95),
+    }).default({}),
   }).default({}),
   // AI Integration Settings (optional)
   ai: z.object({
@@ -147,10 +186,85 @@ export const projectSettingsSchema = z.object({
       summaries: z.boolean().default(false),
       keywordExtraction: z.boolean().default(false),
     }).default({}),
+    // Embeddings
+    embeddings: z.object({
+      enabled: z.boolean().default(false),
+      model: z.string().default('text-embedding-3-small'),
+      dimensions: z.number().min(256).max(3072).default(1536),
+    }).default({}),
+    // Metadata enrichment
+    metadataEnrichment: z.object({
+      enabled: z.boolean().default(false),
+      extractKeywords: z.boolean().default(true),
+      generateSummary: z.boolean().default(true),
+      detectCategory: z.boolean().default(false),
+      extractEntities: z.boolean().default(false),
+    }).default({}),
+  }).default({}),
+  // Export settings
+  export: z.object({
+    formats: z.array(z.enum(['json', 'csv', 'parquet', 'markdown'])).default(['json']),
+    includeEmbeddings: z.boolean().default(false),
+    incrementalUpdates: z.boolean().default(true),
   }).default({}),
 }).default({});
 
 export type ProjectSettings = z.infer<typeof projectSettingsSchema>;
+
+// Structured data extracted from pages (JSON-LD, Schema.org)
+export const structuredDataSchema = z.object({
+  jsonLd: z.array(z.any()).optional(),
+  schemaOrg: z.array(z.any()).optional(),
+  openGraph: z.record(z.string()).optional(),
+  twitterCard: z.record(z.string()).optional(),
+});
+
+export type StructuredData = z.infer<typeof structuredDataSchema>;
+
+// Table chunk metadata
+export const tableChunkSchema = z.object({
+  headers: z.array(z.string()),
+  rows: z.array(z.array(z.string())),
+  caption: z.string().optional(),
+  summary: z.string().optional(),
+});
+
+export type TableChunk = z.infer<typeof tableChunkSchema>;
+
+// Code block metadata
+export const codeBlockSchema = z.object({
+  language: z.string().optional(),
+  code: z.string(),
+  lineCount: z.number(),
+});
+
+export type CodeBlock = z.infer<typeof codeBlockSchema>;
+
+// Chunk quality metrics
+export const chunkQualitySchema = z.object({
+  tokenCount: z.number(),
+  wordCount: z.number(),
+  sentenceCount: z.number(),
+  hasContent: z.boolean(),
+  quality: z.enum(['good', 'warning', 'poor']),
+  warnings: z.array(z.string()).optional(),
+});
+
+export type ChunkQuality = z.infer<typeof chunkQualitySchema>;
+
+// AI-enriched metadata
+export const aiMetadataSchema = z.object({
+  keywords: z.array(z.string()).optional(),
+  summary: z.string().optional(),
+  category: z.string().optional(),
+  entities: z.array(z.object({
+    text: z.string(),
+    type: z.string(),
+  })).optional(),
+  sentiment: z.enum(['positive', 'neutral', 'negative']).optional(),
+});
+
+export type AiMetadata = z.infer<typeof aiMetadataSchema>;
 
 // RAG Pack chunk schema
 export const ragChunkSchema = z.object({
@@ -175,6 +289,30 @@ export const ragChunkSchema = z.object({
   }),
   tokens_estimate: z.number(),
   citation: z.string(),
+  // New fields for enhanced features
+  chunk_type: z.enum(['text', 'table', 'code', 'mixed']).optional(),
+  table_data: tableChunkSchema.optional(),
+  code_block: codeBlockSchema.optional(),
+  quality: chunkQualitySchema.optional(),
+  embedding: z.array(z.number()).optional(),
+  ai_metadata: aiMetadataSchema.optional(),
+  content_hash: z.string().optional(),
+  is_duplicate: z.boolean().optional(),
+  duplicate_of: z.string().optional(),
+  created_at: z.string().optional(),
+  updated_at: z.string().optional(),
 });
 
 export type RagChunk = z.infer<typeof ragChunkSchema>;
+
+// Rate limiting state
+export const rateLimitStateSchema = z.object({
+  currentDelay: z.number(),
+  baseDelay: z.number(),
+  maxDelay: z.number(),
+  backoffMultiplier: z.number(),
+  consecutiveErrors: z.number(),
+  lastRequestTime: z.number().optional(),
+});
+
+export type RateLimitState = z.infer<typeof rateLimitStateSchema>;

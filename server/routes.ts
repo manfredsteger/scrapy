@@ -7,9 +7,77 @@ import { JSDOM } from "jsdom";
 import { encode } from "gpt-tokenizer";
 import crypto from "crypto";
 import JSZip from "jszip";
-import type { RagChunk, ProjectSettings, ScrapedElement, SitemapUrlEntry } from "@shared/schema";
+import type { RagChunk, ProjectSettings, ScrapedElement, SitemapUrlEntry, StructuredData, ChunkQuality, TableChunk, CodeBlock, RateLimitState } from "@shared/schema";
 
 const CONCURRENCY = 10;
+
+// Default project settings with all new fields
+function getDefaultSettings(): ProjectSettings {
+  return {
+    scraping: {
+      parallelRequests: 10,
+      delayMs: 500,
+      contentSelectors: ['article', 'main', '.content', '#content'],
+      excludeSelectors: ['nav', 'footer', 'header', '.sidebar', '.ads'],
+      maxDepth: 5,
+      rateLimiting: {
+        enabled: true,
+        baseDelayMs: 500,
+        maxDelayMs: 30000,
+        backoffMultiplier: 2,
+      },
+      proxies: [],
+      rotateProxies: false,
+      extractStructuredData: true,
+    },
+    chunking: {
+      targetTokens: 350,
+      overlapTokens: 55,
+      boundaryRules: ['paragraph', 'heading'],
+      preserveHeadingHierarchy: true,
+      minChunkTokens: 50,
+      preserveTables: true,
+      preserveCodeBlocks: true,
+      multiLanguageTokenization: true,
+      qualityChecks: {
+        enabled: true,
+        minWordCount: 10,
+        warnOnShortChunks: true,
+        warnOnNoContent: true,
+      },
+      deduplication: {
+        enabled: true,
+        similarityThreshold: 0.95,
+      },
+    },
+    ai: {
+      enabled: false,
+      model: 'gpt-4o-mini',
+      features: {
+        semanticChunking: false,
+        summaries: false,
+        keywordExtraction: false,
+      },
+      embeddings: {
+        enabled: false,
+        model: 'text-embedding-3-small',
+        dimensions: 1536,
+      },
+      metadataEnrichment: {
+        enabled: false,
+        extractKeywords: true,
+        generateSummary: true,
+        detectCategory: false,
+        extractEntities: false,
+      },
+    },
+    export: {
+      formats: ['json'],
+      includeEmbeddings: false,
+      incrementalUpdates: true,
+    },
+  };
+}
 
 // Chunking utility functions
 function estimateTokens(text: string): number {
@@ -693,11 +761,7 @@ export async function registerRoutes(
         return res.status(400).json({ message: 'No scraped content available. Run deep scraping first.' });
       }
 
-      const settings: ProjectSettings = project.projectSettings || {
-        scraping: { parallelRequests: 10, delayMs: 500, contentSelectors: [], excludeSelectors: [], maxDepth: 5 },
-        chunking: { targetTokens: 350, overlapTokens: 55, boundaryRules: ['paragraph', 'heading'], preserveHeadingHierarchy: true, minChunkTokens: 50 },
-        ai: { enabled: false, model: 'gpt-4o-mini', features: { semanticChunking: false, summaries: false, keywordExtraction: false } },
-      };
+      const settings: ProjectSettings = project.projectSettings || getDefaultSettings();
 
       const chunks = generateChunksForProject(scrapedResults, project.domain, settings);
 
@@ -755,11 +819,7 @@ export async function registerRoutes(
         return;
       }
 
-      const settings: ProjectSettings = project.projectSettings || {
-        scraping: { parallelRequests: 10, delayMs: 500, contentSelectors: [], excludeSelectors: [], maxDepth: 5 },
-        chunking: { targetTokens: 350, overlapTokens: 55, boundaryRules: ['paragraph', 'heading'], preserveHeadingHierarchy: true, minChunkTokens: 50 },
-        ai: { enabled: false, model: 'gpt-4o-mini', features: { semanticChunking: false, summaries: false, keywordExtraction: false } },
-      };
+      const settings: ProjectSettings = project.projectSettings || getDefaultSettings();
 
       const chunkingSettings = settings.chunking || {
         targetTokens: 350,

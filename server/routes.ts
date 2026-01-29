@@ -1688,6 +1688,48 @@ function validateUrl(url: string, baseDomain?: string): boolean {
   }
 }
 
+async function discoverWikiJsPages(baseUrl: string): Promise<string[]> {
+  const urls: string[] = [];
+  try {
+    const response = await fetch(`${baseUrl}/graphql`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query: '{ pages { list { id path title } } }'
+      })
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      if (data?.data?.pages?.list) {
+        for (const page of data.data.pages.list) {
+          if (page.path && page.path !== 'home') {
+            urls.push(`${baseUrl}/${page.path}`);
+          }
+        }
+        // Add home page
+        urls.unshift(baseUrl);
+        console.log(`[Wiki.js] Discovered ${urls.length} pages via GraphQL API`);
+      }
+    }
+  } catch (err) {
+    // Not a Wiki.js site or GraphQL not available
+  }
+  return urls;
+}
+
+async function isWikiJsSite(baseUrl: string): Promise<boolean> {
+  try {
+    const html = await fetchWithTimeout(baseUrl);
+    // Wiki.js has characteristic markers
+    return html.includes('siteConfig') && 
+           (html.includes('wiki.js') || html.includes('WikiJS') || 
+            html.includes('.is-asset-link') || html.includes('toc-header'));
+  } catch {
+    return false;
+  }
+}
+
 async function discoverSitemaps(domain: string): Promise<string[]> {
   const sitemaps = new Set<string>();
   let baseUrl = domain.trim();
@@ -2679,8 +2721,24 @@ export async function registerRoutes(
   app.post(api.scrape.discover.path, async (req, res) => {
     try {
       const input = api.scrape.discover.input.parse(req.body);
+      let baseUrl = input.domain.trim();
+      if (!baseUrl.startsWith('http')) baseUrl = `https://${baseUrl}`;
+      baseUrl = baseUrl.replace(/\/$/, '');
+      
+      // First check if this is a Wiki.js site
+      const isWiki = await isWikiJsSite(baseUrl);
+      if (isWiki) {
+        console.log(`[Wiki.js] Detected Wiki.js site: ${baseUrl}`);
+        const wikiPages = await discoverWikiJsPages(baseUrl);
+        if (wikiPages.length > 0) {
+          // Return wiki pages as direct URLs (not sitemaps)
+          res.json({ sitemaps: [], wikiJsPages: wikiPages, isWikiJs: true });
+          return;
+        }
+      }
+      
       const sitemaps = await discoverSitemaps(input.domain);
-      res.json({ sitemaps });
+      res.json({ sitemaps, isWikiJs: false });
     } catch (err) {
       if (err instanceof z.ZodError) {
         return res.status(400).json({

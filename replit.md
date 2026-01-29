@@ -64,6 +64,23 @@ The application includes a comprehensive RAG Pack generation system for AI/RAG w
 - Sentence-based overlap for cleaner chunk boundaries
 - Heading hierarchy preservation for semantic context
 - SHA256 hashes for chunk integrity verification
+- **Table Preservation**: Tables extracted as complete chunks with headers, rows, and caption metadata
+- **Code Block Preservation**: Code blocks kept intact with language detection
+- **Multi-Language Support**: Improved CJK (Chinese/Japanese/Korean) token counting
+- **Quality Checks**: Automatic quality assessment with warnings for short/empty chunks
+
+### Deduplication
+- Exact duplicate detection via SHA256 content hash comparison
+- Near-duplicate detection using Jaccard similarity (configurable threshold 0.7-1.0)
+- Duplicates marked but preserved for reference
+
+### AI Features (requires OPENAI_API_KEY)
+- **Embeddings Generation**: Batch processing with retry logic, supports text-embedding-3-small/large models
+- **Metadata Enrichment**: 
+  - Keywords extraction (5-10 per chunk)
+  - Summary generation (1-2 sentences)
+  - Category detection (technical, tutorial, news, product, documentation, blog, other)
+  - Named entity extraction (person, organization, location, product)
 
 ### RAG Pack Export Format
 The ZIP export includes:
@@ -72,9 +89,38 @@ The ZIP export includes:
 - `chunks.jsonl` - All text chunks with full metadata (one JSON object per line)
 - `schema/` folder with JSON schemas for validation
 
+### Export Formats
+- **JSON**: Full RAG Pack as ZIP with manifest and schema
+- **CSV**: Streaming export with chunk_id, text, url, heading, tokens, quality, keywords
+- **Parquet**: Columnar format via parquetjs-lite for large datasets
+- **Incremental**: Only new/changed chunks since last export
+
 ### API Endpoints
 - `POST /api/projects/:id/chunks` - Generate chunks from scraped content
+- `GET /api/projects/:id/chunks/stream` - SSE endpoint for real-time progress
 - `GET /api/projects/:id/rag-pack` - Download RAG Pack as ZIP file
+- `GET /api/projects/:id/export/csv` - Download as CSV
+- `GET /api/projects/:id/export/parquet` - Download as Parquet
+- `GET /api/projects/:id/export/incremental` - Get only changed chunks
+
+## Advanced Scraping Features
+
+### Rate Limiting
+- Auto-adjustment on 429 (Too Many Requests) responses
+- Configurable base delay (100-10000ms), max delay (1000-60000ms), and backoff multiplier (1.5-5x)
+- Gradual recovery after successful requests
+
+### Proxy Rotation
+- Support for HTTP, HTTPS, and SOCKS5 proxies via `undici` ProxyAgent
+- Round-robin rotation through proxy list
+- Automatic failure detection with cooldown periods
+- Optional authentication (username/password)
+
+### Structured Data Extraction
+- **JSON-LD**: All `<script type="application/ld+json">` content parsed
+- **Schema.org Microdata**: itemscope/itemtype/itemprop attributes extracted
+- **OpenGraph**: All `og:*` meta tags captured
+- **Twitter Cards**: All `twitter:*` meta tags captured
 
 ## External Dependencies
 

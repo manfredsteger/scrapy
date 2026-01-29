@@ -1,8 +1,9 @@
 import { useRoute, useLocation } from 'wouter';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation } from '@tanstack/react-query';
+import { queryClient, apiRequest } from '@/lib/queryClient';
 import { 
   ArrowLeft, Download, FileText, Image as ImageIcon, Video, Layers,
-  Loader2, AlertCircle
+  Loader2, AlertCircle, ExternalLink, RefreshCw, Settings, MoreVertical, Trash2
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -120,10 +121,34 @@ export default function SinglePageDetail() {
   const { t, language } = useLanguage();
   const id = params?.id;
 
-  const { data: page, isLoading, error } = useQuery<SinglePage>({
+  const { data: page, isLoading, error, refetch } = useQuery<SinglePage>({
     queryKey: ['/api/single-pages', id],
     enabled: !!id,
   });
+
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest('DELETE', `/api/single-pages/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/single-pages'] });
+      navigate('/');
+    },
+  });
+
+  const reScrape = async () => {
+    if (!page) return;
+    await deleteMutation.mutateAsync();
+    await apiRequest('POST', '/api/single-pages', { url: page.url });
+    queryClient.invalidateQueries({ queryKey: ['/api/single-pages'] });
+    navigate('/');
+  };
+
+  const openOriginal = () => {
+    if (page?.url) {
+      window.open(page.url, '_blank', 'noopener,noreferrer');
+    }
+  };
 
   const exportJson = () => {
     if (!page) return;
@@ -223,24 +248,68 @@ export default function SinglePageDetail() {
           </div>
         </div>
         
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="outline" size="sm" className="gap-2" data-testid="export-dropdown">
-              <Download className="w-4 h-4" />
-              Export
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-48">
-            <DropdownMenuItem onClick={exportJson} className="gap-2" data-testid="export-json">
-              <Download className="w-4 h-4" />
-              {t('exportJson')}
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={exportCsv} className="gap-2" data-testid="export-csv">
-              <Download className="w-4 h-4" />
-              {t('exportCsv')}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={openOriginal}
+            className="gap-2"
+            data-testid="button-open-original"
+          >
+            <ExternalLink className="w-4 h-4" />
+            {t('openOriginal')}
+          </Button>
+          
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" className="gap-2" data-testid="action-menu">
+                <MoreVertical className="w-4 h-4" />
+                {t('actionsMenu')}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuItem onClick={() => refetch()} className="gap-2" data-testid="action-refresh">
+                <RefreshCw className="w-4 h-4" />
+                {t('refresh')}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={reScrape} className="gap-2" data-testid="action-rescrape">
+                <RefreshCw className="w-4 h-4" />
+                {t('reScrape')}
+              </DropdownMenuItem>
+              <DropdownMenuItem 
+                onClick={() => {
+                  if (confirm(t('confirmDelete'))) {
+                    deleteMutation.mutate();
+                  }
+                }} 
+                className="gap-2 text-destructive focus:text-destructive"
+                data-testid="action-delete"
+              >
+                <Trash2 className="w-4 h-4" />
+                {t('delete')}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" className="gap-2" data-testid="export-dropdown">
+                <Download className="w-4 h-4" />
+                Export
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuItem onClick={exportJson} className="gap-2" data-testid="export-json">
+                <Download className="w-4 h-4" />
+                {t('exportJson')}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={exportCsv} className="gap-2" data-testid="export-csv">
+                <Download className="w-4 h-4" />
+                {t('exportCsv')}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">

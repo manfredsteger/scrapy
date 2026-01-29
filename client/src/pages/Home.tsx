@@ -56,6 +56,7 @@ export default function Home() {
   });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const processingRef = useRef(false);
+  const abortedProjectsRef = useRef<Set<number>>(new Set());
 
   const { data: projects = [], isLoading, refetch: refetchProjects } = useQuery<Project[]>({
     queryKey: ['/api/projects'],
@@ -180,11 +181,31 @@ export default function Home() {
 
   const deleteProjectMutation = useMutation({
     mutationFn: async (id: number) => {
+      // CRITICAL: Mark project as aborted IMMEDIATELY to stop all active processing
+      abortedProjectsRef.current.add(id);
+      processingRef.current = false; // Stop any current processing loop
+      
+      console.log(`[Delete] Project ${id} marked as aborted, stopping all processing`);
+      
+      // Now delete from database
       await apiRequest('DELETE', `/api/projects/${id}`);
+      return id;
     },
-    onSuccess: () => {
+    onSuccess: (deletedId) => {
+      // Keep project in aborted set for a while to prevent race conditions
+      setTimeout(() => {
+        abortedProjectsRef.current.delete(deletedId);
+      }, 5000);
+      
       queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
-      if (activeProjectId) setActiveProjectId(null);
+      if (activeProjectId === deletedId) setActiveProjectId(null);
+      
+      toast({ title: t('success'), description: t('projectDeleted') || 'Projekt gelöscht' });
+    },
+    onError: (error, id) => {
+      // On error, remove from aborted set
+      abortedProjectsRef.current.delete(id);
+      toast({ title: t('error'), description: t('deleteError') || 'Fehler beim Löschen', variant: 'destructive' });
     },
   });
 
@@ -277,6 +298,12 @@ export default function Home() {
     
     const scrapingProject = projects.find(p => p.status === 'scraping');
     if (scrapingProject) {
+      // Check if project was marked for deletion - stop immediately
+      if (abortedProjectsRef.current.has(scrapingProject.id)) {
+        console.log(`[Process] Project ${scrapingProject.id} was aborted, skipping`);
+        return;
+      }
+      
       if (!scrapingProject.queue || scrapingProject.queue.length === 0) {
         await updateProjectMutation.mutateAsync({ 
           id: scrapingProject.id, 
@@ -330,6 +357,13 @@ export default function Home() {
           }
         });
 
+        // Check again if project was aborted during API call
+        if (abortedProjectsRef.current.has(scrapingProject.id)) {
+          console.log(`[Process] Project ${scrapingProject.id} was aborted during processing, not saving results`);
+          processingRef.current = false;
+          return;
+        }
+        
         await updateProjectMutation.mutateAsync({
           id: scrapingProject.id,
           updates: {
@@ -355,6 +389,12 @@ export default function Home() {
     // Handle crawling mode - crawl pages to discover URLs
     const crawlingProject = projects.find(p => p.status === 'crawling');
     if (crawlingProject) {
+      // Check if project was marked for deletion - stop immediately
+      if (abortedProjectsRef.current.has(crawlingProject.id)) {
+        console.log(`[Process] Crawling project ${crawlingProject.id} was aborted, skipping`);
+        return;
+      }
+      
       if (!crawlingProject.queue || crawlingProject.queue.length === 0) {
         await updateProjectMutation.mutateAsync({ 
           id: crawlingProject.id, 
@@ -418,6 +458,13 @@ export default function Home() {
           }
         });
 
+        // Check again if project was aborted during API call
+        if (abortedProjectsRef.current.has(crawlingProject.id)) {
+          console.log(`[Process] Crawling project ${crawlingProject.id} was aborted during processing, not saving results`);
+          processingRef.current = false;
+          return;
+        }
+
         await updateProjectMutation.mutateAsync({
           id: crawlingProject.id,
           updates: {
@@ -441,6 +488,12 @@ export default function Home() {
 
     const contentScrapingProject = projects.find(p => p.status === 'content_scraping');
     if (contentScrapingProject) {
+      // Check if project was marked for deletion - stop immediately
+      if (abortedProjectsRef.current.has(contentScrapingProject.id)) {
+        console.log(`[Process] Content scraping project ${contentScrapingProject.id} was aborted, skipping`);
+        return;
+      }
+      
       if (!contentScrapingProject.queue || contentScrapingProject.queue.length === 0) {
         await updateProjectMutation.mutateAsync({ 
           id: contentScrapingProject.id, 
@@ -478,6 +531,13 @@ export default function Home() {
             });
           }
         });
+
+        // Check again if project was aborted during API call
+        if (abortedProjectsRef.current.has(contentScrapingProject.id)) {
+          console.log(`[Process] Content scraping project ${contentScrapingProject.id} was aborted during processing, not saving results`);
+          processingRef.current = false;
+          return;
+        }
 
         await updateProjectMutation.mutateAsync({
           id: contentScrapingProject.id,

@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import { useLocation } from 'wouter';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { 
   Play, Square, Loader2, Download, Settings, 
@@ -32,6 +33,7 @@ import type { Project, SitemapUrlEntry, ProjectSettings as ProjectSettingsType, 
 const BATCH_SIZE = 10;
 
 export default function Home() {
+  const [, navigate] = useLocation();
   const { language, setLanguage, t, isLoading: langLoading } = useLanguage();
   const { toast } = useToast();
   const [activeProjectId, setActiveProjectId] = useState<number | null>(null);
@@ -143,7 +145,7 @@ export default function Home() {
     
     const scrapingProject = projects.find(p => p.status === 'scraping');
     if (scrapingProject) {
-      if (scrapingProject.queue.length === 0) {
+      if (!scrapingProject.queue || scrapingProject.queue.length === 0) {
         await updateProjectMutation.mutateAsync({ 
           id: scrapingProject.id, 
           updates: { 
@@ -155,8 +157,8 @@ export default function Home() {
       }
 
       processingRef.current = true;
-      const batchUrls = scrapingProject.queue.slice(0, BATCH_SIZE);
-      const remainingQueue = scrapingProject.queue.slice(BATCH_SIZE);
+      const batchUrls = (scrapingProject.queue || []).slice(0, BATCH_SIZE);
+      const remainingQueue = (scrapingProject.queue || []).slice(BATCH_SIZE);
       
       try {
         const results = await Promise.all(batchUrls.map(async (url) => {
@@ -220,7 +222,7 @@ export default function Home() {
 
     const contentScrapingProject = projects.find(p => p.status === 'content_scraping');
     if (contentScrapingProject) {
-      if (contentScrapingProject.queue.length === 0) {
+      if (!contentScrapingProject.queue || contentScrapingProject.queue.length === 0) {
         await updateProjectMutation.mutateAsync({ 
           id: contentScrapingProject.id, 
           updates: { 
@@ -232,8 +234,8 @@ export default function Home() {
       }
 
       processingRef.current = true;
-      const batchUrls = contentScrapingProject.queue.slice(0, BATCH_SIZE);
-      const remainingQueue = contentScrapingProject.queue.slice(BATCH_SIZE);
+      const batchUrls = (contentScrapingProject.queue || []).slice(0, BATCH_SIZE);
+      const remainingQueue = (contentScrapingProject.queue || []).slice(BATCH_SIZE);
 
       try {
         const res = await apiRequest('POST', '/api/scrape/content', { urls: batchUrls });
@@ -624,8 +626,9 @@ export default function Home() {
                     {singlePages.map(page => (
                       <div 
                         key={page.id} 
-                        className="bg-card border border-border rounded-lg p-4 hover-elevate"
+                        className="bg-card border border-border rounded-lg p-4 hover-elevate cursor-pointer"
                         data-testid={`single-page-card-${page.id}`}
+                        onClick={() => navigate(`/single-page/${page.id}`)}
                       >
                         <div className="flex items-start gap-3">
                           <div className="shrink-0 mt-0.5">
@@ -664,7 +667,8 @@ export default function Home() {
                             size="icon"
                             variant="ghost"
                             className="shrink-0 h-7 w-7"
-                            onClick={() => {
+                            onClick={(e) => {
+                              e.stopPropagation();
                               if (confirm(t('deleteConfirm'))) {
                                 deleteSinglePageMutation.mutate(page.id);
                               }

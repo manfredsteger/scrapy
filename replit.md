@@ -15,92 +15,92 @@ MapScraper Pro ist ein professioneller Web-Scraper mit RAG Pack Generation für 
 
 Bevorzugte Kommunikation: Einfache, alltägliche Sprache (Deutsch).
 
-## System Architecture
+## System-Architektur
 
-### Frontend Architecture
-- **Framework**: React 18 with TypeScript, bundled via Vite
-- **Routing**: Wouter for lightweight client-side routing
-- **State Management**: TanStack Query (React Query) for server state caching and synchronization
-- **UI Components**: Shadcn/ui component library built on Radix UI primitives with Tailwind CSS
-- **Styling**: Tailwind CSS with CSS variables for theming (light/dark mode support)
-- **Internationalization**: Custom i18n implementation with German as default language
+### Frontend-Architektur
+- **Framework**: React 18 mit TypeScript, gebündelt via Vite
+- **Routing**: Wouter für leichtgewichtiges Client-seitiges Routing
+- **State Management**: TanStack Query (React Query) für Server-State-Caching und Synchronisation
+- **UI-Komponenten**: Shadcn/ui Komponentenbibliothek basierend auf Radix UI mit Tailwind CSS
+- **Styling**: Tailwind CSS mit CSS-Variablen für Theming (Dark/Light Mode)
+- **Internationalisierung**: Eigene i18n-Implementierung mit Deutsch als Standardsprache
 
-### Backend Architecture
-- **Runtime**: Node.js with Express.js
-- **Language**: TypeScript compiled with tsx for development, esbuild for production
-- **API Design**: RESTful endpoints with Zod schema validation for request/response types
-- **Web Scraping**: Native fetch API with JSDOM for HTML parsing and content extraction
+### Backend-Architektur
+- **Runtime**: Node.js mit Express.js
+- **Sprache**: TypeScript kompiliert mit tsx (Entwicklung), esbuild (Produktion)
+- **API-Design**: RESTful Endpunkte mit Zod-Schema-Validierung
+- **Web Scraping**: Native Fetch API mit JSDOM für HTML-Parsing und Inhaltsextraktion
 
-### Data Storage
-- **Database**: PostgreSQL with Drizzle ORM
-- **Schema Location**: `shared/schema.ts` contains all table definitions
-- **Migrations**: Managed via Drizzle Kit with `db:push` command
-- **Storage Pattern**: Repository pattern implemented in `server/storage.ts` with DatabaseStorage class
+### Datenspeicherung
+- **Datenbank**: PostgreSQL mit Drizzle ORM
+- **Schema-Speicherort**: `shared/schema.ts` enthält alle Tabellendefinitionen
+- **Migrationen**: Verwaltet via Drizzle Kit mit `db:push` Befehl
+- **Speichermuster**: Repository-Pattern implementiert in `server/storage.ts`
 
-### Project Structure
+### Projektstruktur
 ```
-├── client/           # React frontend application
+├── client/           # React Frontend-Anwendung
 │   └── src/
-│       ├── components/   # UI components (custom + shadcn/ui)
-│       ├── hooks/        # Custom React hooks
+│       ├── components/   # UI-Komponenten (custom + shadcn/ui)
+│       ├── hooks/        # Custom React Hooks
 │       ├── lib/          # Utilities (i18n, queryClient)
-│       └── pages/        # Page components
-├── server/           # Express backend
-│   ├── routes.ts     # API route handlers
-│   ├── storage.ts    # Database access layer
-│   └── db.ts         # Database connection
-├── shared/           # Shared code between client/server
-│   ├── schema.ts     # Drizzle schema + Zod types
-│   └── routes.ts     # API contract definitions
-└── migrations/       # Database migrations
+│       └── pages/        # Seiten-Komponenten
+├── server/           # Express Backend
+│   ├── routes.ts     # API-Route-Handler
+│   ├── storage.ts    # Datenbank-Zugriffsschicht
+│   └── db.ts         # Datenbankverbindung
+├── shared/           # Gemeinsamer Code (Client/Server)
+│   ├── schema.ts     # Drizzle Schema + Zod Typen
+│   └── routes.ts     # API-Vertragsdefinitionen
+└── migrations/       # Datenbankmigrationen
 ```
 
-### Key Design Decisions
-- **Monorepo Structure**: Client, server, and shared code in single repository for type safety across boundaries
-- **Shared Type Contracts**: Zod schemas in `shared/` ensure API type safety between frontend and backend
-- **Component Library**: Shadcn/ui provides accessible, customizable components without external dependencies
-- **Build Optimization**: Production builds bundle critical dependencies to reduce cold start times
+### Wichtige Design-Entscheidungen
+- **Monorepo-Struktur**: Client, Server und gemeinsamer Code in einem Repository für Typsicherheit
+- **Geteilte Typ-Verträge**: Zod-Schemas in `shared/` sichern API-Typsicherheit zwischen Frontend und Backend
+- **Komponentenbibliothek**: Shadcn/ui bietet barrierefreie, anpassbare Komponenten ohne externe Abhängigkeiten
+- **Build-Optimierung**: Produktions-Builds bündeln kritische Abhängigkeiten für schnellere Startzeiten
 
 ## RAG Pack Feature
 
-The application includes a comprehensive RAG Pack generation system for AI/RAG workflows:
+Die Anwendung enthält ein umfassendes RAG Pack Generierungssystem für AI/RAG-Workflows:
 
-### Chunking System
-- Token-based splitting using `gpt-tokenizer` for accurate GPT-4 token estimation
-- Configurable target tokens (default 350), overlap tokens (default 55), and minimum chunk tokens (default 50)
-- Sentence-based overlap for cleaner chunk boundaries
-- Heading hierarchy preservation for semantic context
-- SHA256 hashes for chunk integrity verification
-- **Table Preservation**: Tables extracted as complete chunks with headers, rows, and caption metadata
-- **Code Block Preservation**: Code blocks kept intact with language detection
-- **Multi-Language Support**: Improved CJK (Chinese/Japanese/Korean) token counting
-- **Quality Checks**: Automatic quality assessment with warnings for short/empty chunks
+### Chunking-System
+- Token-basierte Aufteilung mit `gpt-tokenizer` für präzise GPT-4 Token-Schätzung
+- Konfigurierbare Ziel-Tokens (Standard 350), Überlappungs-Tokens (Standard 55), Mindest-Tokens (Standard 50)
+- Satzbasierte Überlappung für sauberere Chunk-Grenzen
+- Überschriften-Hierarchie-Erhaltung für semantischen Kontext
+- SHA256-Hashes für Chunk-Integritätsprüfung
+- **Tabellen-Erhaltung**: Tabellen als vollständige Chunks mit Kopfzeilen, Zeilen und Beschriftung
+- **Code-Block-Erhaltung**: Code-Blöcke bleiben intakt mit Spracherkennung
+- **Multi-Sprach-Support**: Verbesserte CJK (Chinesisch/Japanisch/Koreanisch) Token-Zählung
+- **Qualitätsprüfungen**: Automatische Qualitätsbewertung mit Warnungen für kurze/leere Chunks
 
-### Deduplication
-- Exact duplicate detection via SHA256 content hash comparison
-- Near-duplicate detection using Jaccard similarity (configurable threshold 0.7-1.0)
-- Duplicates marked but preserved for reference
+### Deduplizierung
+- Exakte Duplikat-Erkennung via SHA256 Content-Hash-Vergleich
+- Near-Duplikat-Erkennung mit Jaccard-Ähnlichkeit (konfigurierbarer Schwellenwert 0.7-1.0)
+- Duplikate markiert aber für Referenz erhalten
 
-### AI Features (requires OPENAI_API_KEY)
-- **Embeddings Generation**: Batch processing with retry logic, supports text-embedding-3-small/large models
-- **Metadata Enrichment**: 
-  - Keywords extraction (5-10 per chunk)
-  - Summary generation (1-2 sentences)
-  - Category detection (technical, tutorial, news, product, documentation, blog, other)
-  - Named entity extraction (person, organization, location, product)
+### AI-Features (benötigt OPENAI_API_KEY)
+- **Embeddings-Generierung**: Batch-Verarbeitung mit Retry-Logik, unterstützt text-embedding-3-small/large Modelle
+- **Metadaten-Anreicherung**: 
+  - Keyword-Extraktion (5-10 pro Chunk)
+  - Zusammenfassungs-Generierung (1-2 Sätze)
+  - Kategorie-Erkennung (technical, tutorial, news, product, documentation, blog, other)
+  - Named Entity Extraction (Person, Organisation, Ort, Produkt)
 
-### RAG Pack Export Format
-The ZIP export includes:
-- `manifest.json` - Pack metadata with version, counts, and checksums
-- `documents.jsonl` - Document-level metadata (one JSON object per line)
-- `chunks.jsonl` - All text chunks with full metadata (one JSON object per line)
-- `schema/` folder with JSON schemas for validation
+### RAG Pack Export-Format
+Der ZIP-Export enthält:
+- `manifest.json` - Pack-Metadaten mit Version, Anzahlen und Prüfsummen
+- `documents.jsonl` - Dokument-Level Metadaten (ein JSON-Objekt pro Zeile)
+- `chunks.jsonl` - Alle Text-Chunks mit vollständigen Metadaten (ein JSON-Objekt pro Zeile)
+- `schema/` Ordner mit JSON-Schemas zur Validierung
 
-### Export Formats
-- **JSON**: Full RAG Pack as ZIP with manifest and schema
-- **CSV**: Streaming export with chunk_id, text, url, heading, tokens, quality, keywords
-- **Parquet**: Columnar format via parquetjs-lite for large datasets
-- **Incremental**: Only new/changed chunks since last export
+### Export-Formate
+- **JSON**: Vollständiges RAG Pack als ZIP mit Manifest und Schema
+- **CSV**: Streaming-Export mit chunk_id, text, url, heading, tokens, quality, keywords
+- **Parquet**: Spaltenformat via parquetjs-lite für große Datasets
+- **Inkrementell**: Nur neue/geänderte Chunks seit letztem Export
 
 ### API Endpoints - Projekte
 - `POST /api/projects/:id/chunks` - Chunks aus gescraptem Inhalt generieren
@@ -153,31 +153,31 @@ Während des Scrapens durchläuft eine Einzelseite folgende Status:
 - **OpenGraph**: All `og:*` meta tags captured
 - **Twitter Cards**: All `twitter:*` meta tags captured
 
-## External Dependencies
+## Externe Abhängigkeiten
 
-### Database
-- **PostgreSQL**: Primary data store, connection via `DATABASE_URL` environment variable
-- **Drizzle ORM**: Type-safe database queries with schema-first approach
-- **connect-pg-simple**: Session storage for Express (if sessions are enabled)
+### Datenbank
+- **PostgreSQL**: Hauptdatenspeicher, Verbindung via `DATABASE_URL` Umgebungsvariable
+- **Drizzle ORM**: Typsichere Datenbankabfragen mit Schema-first Ansatz
+- **connect-pg-simple**: Session-Speicherung für Express (falls Sessions aktiviert)
 
-### Frontend Libraries
-- **Radix UI**: Headless UI primitives for accessibility
-- **TanStack Query**: Async state management
-- **Tailwind CSS**: Utility-first styling
-- **Lucide React**: Icon library
-- **date-fns**: Date formatting utilities
+### Frontend-Bibliotheken
+- **Radix UI**: Headless UI-Primitives für Barrierefreiheit
+- **TanStack Query**: Async State-Management
+- **Tailwind CSS**: Utility-first Styling
+- **Lucide React**: Icon-Bibliothek
+- **date-fns**: Datum-Formatierung
 
-### Backend Libraries
-- **Express.js**: HTTP server framework
-- **JSDOM**: Server-side DOM parsing for content extraction
-- **Zod**: Runtime type validation
-- **drizzle-zod**: Bridge between Drizzle schemas and Zod validation
+### Backend-Bibliotheken
+- **Express.js**: HTTP-Server-Framework
+- **JSDOM**: Server-seitiges DOM-Parsing für Inhaltsextraktion
+- **Zod**: Runtime-Typ-Validierung
+- **drizzle-zod**: Brücke zwischen Drizzle-Schemas und Zod-Validierung
 
-### Development Tools
-- **Vite**: Development server and build tool
-- **tsx**: TypeScript execution for development
-- **esbuild**: Production bundling for server code
-- **Drizzle Kit**: Database migration tooling
+### Entwicklungswerkzeuge
+- **Vite**: Entwicklungsserver und Build-Tool
+- **tsx**: TypeScript-Ausführung für Entwicklung
+- **esbuild**: Produktions-Bundling für Server-Code
+- **Drizzle Kit**: Datenbank-Migrationswerkzeuge
 
 ## Docker Setup (Lokale Entwicklung)
 

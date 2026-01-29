@@ -49,6 +49,11 @@ export default function Home() {
     projectId: null,
     projectName: '',
   });
+  const [deleteSinglePageConfirm, setDeleteSinglePageConfirm] = useState<{ open: boolean; pageId: number | null; pageName: string }>({
+    open: false,
+    pageId: null,
+    pageName: '',
+  });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const processingRef = useRef(false);
 
@@ -845,9 +850,11 @@ export default function Home() {
                             className="shrink-0 h-7 w-7"
                             onClick={(e) => {
                               e.stopPropagation();
-                              if (confirm(t('deleteConfirm'))) {
-                                deleteSinglePageMutation.mutate(page.id);
-                              }
+                              setDeleteSinglePageConfirm({
+                                open: true,
+                                pageId: page.id,
+                                pageName: page.title || page.url,
+                              });
                             }}
                             data-testid={`delete-single-page-${page.id}`}
                           >
@@ -1216,6 +1223,21 @@ export default function Home() {
         onConfirm={() => {
           if (deleteConfirm.projectId) {
             deleteProjectMutation.mutate(deleteConfirm.projectId);
+          }
+        }}
+      />
+
+      <ConfirmDialog
+        open={deleteSinglePageConfirm.open}
+        onOpenChange={(open) => setDeleteSinglePageConfirm(prev => ({ ...prev, open }))}
+        title={t('deleteSinglePage')}
+        description={t('deleteSinglePageMessage').replace('{name}', deleteSinglePageConfirm.pageName)}
+        confirmText={t('delete')}
+        cancelText={t('cancel')}
+        variant="destructive"
+        onConfirm={() => {
+          if (deleteSinglePageConfirm.pageId) {
+            deleteSinglePageMutation.mutate(deleteSinglePageConfirm.pageId);
           }
         }}
       />

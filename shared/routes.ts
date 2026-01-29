@@ -164,6 +164,25 @@ export const api = {
         400: errorSchemas.validation,
       },
     },
+    crawl: {
+      method: 'POST' as const,
+      path: '/api/scrape/crawl',
+      input: z.object({ 
+        urls: z.array(z.string()),
+        domain: z.string(),
+      }),
+      responses: {
+        200: z.object({
+          results: z.array(z.object({
+            url: z.string(),
+            links: z.array(z.string()),
+            data: z.any().nullable(),
+            error: z.string().nullable(),
+          })),
+        }),
+        400: errorSchemas.validation,
+      },
+    },
   },
   export: {
     csv: {

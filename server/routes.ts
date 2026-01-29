@@ -2621,6 +2621,98 @@ export async function registerRoutes(
     }
   });
 
+  // Crawl endpoint - fetches pages and extracts internal links
+  app.post(api.scrape.crawl.path, async (req, res) => {
+    try {
+      const input = api.scrape.crawl.input.parse(req.body);
+      const urls = input.urls.slice(0, CONCURRENCY);
+      const domain = input.domain.replace(/^https?:\/\//, '').split('/')[0];
+      
+      const results = await Promise.all(urls.map(async (url) => {
+        try {
+          const html = await fetchWithTimeout(url);
+          const dom = new JSDOM(html);
+          const doc = dom.window.document;
+          
+          // Extract internal links
+          const links: string[] = [];
+          doc.querySelectorAll('a[href]').forEach(a => {
+            const href = a.getAttribute('href');
+            if (!href) return;
+            
+            try {
+              // Resolve relative URLs
+              const resolvedUrl = new URL(href, url).href;
+              const urlDomain = new URL(resolvedUrl).hostname;
+              
+              // Only include links from the same domain
+              if (urlDomain === domain || urlDomain.endsWith('.' + domain)) {
+                // Skip anchors, javascript, mailto, etc.
+                if (!resolvedUrl.includes('#') && 
+                    !resolvedUrl.startsWith('javascript:') && 
+                    !resolvedUrl.startsWith('mailto:') &&
+                    !resolvedUrl.startsWith('tel:') &&
+                    !resolvedUrl.match(/\.(pdf|jpg|jpeg|png|gif|svg|css|js|zip|tar|gz)$/i)) {
+                  links.push(resolvedUrl.split('#')[0].split('?')[0]); // Clean URL
+                }
+              }
+            } catch {}
+          });
+          
+          // Remove duplicates
+          const uniqueLinks = [...new Set(links)];
+          
+          // Extract basic page data
+          const title = doc.querySelector('title')?.textContent || '';
+          const images: any[] = [];
+          const videos: any[] = [];
+          
+          doc.querySelectorAll('img[src]').forEach(img => {
+            const src = img.getAttribute('src');
+            if (src) {
+              try {
+                const resolvedSrc = new URL(src, url).href;
+                images.push({
+                  loc: resolvedSrc,
+                  title: img.getAttribute('alt') || img.getAttribute('title') || '',
+                });
+              } catch {}
+            }
+          });
+          
+          doc.querySelectorAll('video source[src], video[src]').forEach(video => {
+            const src = video.getAttribute('src');
+            if (src) {
+              try {
+                const resolvedSrc = new URL(src, url).href;
+                videos.push({ loc: resolvedSrc, title: '' });
+              } catch {}
+            }
+          });
+          
+          return { 
+            url, 
+            links: uniqueLinks,
+            data: { title, images, videos }, 
+            error: null 
+          };
+        } catch (err) {
+          return { url, links: [], data: null, error: (err as Error).message };
+        }
+      }));
+      
+      res.json({ results });
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        return res.status(400).json({
+          message: err.errors[0].message,
+          field: err.errors[0].path.join('.'),
+        });
+      }
+      res.status(400).json({ message: (err as Error).message });
+    }
+  });
+
   // Track active chunking operations for cancellation
   const activeChunkingJobs = new Map<number, { cancelled: boolean }>();
 

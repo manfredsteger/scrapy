@@ -229,9 +229,17 @@ export default function Home() {
         });
       }
     },
-    onError: () => {
-      toast({ title: t('error'), description: t('initError'), variant: 'destructive' });
+    onError: (error: any) => {
+      console.error('[Resync] Error:', error);
+      const errorMessage = error?.message || error?.toString() || t('initError');
+      toast({ 
+        title: t('error'), 
+        description: `${t('initError')}: ${errorMessage}`, 
+        variant: 'destructive' 
+      });
     },
+    retry: 2,
+    retryDelay: 1000,
   });
 
   const processStep = useCallback(async () => {

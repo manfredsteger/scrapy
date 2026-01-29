@@ -323,3 +323,25 @@ export const rateLimitStateSchema = z.object({
 });
 
 export type RateLimitState = z.infer<typeof rateLimitStateSchema>;
+
+// Single page scraping table
+export const singlePages = pgTable("single_pages", {
+  id: serial("id").primaryKey(),
+  url: text("url").notNull(),
+  title: text("title"),
+  domain: text("domain").notNull(),
+  scrapedData: jsonb("scraped_data").$type<ScrapedData>(),
+  structuredData: jsonb("structured_data").$type<StructuredData>(),
+  wordCount: integer("word_count").default(0),
+  status: text("status").notNull().default("pending"), // pending, scraping, completed, error
+  error: text("error"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertSinglePageSchema = createInsertSchema(singlePages).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type SinglePage = typeof singlePages.$inferSelect;
+export type InsertSinglePage = z.infer<typeof insertSinglePageSchema>;

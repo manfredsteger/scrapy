@@ -3,7 +3,7 @@ import { useQuery, useMutation } from '@tanstack/react-query';
 import { 
   Play, Square, Loader2, Download, Settings, 
   Trash2, ScanText, Globe, ArrowLeft, Plus, RefreshCw, Pause, X,
-  Layers, Package, Cog
+  Layers, Package, Cog, FileText
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -27,7 +27,7 @@ import ChunkingProgress from '@/components/ChunkingProgress';
 import { useLanguage } from '@/hooks/use-language';
 import { useToast } from '@/hooks/use-toast';
 import { apiRequest, queryClient } from '@/lib/queryClient';
-import type { Project, SitemapUrlEntry, ProjectSettings as ProjectSettingsType } from '@shared/schema';
+import type { Project, SitemapUrlEntry, ProjectSettings as ProjectSettingsType, SinglePage } from '@shared/schema';
 
 const BATCH_SIZE = 10;
 
@@ -40,11 +40,39 @@ export default function Home() {
   const [showNewProject, setShowNewProject] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showChunkingProgress, setShowChunkingProgress] = useState(false);
+  const [singleUrlInput, setSingleUrlInput] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const processingRef = useRef(false);
 
   const { data: projects = [], isLoading } = useQuery<Project[]>({
     queryKey: ['/api/projects'],
+  });
+
+  const { data: singlePages = [], isLoading: singlePagesLoading } = useQuery<SinglePage[]>({
+    queryKey: ['/api/single-pages'],
+  });
+
+  const createSinglePageMutation = useMutation({
+    mutationFn: async (url: string) => {
+      const res = await apiRequest('POST', '/api/single-pages', { url });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/single-pages'] });
+      setSingleUrlInput('');
+    },
+    onError: () => {
+      toast({ title: t('error'), description: t('initError'), variant: 'destructive' });
+    },
+  });
+
+  const deleteSinglePageMutation = useMutation({
+    mutationFn: async (id: number) => {
+      await apiRequest('DELETE', `/api/single-pages/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/single-pages'] });
+    },
   });
 
   const activeProject = useMemo(() => 
@@ -555,6 +583,102 @@ export default function Home() {
                   ))}
                 </div>
               )}
+
+              <div className="bg-card border border-border rounded-xl p-6 mt-6">
+                <h3 className="text-sm font-medium text-foreground mb-4">{t('singleScrape')}</h3>
+                <div className="flex gap-3">
+                  <Input
+                    type="text"
+                    className="flex-1 bg-input"
+                    placeholder={t('enterUrl')}
+                    value={singleUrlInput}
+                    onChange={(e) => setSingleUrlInput(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && singleUrlInput && createSinglePageMutation.mutate(singleUrlInput)}
+                    data-testid="single-url-input"
+                  />
+                  <Button
+                    onClick={() => createSinglePageMutation.mutate(singleUrlInput)}
+                    disabled={!singleUrlInput || createSinglePageMutation.isPending}
+                    className="gap-2"
+                    data-testid="single-scrape-button"
+                  >
+                    {createSinglePageMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <ScanText className="w-4 h-4" />}
+                    {t('scrapeUrl')}
+                  </Button>
+                </div>
+              </div>
+
+              <div className="mt-6">
+                <h2 className="text-xl font-semibold text-foreground mb-4">{t('singlePages')}</h2>
+                {singlePagesLoading ? (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+                  </div>
+                ) : singlePages.length === 0 ? (
+                  <div className="bg-card border border-dashed border-border rounded-xl py-12 text-center">
+                    <FileText className="w-8 h-8 text-muted-foreground mx-auto mb-3" />
+                    <p className="text-muted-foreground text-sm">{t('noSinglePages')}</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                    {singlePages.map(page => (
+                      <div 
+                        key={page.id} 
+                        className="bg-card border border-border rounded-lg p-4 hover-elevate"
+                        data-testid={`single-page-card-${page.id}`}
+                      >
+                        <div className="flex items-start gap-3">
+                          <div className="shrink-0 mt-0.5">
+                            <FileText className="w-4 h-4 text-muted-foreground" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <h4 className="text-sm font-medium text-foreground truncate">
+                              {page.title || page.url}
+                            </h4>
+                            <p className="text-xs text-muted-foreground truncate mt-0.5">{page.domain}</p>
+                            <div className="flex items-center gap-2 mt-2 flex-wrap">
+                              <Badge 
+                                variant={
+                                  page.status === 'completed' ? 'default' : 
+                                  page.status === 'error' ? 'destructive' : 
+                                  'secondary'
+                                }
+                                className="text-[10px]"
+                              >
+                                {page.status === 'scraping' && <Loader2 className="w-3 h-3 animate-spin mr-1" />}
+                                {page.status === 'completed' ? t('sequentialDataReady') : 
+                                 page.status === 'error' ? t('error') : 
+                                 page.status === 'scraping' ? t('scraping') : t('pending')}
+                              </Badge>
+                              {page.wordCount && page.wordCount > 0 && (
+                                <span className="text-[10px] text-muted-foreground">{page.wordCount} {t('totalWords')}</span>
+                              )}
+                            </div>
+                            {page.createdAt && (
+                              <p className="text-[10px] text-muted-foreground mt-1.5">
+                                {new Date(page.createdAt).toLocaleDateString(language === 'de' ? 'de-DE' : 'en-US')}
+                              </p>
+                            )}
+                          </div>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="shrink-0 h-7 w-7"
+                            onClick={() => {
+                              if (confirm(t('deleteConfirm'))) {
+                                deleteSinglePageMutation.mutate(page.id);
+                              }
+                            }}
+                            data-testid={`delete-single-page-${page.id}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5 text-muted-foreground" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           ) : (
             <div className="space-y-6">

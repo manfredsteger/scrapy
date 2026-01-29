@@ -2778,30 +2778,55 @@ export async function registerRoutes(
           const dom = new JSDOM(html);
           const doc = dom.window.document;
           
-          // Extract internal links
+          // Extract internal links - use both DOM and regex-based extraction
           const links: string[] = [];
-          doc.querySelectorAll('a[href]').forEach(a => {
-            const href = a.getAttribute('href');
+          
+          // Helper function to process href
+          const processHref = (href: string) => {
             if (!href) return;
+            // Skip anchors, javascript, mailto, tel
+            if (href.startsWith('#') || href.startsWith('javascript:') || 
+                href.startsWith('mailto:') || href.startsWith('tel:')) return;
             
             try {
-              // Resolve relative URLs
               const resolvedUrl = new URL(href, url).href;
               const urlDomain = new URL(resolvedUrl).hostname;
               
               // Only include links from the same domain
               if (urlDomain === domain || urlDomain.endsWith('.' + domain)) {
-                // Skip anchors, javascript, mailto, etc.
-                if (!resolvedUrl.includes('#') && 
-                    !resolvedUrl.startsWith('javascript:') && 
-                    !resolvedUrl.startsWith('mailto:') &&
-                    !resolvedUrl.startsWith('tel:') &&
-                    !resolvedUrl.match(/\.(pdf|jpg|jpeg|png|gif|svg|css|js|zip|tar|gz)$/i)) {
-                  links.push(resolvedUrl.split('#')[0].split('?')[0]); // Clean URL
+                // Skip file extensions we don't want
+                if (!resolvedUrl.match(/\.(pdf|jpg|jpeg|png|gif|svg|css|js|zip|tar|gz|ico|woff|woff2|ttf|eot)$/i)) {
+                  const cleanUrl = resolvedUrl.split('#')[0].split('?')[0];
+                  if (cleanUrl && !cleanUrl.endsWith('/manifest.json')) {
+                    links.push(cleanUrl);
+                  }
                 }
               }
             } catch {}
+          };
+          
+          // Method 1: DOM-based extraction
+          doc.querySelectorAll('a[href]').forEach(a => {
+            const href = a.getAttribute('href');
+            if (href) processHref(href);
           });
+          
+          // Method 2: Extract from template content (for Vue/React SSR apps)
+          doc.querySelectorAll('template').forEach(template => {
+            const templateHtml = template.innerHTML;
+            const hrefRegex = /href=["']([^"']+)["']/gi;
+            let match;
+            while ((match = hrefRegex.exec(templateHtml)) !== null) {
+              processHref(match[1]);
+            }
+          });
+          
+          // Method 3: Regex fallback on raw HTML for links in script tags or dynamically rendered content
+          const rawHrefRegex = /href=["']([^"'#][^"']*)["']/gi;
+          let rawMatch;
+          while ((rawMatch = rawHrefRegex.exec(html)) !== null) {
+            processHref(rawMatch[1]);
+          }
           
           // Remove duplicates
           const uniqueLinks = [...new Set(links)];

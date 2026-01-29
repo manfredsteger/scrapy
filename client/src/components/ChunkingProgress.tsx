@@ -22,6 +22,13 @@ interface EmbeddingsProgress {
   failed: number;
 }
 
+interface EnrichmentProgress {
+  processed: number;
+  total: number;
+  successful: number;
+  failed: number;
+}
+
 interface ProgressData {
   status: ProgressStatus;
   current: number;
@@ -29,8 +36,9 @@ interface ProgressData {
   chunksGenerated: number;
   currentUrl?: string;
   error?: string;
-  phase?: 'chunking' | 'deduplication' | 'embeddings';
+  phase?: 'chunking' | 'deduplication' | 'embeddings' | 'enrichment';
   embeddingsProgress?: EmbeddingsProgress;
+  enrichmentProgress?: EnrichmentProgress;
   warningMessage?: string;
 }
 
@@ -71,6 +79,7 @@ export default function ChunkingProgress({
               currentUrl: data.currentUrl,
               phase: data.phase || 'chunking',
               embeddingsProgress: data.embeddingsProgress,
+              enrichmentProgress: data.enrichmentProgress,
             }));
           } else if (data.type === 'warning') {
             setProgress(prev => ({
@@ -186,6 +195,13 @@ export default function ChunkingProgress({
       case 'idle':
         return 'Starte Verarbeitung...';
       case 'processing':
+        if (progress.phase === 'enrichment') {
+          const enr = progress.enrichmentProgress;
+          if (enr) {
+            return `Anreichere Metadaten (${enr.processed}/${enr.total})`;
+          }
+          return 'Anreichere Metadaten...';
+        }
         if (progress.phase === 'embeddings') {
           const ep = progress.embeddingsProgress;
           if (ep) {
@@ -266,6 +282,18 @@ export default function ChunkingProgress({
                 <div>
                   <p className="text-xl font-bold text-destructive">{progress.embeddingsProgress.failed}</p>
                   <p className="text-xs text-muted-foreground">Embeddings fehlgeschlagen</p>
+                </div>
+              </div>
+            )}
+            {progress.phase === 'enrichment' && progress.enrichmentProgress && (
+              <div className="grid grid-cols-2 gap-4 text-center mt-4 pt-4 border-t border-border">
+                <div>
+                  <p className="text-xl font-bold text-emerald-500">{progress.enrichmentProgress.successful}</p>
+                  <p className="text-xs text-muted-foreground">Metadaten erfolgreich</p>
+                </div>
+                <div>
+                  <p className="text-xl font-bold text-destructive">{progress.enrichmentProgress.failed}</p>
+                  <p className="text-xs text-muted-foreground">Metadaten fehlgeschlagen</p>
                 </div>
               </div>
             )}

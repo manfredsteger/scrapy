@@ -1885,7 +1885,89 @@ function scrapePageContent(html: string, url: string, extractStructuredDataFlag:
   const orderedElements: any[] = [];
   let totalWords = 0;
   
-  const mainContent = doc.querySelector('main, article, [role="main"], .content, #content, .post-content, .entry-content') || doc.body;
+  // Extended selectors for main content - prioritize more specific document/article selectors
+  // Also handle government/legal sites with specific content classes
+  const contentSelectors = [
+    // Document-specific selectors (for legal/government sites)
+    '.document-all',
+    '.document-content',
+    '#documentContent',
+    '.gesetzestext',
+    '.rechtstext',
+    '.legal-content',
+    // Standard article/content selectors
+    'main article',
+    'article.content',
+    'article',
+    'main',
+    '[role="main"]',
+    '.main-content',
+    '#main-content',
+    '.post-content',
+    '.entry-content',
+    '.article-content',
+    '.page-content',
+    // Generic content selectors (last resort before body)
+    '#content:not(#navigation)',
+    '.content:not(.navigation)',
+    '#content',
+    '.content',
+    '.container main',
+    '.wrapper main',
+  ];
+  
+  let mainContent: Element | null = null;
+  for (const selector of contentSelectors) {
+    try {
+      const el = doc.querySelector(selector);
+      if (el && el.textContent && el.textContent.trim().length > 100) {
+        mainContent = el;
+        break;
+      }
+    } catch {}
+  }
+  
+  if (!mainContent) {
+    mainContent = doc.body;
+  }
+  
+  // Elements and classes to skip (navigation, sidebars, etc.)
+  const skipTags = new Set(['script', 'style', 'noscript', 'nav', 'header', 'footer', 'aside', 'iframe', 'svg', 'form']);
+  const skipClasses = new Set([
+    'navigation', 'nav', 'navbar', 'menu', 'sidebar', 'side-nav', 'sidenav',
+    'breadcrumb', 'breadcrumbs', 'toc', 'table-of-contents', 'inhaltsverzeichnis',
+    'footer', 'header', 'banner', 'advertisement', 'ad', 'ads',
+    'social-share', 'share-buttons', 'related-posts', 'comments',
+    'cookie-banner', 'cookie-notice', 'popup', 'modal',
+  ]);
+  const skipIds = new Set([
+    'navigation', 'nav', 'navbar', 'menu', 'sidebar', 'toc',
+    'breadcrumb', 'footer', 'header', 'comments',
+  ]);
+  
+  function shouldSkipElement(el: Element): boolean {
+    const tag = el.tagName?.toLowerCase();
+    if (skipTags.has(tag)) return true;
+    
+    // Check element's own classes and id
+    const classList = el.className?.toLowerCase?.() || '';
+    const id = el.id?.toLowerCase() || '';
+    
+    const skipClassesArr = Array.from(skipClasses);
+    for (let i = 0; i < skipClassesArr.length; i++) {
+      if (classList.includes(skipClassesArr[i])) return true;
+    }
+    
+    const skipIdsArr = Array.from(skipIds);
+    for (let i = 0; i < skipIdsArr.length; i++) {
+      if (id.includes(skipIdsArr[i])) return true;
+    }
+    
+    // Check for role="navigation"
+    if (el.getAttribute('role') === 'navigation') return true;
+    
+    return false;
+  }
   
   function processNode(node: Node, depth = 0) {
     if (node.nodeType === 3) {
@@ -1897,7 +1979,8 @@ function scrapePageContent(html: string, url: string, extractStructuredDataFlag:
     const el = node as Element;
     const tag = el.tagName?.toLowerCase();
     
-    if (['script', 'style', 'noscript', 'nav', 'header', 'footer', 'aside', 'iframe', 'svg', 'form'].includes(tag)) {
+    // Use enhanced skip detection
+    if (shouldSkipElement(el)) {
       return;
     }
     

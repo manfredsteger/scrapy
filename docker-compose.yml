@@ -53,7 +53,7 @@ services:
       # Preserve node_modules from container
       - /app/node_modules
     ports:
-      - "5000:5000"
+      - "3333:5000"  # Externer Port 3333 um Konflikte zu vermeiden
     networks:
       - mapscraper-network
 

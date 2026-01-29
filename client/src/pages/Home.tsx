@@ -108,12 +108,15 @@ export default function Home() {
       let initialQueue = sitemaps;
       let useCrawlMode = false;
       let isWikiJsSite = isWikiJs || false;
+      let initialResults: Array<{ loc: string }> = [];
+      let projectStatus: string = 'scraping';
       
       if (isWikiJs && wikiJsPages && wikiJsPages.length > 0) {
-        // Wiki.js site - use all discovered pages directly
-        initialQueue = wikiJsPages;
-        useCrawlMode = false;
-        console.log(`[Wiki.js] Using ${wikiJsPages.length} discovered pages`);
+        // Wiki.js site - convert URLs to result format and start content scraping
+        initialResults = wikiJsPages.map((url: string) => ({ loc: url }));
+        initialQueue = wikiJsPages; // Queue for content scraping
+        projectStatus = 'content_scraping';
+        console.log(`[Wiki.js] Using ${wikiJsPages.length} discovered pages for content scraping`);
       } else if (sitemaps.length === 0) {
         // No sitemaps found - use crawl mode starting from base URL
         let baseUrl = domain.trim();
@@ -121,15 +124,16 @@ export default function Home() {
         baseUrl = baseUrl.replace(/\/$/, '');
         initialQueue = [baseUrl]; // Start with the base URL
         useCrawlMode = true;
+        projectStatus = 'crawling';
       }
       
       const project = await apiRequest('POST', '/api/projects', {
         domain: domain.replace(/^https?:\/\//, '').replace(/\/$/, ''),
         displayName: domain.replace(/^https?:\/\//, '').replace(/\/$/, ''),
-        status: useCrawlMode ? 'crawling' : 'scraping',
+        status: projectStatus,
         queue: initialQueue,
         processed: [],
-        results: [],
+        results: initialResults,
         errors: [],
         stats: {
           totalSitemaps: isWikiJsSite ? 0 : sitemaps.length,
@@ -231,26 +235,30 @@ export default function Home() {
       let initialQueue = sitemaps;
       let useCrawlMode = false;
       let isWikiJsSite = isWikiJs || false;
+      let initialResults: Array<{ loc: string }> = [];
+      let projectStatus: string = 'scraping';
       
       if (isWikiJs && wikiJsPages && wikiJsPages.length > 0) {
-        // Wiki.js site - use all discovered pages directly
-        initialQueue = wikiJsPages;
-        useCrawlMode = false;
-        console.log(`[Wiki.js] Resync: Using ${wikiJsPages.length} discovered pages`);
+        // Wiki.js site - convert URLs to result format and start content scraping
+        initialResults = wikiJsPages.map((url: string) => ({ loc: url }));
+        initialQueue = wikiJsPages; // Queue for content scraping
+        projectStatus = 'content_scraping';
+        console.log(`[Wiki.js] Resync: Using ${wikiJsPages.length} discovered pages for content scraping`);
       } else if (sitemaps.length === 0) {
         let baseUrl = domain.trim();
         if (!baseUrl.startsWith('http')) baseUrl = `https://${baseUrl}`;
         baseUrl = baseUrl.replace(/\/$/, '');
         initialQueue = [baseUrl];
         useCrawlMode = true;
+        projectStatus = 'crawling';
       }
       
       // Update project with new queue and reset stats
       const res = await apiRequest('PUT', `/api/projects/${project.id}`, {
-        status: useCrawlMode ? 'crawling' : 'scraping',
+        status: projectStatus,
         queue: initialQueue,
         processed: [],
-        results: [],
+        results: initialResults,
         errors: [],
         stats: {
           totalSitemaps: isWikiJsSite ? 0 : sitemaps.length,

@@ -88,18 +88,31 @@ export default function Home() {
       const discoverRes = await apiRequest('POST', '/api/scrape/discover', { domain });
       const { sitemaps } = await discoverRes.json();
       
+      // If no sitemaps found, crawl the base URL to discover internal links
+      let initialQueue = sitemaps;
+      let useCrawlMode = false;
+      
+      if (sitemaps.length === 0) {
+        // No sitemaps found - use crawl mode starting from base URL
+        let baseUrl = domain.trim();
+        if (!baseUrl.startsWith('http')) baseUrl = `https://${baseUrl}`;
+        baseUrl = baseUrl.replace(/\/$/, '');
+        initialQueue = [baseUrl]; // Start with the base URL
+        useCrawlMode = true;
+      }
+      
       const project = await apiRequest('POST', '/api/projects', {
         domain: domain.replace(/^https?:\/\//, '').replace(/\/$/, ''),
         displayName: domain.replace(/^https?:\/\//, '').replace(/\/$/, ''),
-        status: 'scraping',
-        queue: sitemaps,
+        status: useCrawlMode ? 'crawling' : 'scraping',
+        queue: initialQueue,
         processed: [],
         results: [],
         errors: [],
         stats: {
           totalSitemaps: sitemaps.length,
           processedSitemaps: 0,
-          totalUrls: 0,
+          totalUrls: useCrawlMode ? 1 : 0,
           totalImages: 0,
           totalVideos: 0,
           startTime: Date.now(),
@@ -113,6 +126,14 @@ export default function Home() {
       setDomainInput('');
       setIsCreating(false);
       setShowNewProject(false);
+      
+      // Show info toast if crawl mode was used
+      if (project.status === 'crawling') {
+        toast({ 
+          title: t('noSitemapFound'), 
+          description: t('crawlModeActive'),
+        });
+      }
     },
     onError: () => {
       toast({ title: t('error'), description: t('initError'), variant: 'destructive' });
@@ -220,6 +241,93 @@ export default function Home() {
       return;
     }
 
+    // Handle crawling mode - crawl pages to discover URLs
+    const crawlingProject = projects.find(p => p.status === 'crawling');
+    if (crawlingProject) {
+      if (!crawlingProject.queue || crawlingProject.queue.length === 0) {
+        await updateProjectMutation.mutateAsync({ 
+          id: crawlingProject.id, 
+          updates: { 
+            status: 'idle',
+            stats: { ...crawlingProject.stats!, endTime: Date.now() }
+          } 
+        });
+        return;
+      }
+
+      processingRef.current = true;
+      const batchUrls = (crawlingProject.queue || []).slice(0, BATCH_SIZE);
+      const remainingQueue = (crawlingProject.queue || []).slice(BATCH_SIZE);
+      
+      try {
+        // Crawl pages and discover internal links
+        const res = await apiRequest('POST', '/api/scrape/crawl', { 
+          urls: batchUrls,
+          domain: crawlingProject.domain 
+        });
+        const { results } = await res.json();
+
+        let newResults = [...(crawlingProject.results || [])];
+        let newQueue = [...remainingQueue];
+        let newProcessed = [...(crawlingProject.processed || []), ...batchUrls];
+        let newErrors = [...(crawlingProject.errors || [])];
+        
+        const existingLocs = new Set(newResults.map(r => r.loc));
+        const existingProcessed = new Set(newProcessed);
+        const existingQueue = new Set(newQueue);
+
+        results.forEach((r: { url: string; links: string[]; data: any; error: string | null }) => {
+          if (r.data) {
+            // Add this URL as a result
+            if (!existingLocs.has(r.url)) {
+              newResults.push({
+                loc: r.url,
+                lastmod: undefined,
+                changefreq: undefined,
+                priority: undefined,
+                images: r.data.images || [],
+                videos: r.data.videos || [],
+              });
+              existingLocs.add(r.url);
+            }
+            
+            // Add discovered links to queue
+            r.links.forEach((link: string) => {
+              if (!existingLocs.has(link) && !existingProcessed.has(link) && !existingQueue.has(link)) {
+                newQueue.push(link);
+                existingQueue.add(link);
+              }
+            });
+          } else if (r.error) {
+            newErrors.push({ 
+              url: r.url, 
+              message: r.error, 
+              timestamp: new Date().toISOString() 
+            });
+          }
+        });
+
+        await updateProjectMutation.mutateAsync({
+          id: crawlingProject.id,
+          updates: {
+            queue: newQueue,
+            processed: newProcessed,
+            results: newResults,
+            errors: newErrors,
+            stats: {
+              ...crawlingProject.stats!,
+              totalUrls: newResults.length,
+              totalImages: newResults.reduce((acc, curr) => acc + (curr.images?.length || 0), 0),
+              totalVideos: newResults.reduce((acc, curr) => acc + (curr.videos?.length || 0), 0),
+            },
+          },
+        });
+      } finally {
+        processingRef.current = false;
+      }
+      return;
+    }
+
     const contentScrapingProject = projects.find(p => p.status === 'content_scraping');
     if (contentScrapingProject) {
       if (!contentScrapingProject.queue || contentScrapingProject.queue.length === 0) {
@@ -279,9 +387,10 @@ export default function Home() {
   }, [projects, updateProjectMutation]);
 
   useEffect(() => {
-    const active = projects.find(p => p.status === 'scraping' || p.status === 'content_scraping');
+    const active = projects.find(p => p.status === 'scraping' || p.status === 'content_scraping' || p.status === 'crawling');
     if (active && !processingRef.current) {
-      const timer = setTimeout(processStep, active.status === 'scraping' ? 500 : 1000);
+      const delay = active.status === 'crawling' ? 800 : (active.status === 'scraping' ? 500 : 1000);
+      const timer = setTimeout(processStep, delay);
       return () => clearTimeout(timer);
     }
   }, [projects, processStep]);

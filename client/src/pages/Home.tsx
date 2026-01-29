@@ -57,8 +57,11 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const processingRef = useRef(false);
 
-  const { data: projects = [], isLoading } = useQuery<Project[]>({
+  const { data: projects = [], isLoading, refetch: refetchProjects } = useQuery<Project[]>({
     queryKey: ['/api/projects'],
+    refetchOnMount: true,
+    refetchOnWindowFocus: true,
+    staleTime: 1000, // Consider data stale after 1 second
   });
 
   const { data: singlePages = [], isLoading: singlePagesLoading } = useQuery<SinglePage[]>({
@@ -455,6 +458,17 @@ export default function Home() {
       }
     }
   }, [projects, updateProjectMutation]);
+
+  // Reset processingRef if stuck (safety measure)
+  useEffect(() => {
+    const resetTimer = setTimeout(() => {
+      if (processingRef.current) {
+        console.warn('Resetting stuck processingRef');
+        processingRef.current = false;
+      }
+    }, 30000); // Reset after 30 seconds if stuck
+    return () => clearTimeout(resetTimer);
+  }, []);
 
   useEffect(() => {
     const active = projects.find(p => p.status === 'scraping' || p.status === 'content_scraping' || p.status === 'crawling');

@@ -22,7 +22,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./docker/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
-      - "5432:5432"
+      - "5433:5432"  # Externer Port 5433 um Konflikte mit lokaler PostgreSQL zu vermeiden
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mapscraper -d mapscraper"]
       interval: 10s

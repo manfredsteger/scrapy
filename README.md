@@ -165,7 +165,8 @@ Die Anwendung läuft auf **http://localhost:5000** 🎉
 ### 📁 .env Beispiel
 
 ```env
-DATABASE_URL=postgresql://mapscraper:secret@localhost:5432/mapscraper
+# Port 5433 weil Docker den Standard-Port 5432 nicht blockiert
+DATABASE_URL=postgresql://mapscraper:secret@localhost:5433/mapscraper
 SESSION_SECRET=dein-super-geheimer-schluessel-hier
 PORT=5000
 NODE_ENV=development

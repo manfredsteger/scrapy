@@ -171,11 +171,19 @@ export default function Home() {
 
   const updateProjectMutation = useMutation({
     mutationFn: async ({ id, updates }: { id: number; updates: Partial<Project> }) => {
+      // Check if project was marked for deletion - don't update if aborted
+      if (abortedProjectsRef.current.has(id)) {
+        console.log(`[Update] Skipping update for aborted project ${id}`);
+        return null;
+      }
       const res = await apiRequest('PUT', `/api/projects/${id}`, updates);
       return res.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
+    onSuccess: (data) => {
+      // Only invalidate if we actually updated something (not aborted)
+      if (data !== null) {
+        queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
+      }
     },
   });
 

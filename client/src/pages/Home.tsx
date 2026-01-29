@@ -25,6 +25,7 @@ import ErrorLogs from '@/components/ErrorLogs';
 import ProjectCard from '@/components/ProjectCard';
 import ProjectSettings from '@/components/ProjectSettings';
 import ChunkingProgress from '@/components/ChunkingProgress';
+import ConfirmDialog from '@/components/ConfirmDialog';
 import { useLanguage } from '@/hooks/use-language';
 import { useToast } from '@/hooks/use-toast';
 import { apiRequest, queryClient } from '@/lib/queryClient';
@@ -43,6 +44,11 @@ export default function Home() {
   const [showSettings, setShowSettings] = useState(false);
   const [showChunkingProgress, setShowChunkingProgress] = useState(false);
   const [singleUrlInput, setSingleUrlInput] = useState('');
+  const [deleteConfirm, setDeleteConfirm] = useState<{ open: boolean; projectId: number | null; projectName: string }>({
+    open: false,
+    projectId: null,
+    projectName: '',
+  });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const processingRef = useRef(false);
 
@@ -738,9 +744,11 @@ export default function Home() {
                       project={project}
                       onSelect={() => setActiveProjectId(project.id)}
                       onDelete={() => {
-                        if (confirm(t('deleteConfirm'))) {
-                          deleteProjectMutation.mutate(project.id);
-                        }
+                        setDeleteConfirm({
+                          open: true,
+                          projectId: project.id,
+                          projectName: project.displayName || project.domain,
+                        });
                       }}
                       onRename={(newName) => {
                         updateProjectMutation.mutate({
@@ -1196,6 +1204,21 @@ export default function Home() {
           t={t}
         />
       )}
+
+      <ConfirmDialog
+        open={deleteConfirm.open}
+        onOpenChange={(open) => setDeleteConfirm(prev => ({ ...prev, open }))}
+        title={t('deleteProject')}
+        description={t('deleteConfirmMessage').replace('{name}', deleteConfirm.projectName)}
+        confirmText={t('delete')}
+        cancelText={t('cancel')}
+        variant="destructive"
+        onConfirm={() => {
+          if (deleteConfirm.projectId) {
+            deleteProjectMutation.mutate(deleteConfirm.projectId);
+          }
+        }}
+      />
     </div>
   );
 }

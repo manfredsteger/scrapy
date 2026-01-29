@@ -211,6 +211,12 @@ export const translations = {
     scrapeUrl: 'Seite scrapen',
     singlePages: 'Einzelseiten',
     noSinglePages: 'Keine Einzelseiten vorhanden',
+    content: 'Inhalt',
+    chunks: 'Chunks',
+    viewContent: 'Inhalt anzeigen',
+    tokens: 'Tokens',
+    type: 'Typ',
+    quality: 'Qualität',
   },
   en: {
     appTitle: 'MapScraper Pro',
@@ -422,6 +428,12 @@ export const translations = {
     scrapeUrl: 'Scrape Page',
     singlePages: 'Single Pages',
     noSinglePages: 'No single pages',
+    content: 'Content',
+    chunks: 'Chunks',
+    viewContent: 'View Content',
+    tokens: 'Tokens',
+    type: 'Type',
+    quality: 'Quality',
   },
 } as const;
 

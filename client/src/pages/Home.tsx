@@ -108,12 +108,12 @@ export default function Home() {
       let initialQueue = sitemaps;
       let useCrawlMode = false;
       let isWikiJsSite = isWikiJs || false;
-      let initialResults: Array<{ loc: string }> = [];
+      let initialResults: Array<{ loc: string; images: Array<unknown>; videos: Array<unknown> }> = [];
       let projectStatus: string = 'scraping';
       
       if (isWikiJs && wikiJsPages && wikiJsPages.length > 0) {
         // Wiki.js site - convert URLs to result format and start content scraping
-        initialResults = wikiJsPages.map((url: string) => ({ loc: url }));
+        initialResults = wikiJsPages.map((url: string) => ({ loc: url, images: [], videos: [] }));
         initialQueue = wikiJsPages; // Queue for content scraping
         projectStatus = 'content_scraping';
         console.log(`[Wiki.js] Using ${wikiJsPages.length} discovered pages for content scraping`);
@@ -235,12 +235,12 @@ export default function Home() {
       let initialQueue = sitemaps;
       let useCrawlMode = false;
       let isWikiJsSite = isWikiJs || false;
-      let initialResults: Array<{ loc: string }> = [];
+      let initialResults: Array<{ loc: string; images: Array<unknown>; videos: Array<unknown> }> = [];
       let projectStatus: string = 'scraping';
       
       if (isWikiJs && wikiJsPages && wikiJsPages.length > 0) {
         // Wiki.js site - convert URLs to result format and start content scraping
-        initialResults = wikiJsPages.map((url: string) => ({ loc: url }));
+        initialResults = wikiJsPages.map((url: string) => ({ loc: url, images: [], videos: [] }));
         initialQueue = wikiJsPages; // Queue for content scraping
         projectStatus = 'content_scraping';
         console.log(`[Wiki.js] Resync: Using ${wikiJsPages.length} discovered pages for content scraping`);

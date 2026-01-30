@@ -48,7 +48,15 @@ Bevorzugte Kommunikation: Einfache, alltägliche Sprache (Deutsch).
 ├── server/           # Express Backend
 │   ├── routes.ts     # API-Route-Handler
 │   ├── storage.ts    # Datenbank-Zugriffsschicht
-│   └── db.ts         # Datenbankverbindung
+│   ├── db.ts         # Datenbankverbindung
+│   ├── scrapers/     # Modulare Scraper-Module
+│   │   ├── index.ts          # Scraper-Registry und Factory
+│   │   ├── base-scraper.ts   # Abstrakte Basisklasse
+│   │   ├── wikijs-scraper.ts # Wiki.js-spezifischer Scraper
+│   │   ├── wordpress-scraper.ts # WordPress-spezifischer Scraper
+│   │   └── generic-scraper.ts   # Generischer Fallback-Scraper
+│   └── utils/
+│       └── detector.ts   # Website-Typ-Erkennung
 ├── shared/           # Gemeinsamer Code (Client/Server)
 │   ├── schema.ts     # Drizzle Schema + Zod Typen
 │   └── routes.ts     # API-Vertragsdefinitionen
@@ -133,6 +141,62 @@ Während des Scrapens durchläuft eine Einzelseite folgende Status:
 2. `scraping` - Inhalt wird extrahiert
 3. `chunking` - Chunks werden generiert
 4. `completed` - Fertig (oder `error` bei Fehlern)
+
+## Modulares Scraper-System
+
+Das System verwendet eine modulare Architektur mit austauschbaren Scraper-Modulen für verschiedene Website-Typen:
+
+### Architektur-Übersicht
+- **BaseScraper**: Abstrakte Basisklasse mit gemeinsamer Logik (Fetch, Link-Extraktion, Strukturdaten)
+- **Scraper-Registry**: Factory-Pattern für dynamische Scraper-Instanziierung
+- **Website-Detektor**: Automatische Erkennung des CMS-Typs (Wiki.js, WordPress, Generic)
+
+### Verfügbare Scraper-Module
+
+#### WikiJsScraper (`server/scrapers/wikijs-scraper.ts`)
+- Erkennt Wiki.js durch Generator-Meta-Tag, GraphQL-Endpunkte, Vue-Applikation
+- Extrahiert Inhalte aus `.contents` und `.page-content` Containern
+- Unterstützt Wiki.js Sitemap-Format
+- Ohne API-Key/Credentials funktionsfähig
+
+#### WordPressScraper (`server/scrapers/wordpress-scraper.ts`)
+- Erkennt WordPress durch `/wp-content/`, `/wp-json/`, Generator-Meta-Tag
+- Unterstützt Gutenberg-Blöcke und klassische Editor-Inhalte
+- Parst wp-sitemap.xml und sitemap_index.xml
+- Optionale Integration mit WP REST API
+
+#### GenericScraper (`server/scrapers/generic-scraper.ts`)
+- Fallback für unbekannte Website-Typen
+- Umfangreiche Content-Selector-Liste für verschiedene Layouts
+- Unterstützt Standard-Sitemap-Formate
+
+### API Endpunkte - Scraper
+- `POST /api/scrape/detect` - Website-Typ erkennen
+  - Request: `{ url: string }`
+  - Response: `{ url, type, confidence, indicators }`
+
+### Eigene Scraper entwickeln
+Neue Scraper-Module können durch Erweiterung der `BaseScraper`-Klasse erstellt werden:
+
+```typescript
+import { BaseScraper, ScraperResult, WebsiteType } from "./base-scraper";
+
+export class MyCustomScraper extends BaseScraper {
+  get type(): WebsiteType {
+    return 'generic'; // oder eigener Typ
+  }
+
+  scrapePageContent(html: string, url: string): ScraperResult {
+    // Custom Content-Extraktion hier
+  }
+}
+```
+
+Registrierung in `server/scrapers/index.ts`:
+```typescript
+import { MyCustomScraper } from "./my-custom-scraper";
+registerScraper('mycms', MyCustomScraper);
+```
 
 ## Advanced Scraping Features
 

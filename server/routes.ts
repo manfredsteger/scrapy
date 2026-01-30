@@ -2718,6 +2718,33 @@ export async function registerRoutes(
     }
   });
 
+  // Website type detection endpoint
+  app.post(api.scrape.detect.path, async (req, res) => {
+    try {
+      const input = api.scrape.detect.input.parse(req.body);
+      let url = input.url.trim();
+      if (!url.startsWith('http')) url = `https://${url}`;
+      
+      const { detectWebsiteType } = await import('./scrapers/index');
+      const detection = await detectWebsiteType(url);
+      
+      res.json({
+        url,
+        type: detection.type,
+        confidence: detection.confidence,
+        indicators: detection.indicators,
+      });
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        return res.status(400).json({
+          message: err.errors[0].message,
+          field: err.errors[0].path.join('.'),
+        });
+      }
+      res.status(400).json({ message: (err as Error).message });
+    }
+  });
+
   app.post(api.scrape.discover.path, async (req, res) => {
     try {
       const input = api.scrape.discover.input.parse(req.body);

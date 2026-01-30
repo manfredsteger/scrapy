@@ -26,13 +26,18 @@ export const videoMetadataSchema = z.object({
 
 // Scraped DOM element preserving structure
 export const scrapedElementSchema = z.object({
-  type: z.enum(['heading', 'paragraph', 'list', 'blockquote', 'media', 'table', 'code']),
+  type: z.enum(['heading', 'paragraph', 'list', 'blockquote', 'media', 'table', 'code', 'quote']),
   tag: z.string().optional(),
   content: z.string().optional(),
   children: z.array(z.any()).optional(),
   src: z.string().optional(),
   alt: z.string().optional(),
   level: z.number().optional(),
+  listType: z.enum(['ordered', 'unordered']).optional(),
+  items: z.array(z.string()).optional(),
+  headers: z.array(z.string()).optional(),
+  rows: z.array(z.array(z.string())).optional(),
+  language: z.string().optional(),
 });
 
 // Structured data extracted from pages (JSON-LD, Schema.org) - defined here before use

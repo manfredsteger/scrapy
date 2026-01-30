@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { ExternalLink, CheckCircle, Clock, Search, Eye, ChevronDown } from 'lucide-react';
+import { ExternalLink, CheckCircle, Clock, Search, Eye, ChevronDown, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -8,19 +8,23 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import ContentPreview from './ContentPreview';
-import type { SitemapUrlEntry } from '@shared/schema';
+import ChunksPreview from './ChunksPreview';
+import type { SitemapUrlEntry, RagChunk } from '@shared/schema';
 
 interface UrlListProps {
   urls: SitemapUrlEntry[];
   t: (key: any) => string;
   // If true, treat all URLs as scraped (for projects where data is stored in chunks, not scrapedData)
   allScraped?: boolean;
+  // Project ID for loading chunks
+  projectId?: number;
 }
 
-export default function UrlList({ urls, t, allScraped = false }: UrlListProps) {
+export default function UrlList({ urls, t, allScraped = false, projectId }: UrlListProps) {
   const [filter, setFilter] = useState('');
   const [activeFolder, setActiveFolder] = useState<string | null>(null);
   const [previewEntry, setPreviewEntry] = useState<SitemapUrlEntry | null>(null);
+  const [chunksPreviewUrl, setChunksPreviewUrl] = useState<string | null>(null);
   const [showFolders, setShowFolders] = useState(false);
   
   const folderStats = useMemo(() => {
@@ -75,6 +79,15 @@ export default function UrlList({ urls, t, allScraped = false }: UrlListProps) {
         <ContentPreview 
           entry={previewEntry} 
           onClose={() => setPreviewEntry(null)} 
+          t={t}
+        />
+      )}
+      
+      {chunksPreviewUrl && projectId && (
+        <ChunksPreview
+          url={chunksPreviewUrl}
+          projectId={projectId}
+          onClose={() => setChunksPreviewUrl(null)}
           t={t}
         />
       )}
@@ -209,7 +222,7 @@ export default function UrlList({ urls, t, allScraped = false }: UrlListProps) {
                   </td>
                   <td className="text-right">
                     <div className="flex items-center justify-end gap-1">
-                      {url.scrapedData && (
+                      {url.scrapedData ? (
                         <Button
                           variant="ghost"
                           size="icon"
@@ -218,7 +231,16 @@ export default function UrlList({ urls, t, allScraped = false }: UrlListProps) {
                         >
                           <Eye className="w-4 h-4" />
                         </Button>
-                      )}
+                      ) : (allScraped && projectId) ? (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => setChunksPreviewUrl(url.loc)}
+                          data-testid={`view-chunks-${idx}`}
+                        >
+                          <Eye className="w-4 h-4" />
+                        </Button>
+                      ) : null}
                       <a href={url.loc} target="_blank" rel="noopener noreferrer">
                         <Button variant="ghost" size="icon" data-testid={`external-link-${idx}`}>
                           <ExternalLink className="w-4 h-4" />

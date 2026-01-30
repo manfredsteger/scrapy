@@ -1336,6 +1336,7 @@ export default function Home() {
                       urls={activeProject?.results || []} 
                       t={t} 
                       allScraped={scrapedCount > 0 && scrapedCount >= totalUrls}
+                      projectId={activeProject?.id}
                     />
                   </TabsContent>
                   <TabsContent value="errors" className="m-0 min-h-[400px]">

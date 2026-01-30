@@ -1,0 +1,197 @@
+Ich brauche eine generische Scraping-Lösung, die jedes Wiki.js und andere Websites automatisch erkennt und ohne Credentials scrapen kann. Jede methode wie z.B. Wikijs, Wordpress usw. soll als ein Modul also eine eigene datei angelegt werden damit nicht monströse Routen und Codes entstehen
+
+Hier ein Vorschlag den du mit der bestehenen App abgleichen müsstest:
+
+**Architektur:**
+```
+/wiki-scraper
+  /app.py (oder index.js)
+  /scrapers
+    /wikijs_scraper.py
+  /routes
+    /scrape.py
+  /utils
+    /detector.py
+```
+
+**1. Wiki.js Detection**
+
+```python
+# utils/detector.py
+import requests
+from bs4 import BeautifulSoup
+
+def is_wikijs(url):
+    """Erkennt ob eine URL ein Wiki.js ist"""
+    try:
+        response = requests.get(url, timeout=10)
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Wiki.js hat typische Merkmale:
+        indicators = [
+            soup.find('meta', {'name': 'generator', 'content': lambda x: x and 'wiki.js' in x.lower()}),
+            soup.find('div', {'id': 'root'}),  # Wiki.js React App
+            'wiki.js' in response.text.lower(),
+            '/graphql' in response.text  # GraphQL endpoint
+        ]
+        
+        return any(indicators)
+    except:
+        return False
+```
+
+**2. Generischer Scraper (ohne API Key)**
+
+```python
+# scrapers/wikijs_scraper.py
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin, urlparse
+import json
+
+class WikiJSScraper:
+    def __init__(self, base_url):
+        self.base_url = base_url.rstrip('/')
+        self.visited = set()
+        self.pages = []
+        
+    def find_sitemap(self):
+        """Versucht Sitemap zu finden"""
+        sitemap_urls = [
+            f"{self.base_url}/sitemap.xml",
+            f"{self.base_url}/sitemap.txt"
+        ]
+        for url in sitemap_urls:
+            try:
+                resp = requests.get(url)
+                if resp.status_code == 200:
+                    return self.parse_sitemap(resp.content)
+            except:
+                continue
+        return None
+    
+    def crawl_page(self, url):
+        """Scrapt eine einzelne Wiki-Seite"""
+        if url in self.visited:
+            return
+            
+        self.visited.add(url)
+        
+        try:
+            response = requests.get(url, timeout=10)
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # Wiki.js Content extrahieren
+            content_div = soup.find('div', class_='contents') or soup.find('article')
+            
+            page_data = {
+                'url': url,
+                'title': soup.find('h1').text if soup.find('h1') else '',
+                'content': content_div.get_text(strip=True) if content_div else '',
+                'html': str(content_div) if content_div else '',
+                'links': self.extract_links(soup, url)
+            }
+            
+            self.pages.append(page_data)
+            
+            # Rekursiv weitere Seiten crawlen
+            for link in page_data['links']:
+                if self.is_internal_wiki_link(link):
+                    self.crawl_page(link)
+                    
+        except Exception as e:
+            print(f"Error scraping {url}: {e}")
+    
+    def extract_links(self, soup, base_url):
+        """Extrahiert alle internen Links"""
+        links = []
+        for a in soup.find_all('a', href=True):
+            full_url = urljoin(base_url, a['href'])
+            links.append(full_url)
+        return links
+    
+    def is_internal_wiki_link(self, url):
+        """Prüft ob Link zur selben Wiki-Instanz gehört"""
+        return url.startswith(self.base_url) and url not in self.visited
+    
+    def scrape(self):
+        """Hauptfunktion"""
+        # Versuche erst Sitemap
+        sitemap_pages = self.find_sitemap()
+        if sitemap_pages:
+            for page_url in sitemap_pages:
+                self.crawl_page(page_url)
+        else:
+            # Fallback: Von Homepage crawlen
+            self.crawl_page(self.base_url)
+        
+        return self.pages
+```
+
+**3. Flask/FastAPI Route für Replit**
+
+```python
+# app.py
+from flask import Flask, request, jsonify
+from scrapers.wikijs_scraper import WikiJSScraper
+from utils.detector import is_wikijs
+
+app = Flask(__name__)
+
+@app.route('/scrape', methods=['POST'])
+def scrape_wiki():
+    data = request.json
+    wiki_url = data.get('url')
+    
+    if not wiki_url:
+        return jsonify({'error': 'URL required'}), 400
+    
+    # Wiki.js Detection
+    if not is_wikijs(wiki_url):
+        return jsonify({'error': 'Not a Wiki.js instance'}), 400
+    
+    # Scrape
+    scraper = WikiJSScraper(wiki_url)
+    pages = scraper.scrape()
+    
+    # Export als JSON
+    return jsonify({
+        'wiki_url': wiki_url,
+        'pages_count': len(pages),
+        'pages': pages
+    })
+
+@app.route('/detect', methods=['POST'])
+def detect_wiki():
+    data = request.json
+    url = data.get('url')
+    
+    is_wiki = is_wikijs(url)
+    return jsonify({'is_wikijs': is_wiki})
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
+```
+
+**4. Verwendung in Replit:**
+
+```bash
+# Installation
+pip install flask beautifulsoup4 requests
+
+# Start
+python app.py
+```
+
+**API Calls:**
+```bash
+# Detection
+curl -X POST http://localhost:5000/detect \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example-wiki.com"}'
+
+# Scraping
+curl -X POST http://localhost:5000/scrape \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example-wiki.com"}'
+```

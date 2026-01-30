@@ -1959,14 +1959,31 @@ function scrapePageContent(html: string, url: string, extractStructuredDataFlag:
   ];
   
   let mainContent: Element | null = null;
-  for (const selector of contentSelectors) {
-    try {
-      const el = doc.querySelector(selector);
-      if (el && el.textContent && el.textContent.trim().length > 100) {
-        mainContent = el;
-        break;
-      }
-    } catch {}
+  
+  // Special handling for Wiki.js: content is inside <template slot="contents">
+  const wikiJsTemplate = doc.querySelector('template[slot="contents"]');
+  if (wikiJsTemplate) {
+    // Wiki.js uses Vue.js template slots - extract content from the template
+    const templateContent = wikiJsTemplate.innerHTML;
+    if (templateContent && templateContent.trim().length > 50) {
+      // Create a temporary element to parse the template content
+      const tempDiv = doc.createElement('div');
+      tempDiv.innerHTML = templateContent;
+      mainContent = tempDiv;
+    }
+  }
+  
+  // If no Wiki.js content found, try standard selectors
+  if (!mainContent) {
+    for (const selector of contentSelectors) {
+      try {
+        const el = doc.querySelector(selector);
+        if (el && el.textContent && el.textContent.trim().length > 100) {
+          mainContent = el;
+          break;
+        }
+      } catch {}
+    }
   }
   
   if (!mainContent) {

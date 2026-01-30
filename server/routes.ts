@@ -2280,7 +2280,21 @@ export async function registerRoutes(
   
   app.get(api.projects.list.path, async (req, res) => {
     const allProjects = await storage.getProjects();
-    res.json(allProjects);
+    // Return lightweight summaries without full results/chunks data to prevent memory issues
+    const summaries = allProjects.map(p => ({
+      ...p,
+      // For very large projects, don't send full results - just count
+      results: p.results && p.results.length > 100 
+        ? p.results.slice(0, 20) // Send first 20 for preview
+        : p.results,
+      // Add result count for UI
+      _resultsCount: p.results?.length || 0,
+      _scrapedCount: p.results?.filter(r => r.scrapedData).length || 0,
+      // Don't send large chunks array in list view
+      chunks: undefined,
+      _chunksCount: p.chunks?.length || 0,
+    }));
+    res.json(summaries);
   });
 
   app.get(api.projects.get.path, async (req, res) => {

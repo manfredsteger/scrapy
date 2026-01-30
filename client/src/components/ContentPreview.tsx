@@ -1,18 +1,21 @@
-import { useState } from 'react';
-import { X, Image as ImageIcon, Video, FileText, Hash, Copy, Check, ChevronDown } from 'lucide-react';
+import { useState, useMemo } from 'react';
+import { X, Image as ImageIcon, Video, FileText, Hash, Copy, Check, ChevronDown, Layers, Tag, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import type { SitemapUrlEntry, ScrapedElement } from '@shared/schema';
+import type { SitemapUrlEntry, ScrapedElement, RagChunk } from '@shared/schema';
 
 interface ContentPreviewProps {
   entry: SitemapUrlEntry;
   onClose: () => void;
   t: (key: any) => string;
+  chunks?: RagChunk[];
 }
 
 function elementToMarkdown(el: ScrapedElement): string {
@@ -233,9 +236,17 @@ function renderElement(el: ScrapedElement, idx: number) {
   return null;
 }
 
-export default function ContentPreview({ entry, onClose, t }: ContentPreviewProps) {
+export default function ContentPreview({ entry, onClose, t, chunks = [] }: ContentPreviewProps) {
   const [copied, setCopied] = useState<string | null>(null);
+  const [selectedChunk, setSelectedChunk] = useState<number | null>(null);
   const data = entry.scrapedData;
+  
+  // Filter chunks for this URL
+  const urlChunks = useMemo(() => {
+    return chunks.filter(c => c.location.url === entry.loc);
+  }, [chunks, entry.loc]);
+  
+  const hasChunks = urlChunks.length > 0;
   
   const copyContent = async (format: 'markdown' | 'json' | 'html') => {
     if (!data) return;
@@ -271,7 +282,7 @@ export default function ContentPreview({ entry, onClose, t }: ContentPreviewProp
       className="fixed inset-0 z-50 bg-background/90 backdrop-blur-sm flex items-center justify-center p-4"
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div className="bg-card rounded-xl w-full max-w-4xl max-h-[90vh] flex flex-col border border-border shadow-2xl">
+      <div className={`bg-card rounded-xl w-full ${hasChunks ? 'max-w-7xl' : 'max-w-4xl'} max-h-[90vh] flex flex-col border border-border shadow-2xl`}>
         <div className="px-6 py-4 border-b border-border flex items-center justify-between shrink-0">
           <div className="min-w-0 flex-1 mr-4">
             <h3 className="text-lg font-semibold text-foreground truncate">
@@ -280,6 +291,12 @@ export default function ContentPreview({ entry, onClose, t }: ContentPreviewProp
             <p className="text-xs text-muted-foreground truncate mt-0.5">{entry.loc}</p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            {hasChunks && (
+              <Badge variant="secondary" className="gap-1">
+                <Layers className="w-3 h-3" />
+                {urlChunks.length} Chunks
+              </Badge>
+            )}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="outline" size="sm" className="gap-2" data-testid="copy-dropdown">
@@ -314,7 +331,7 @@ export default function ContentPreview({ entry, onClose, t }: ContentPreviewProp
           </div>
         </div>
         
-        <div className="grid grid-cols-3 gap-4 p-4 border-b border-border shrink-0">
+        <div className={`grid ${hasChunks ? 'grid-cols-4' : 'grid-cols-3'} gap-4 p-4 border-b border-border shrink-0`}>
           <div className="bg-secondary rounded-lg p-3 text-center">
             <FileText className="w-4 h-4 mx-auto mb-1 text-muted-foreground" />
             <p className="text-xs text-muted-foreground">{t('totalWords')}</p>
@@ -332,14 +349,112 @@ export default function ContentPreview({ entry, onClose, t }: ContentPreviewProp
               {data?.orderedElements.filter(e => e.type === 'media').length}
             </p>
           </div>
+          {hasChunks && (
+            <div className="bg-secondary rounded-lg p-3 text-center">
+              <Layers className="w-4 h-4 mx-auto mb-1 text-muted-foreground" />
+              <p className="text-xs text-muted-foreground">Chunks</p>
+              <p className="text-lg font-bold text-foreground">{urlChunks.length}</p>
+            </div>
+          )}
         </div>
 
-        <div className="flex-1 overflow-y-auto p-6">
-          {data?.orderedElements.map((el, i) => renderElement(el, i))}
+        <div className={`flex-1 overflow-hidden ${hasChunks ? 'flex' : ''}`}>
+          {/* Left side: Content */}
+          <div className={`${hasChunks ? 'w-1/2 border-r border-border' : 'w-full'} overflow-y-auto p-6`}>
+            <div className="mb-4">
+              <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-2">
+                <FileText className="w-4 h-4" />
+                Content
+              </h4>
+            </div>
+            {data?.orderedElements.map((el, i) => renderElement(el, i))}
+            
+            {(!data?.orderedElements || data.orderedElements.length === 0) && (
+              <div className="py-12 text-center">
+                <p className="text-muted-foreground">{t('noDataExtracted')}</p>
+              </div>
+            )}
+          </div>
           
-          {(!data?.orderedElements || data.orderedElements.length === 0) && (
-            <div className="py-12 text-center">
-              <p className="text-muted-foreground">{t('noDataExtracted')}</p>
+          {/* Right side: Chunks Preview */}
+          {hasChunks && (
+            <div className="w-1/2 flex flex-col overflow-hidden">
+              <div className="p-4 border-b border-border shrink-0">
+                <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-2">
+                  <Layers className="w-4 h-4" />
+                  RAG Chunks ({urlChunks.length})
+                </h4>
+              </div>
+              <ScrollArea className="flex-1">
+                <div className="p-4 space-y-3">
+                  {urlChunks.map((chunk, idx) => (
+                    <div 
+                      key={chunk.chunk_id}
+                      className={`bg-secondary/50 rounded-lg p-3 cursor-pointer transition-all hover:bg-secondary ${selectedChunk === idx ? 'ring-2 ring-primary' : ''}`}
+                      onClick={() => setSelectedChunk(selectedChunk === idx ? null : idx)}
+                      data-testid={`chunk-preview-${idx}`}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-mono text-muted-foreground">
+                          #{idx + 1}
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline" className="text-xs">
+                            ~{chunk.tokens_estimate} tokens
+                          </Badge>
+                          {chunk.quality && (
+                            <Badge 
+                              variant={chunk.quality.quality === 'good' ? 'default' : 'secondary'}
+                              className="text-xs"
+                            >
+                              {chunk.quality.quality}
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                      
+                      <p className={`text-sm text-foreground ${selectedChunk === idx ? '' : 'line-clamp-3'}`}>
+                        {chunk.text}
+                      </p>
+                      
+                      {chunk.structure.heading && (
+                        <div className="mt-2 flex items-center gap-1 text-xs text-muted-foreground">
+                          <Tag className="w-3 h-3" />
+                          <span className="truncate">{chunk.structure.heading}</span>
+                        </div>
+                      )}
+                      
+                      {selectedChunk === idx && chunk.ai_metadata?.keywords && chunk.ai_metadata.keywords.length > 0 && (
+                        <div className="mt-3 pt-3 border-t border-border">
+                          <div className="flex items-center gap-1 mb-2 text-xs text-muted-foreground">
+                            <Sparkles className="w-3 h-3" />
+                            Keywords
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            {chunk.ai_metadata.keywords.map((kw: string, ki: number) => (
+                              <Badge key={ki} variant="outline" className="text-xs">
+                                {kw}
+                              </Badge>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      
+                      {selectedChunk === idx && chunk.ai_metadata?.summary && (
+                        <div className="mt-3 pt-3 border-t border-border">
+                          <div className="flex items-center gap-1 mb-2 text-xs text-muted-foreground">
+                            <FileText className="w-3 h-3" />
+                            Zusammenfassung
+                          </div>
+                          <p className="text-xs text-muted-foreground italic">
+                            {chunk.ai_metadata.summary}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
             </div>
           )}
         </div>

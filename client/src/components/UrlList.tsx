@@ -8,14 +8,15 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import ContentPreview from './ContentPreview';
-import type { SitemapUrlEntry } from '@shared/schema';
+import type { SitemapUrlEntry, RagChunk } from '@shared/schema';
 
 interface UrlListProps {
   urls: SitemapUrlEntry[];
   t: (key: any) => string;
+  chunks?: RagChunk[];
 }
 
-export default function UrlList({ urls, t }: UrlListProps) {
+export default function UrlList({ urls, t, chunks = [] }: UrlListProps) {
   const [filter, setFilter] = useState('');
   const [activeFolder, setActiveFolder] = useState<string | null>(null);
   const [previewEntry, setPreviewEntry] = useState<SitemapUrlEntry | null>(null);
@@ -74,6 +75,7 @@ export default function UrlList({ urls, t }: UrlListProps) {
           entry={previewEntry} 
           onClose={() => setPreviewEntry(null)} 
           t={t}
+          chunks={chunks}
         />
       )}
 

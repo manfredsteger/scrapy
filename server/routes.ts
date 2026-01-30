@@ -3344,6 +3344,39 @@ export async function registerRoutes(
     }
   });
 
+  // Get chunks for a specific URL
+  app.get('/api/projects/:id/chunks/by-url', async (req, res) => {
+    try {
+      const projectId = parseInt(req.params.id);
+      const url = req.query.url as string;
+      
+      if (!url) {
+        return res.status(400).json({ message: 'URL parameter required' });
+      }
+      
+      const project = await storage.getProject(projectId);
+      if (!project) {
+        return res.status(404).json({ message: 'Project not found' });
+      }
+      
+      // Chunks can have source_url in different locations depending on schema version
+      // Normalize URLs by removing trailing slash for comparison
+      const normalizeUrl = (u: string) => u?.replace(/\/$/, '') || '';
+      const normalizedSearchUrl = normalizeUrl(url);
+      
+      // Use location.url first as it contains the specific page URL
+      const chunks = (project.chunks || []).filter((chunk: any) => {
+        const chunkUrl = chunk.location?.url || chunk.source?.source_url || chunk.source_url;
+        return normalizeUrl(chunkUrl) === normalizedSearchUrl;
+      });
+      
+      res.json({ chunks, total: chunks.length });
+    } catch (error) {
+      console.error('Error fetching chunks by URL:', error);
+      res.status(500).json({ message: 'Failed to fetch chunks' });
+    }
+  });
+
   // Cancel chunking endpoint
   app.post('/api/projects/:id/chunks/cancel', (req, res) => {
     const projectId = parseInt(req.params.id);

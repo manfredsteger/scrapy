@@ -2289,7 +2289,22 @@ export async function registerRoutes(
         : p.results,
       // Add result count for UI
       _resultsCount: p.results?.length || 0,
-      _scrapedCount: p.results?.filter(r => r.scrapedData).length || 0,
+      // Calculate scraped count using multiple fallbacks:
+      // 1. Count results with scrapedData
+      // 2. Use stats.scrapedPages if available
+      // 3. If chunks exist, assume all results were scraped
+      _scrapedCount: (() => {
+        const scrapedDataCount = p.results?.filter(r => r.scrapedData).length || 0;
+        if (scrapedDataCount > 0) return scrapedDataCount;
+        // Check stats.scrapedPages
+        const statsScrapedPages = (p.stats as any)?.scrapedPages;
+        if (statsScrapedPages && statsScrapedPages > 0) return statsScrapedPages;
+        // If chunks exist, assume all results were scraped (project completed chunking)
+        if (p.chunks && p.chunks.length > 0) {
+          return p.results?.length || 0;
+        }
+        return 0;
+      })(),
       // Don't send large chunks array in list view
       chunks: undefined,
       _chunksCount: p.chunks?.length || 0,

@@ -232,6 +232,7 @@ export const translations = {
     tokens: 'Tokens',
     type: 'Typ',
     quality: 'Qualität',
+    summary: 'Zusammenfassung',
   },
   en: {
     appTitle: 'MapScraper Pro',
@@ -464,6 +465,7 @@ export const translations = {
     tokens: 'Tokens',
     type: 'Type',
     quality: 'Quality',
+    summary: 'Summary',
   },
 } as const;
 

@@ -1,9 +1,11 @@
+import { useState } from 'react';
 import { useRoute, useLocation } from 'wouter';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { queryClient, apiRequest } from '@/lib/queryClient';
 import { 
   ArrowLeft, Download, FileText, Image as ImageIcon, Video, Layers,
-  Loader2, AlertCircle, ExternalLink, RefreshCw, Settings, MoreVertical, Trash2, Package
+  Loader2, AlertCircle, ExternalLink, RefreshCw, Settings, MoreVertical, Trash2, Package,
+  Copy, Check, Tag, Sparkles
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -15,6 +17,71 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { useLanguage } from '@/hooks/use-language';
 import type { SinglePage, ScrapedElement, RagChunk } from '@shared/schema';
+
+// Markdown conversion helpers
+function elementToMarkdown(el: ScrapedElement): string {
+  if (el.type === 'heading') {
+    const level = parseInt(el.tag?.replace('h', '') || '2');
+    return '#'.repeat(level) + ' ' + el.content + '\n\n';
+  }
+  if (el.type === 'paragraph') {
+    return el.content + '\n\n';
+  }
+  if (el.type === 'list') {
+    const items = (el.children as string[] || []);
+    const prefix = el.tag === 'ol' ? (i: number) => `${i + 1}. ` : () => '- ';
+    return items.map((item, i) => prefix(i) + item).join('\n') + '\n\n';
+  }
+  if (el.type === 'blockquote') {
+    return '> ' + el.content + '\n\n';
+  }
+  if (el.type === 'code') {
+    return '```\n' + el.content + '\n```\n\n';
+  }
+  if (el.type === 'media') {
+    return el.tag === 'img' ? `![](${el.src})\n\n` : `[Video](${el.src})\n\n`;
+  }
+  if (el.type === 'table') {
+    const headers = (el as any).headers as string[] || [];
+    const rows = (el as any).rows as string[][] || el.children as string[][] || [];
+    let md = '';
+    if (headers.length > 0) {
+      md += '| ' + headers.join(' | ') + ' |\n';
+      md += '| ' + headers.map(() => '---').join(' | ') + ' |\n';
+    }
+    rows.forEach(row => {
+      if (Array.isArray(row)) {
+        md += '| ' + row.join(' | ') + ' |\n';
+      }
+    });
+    return md + '\n';
+  }
+  return '';
+}
+
+async function copyToClipboard(text: string): Promise<boolean> {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {}
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  try {
+    document.execCommand('copy');
+    document.body.removeChild(textarea);
+    return true;
+  } catch {
+    document.body.removeChild(textarea);
+    return false;
+  }
+}
 
 function renderElement(el: ScrapedElement, idx: number) {
   if (el.type === 'heading') {
@@ -120,11 +187,75 @@ export default function SinglePageDetail() {
   const [, navigate] = useLocation();
   const { t, language } = useLanguage();
   const id = params?.id;
+  const [copied, setCopied] = useState<string | null>(null);
+  const [copiedChunk, setCopiedChunk] = useState<number | null>(null);
+  const [expandedChunk, setExpandedChunk] = useState<number | null>(null);
 
   const { data: page, isLoading, error, refetch } = useQuery<SinglePage>({
     queryKey: ['/api/single-pages', id],
     enabled: !!id,
   });
+
+  // Format single chunk as Markdown
+  const chunkToMarkdown = (chunk: RagChunk, idx: number): string => {
+    let md = `## Chunk ${idx + 1}\n\n`;
+    if (chunk.structure?.heading) {
+      md += `**Heading:** ${chunk.structure.heading}\n\n`;
+    }
+    md += chunk.text + '\n\n';
+    md += `---\n`;
+    md += `- **Tokens:** ~${chunk.tokens_estimate}\n`;
+    if (chunk.quality) {
+      md += `- **Quality:** ${chunk.quality.quality}\n`;
+    }
+    if (chunk.ai_metadata?.keywords && chunk.ai_metadata.keywords.length > 0) {
+      md += `- **Keywords:** ${chunk.ai_metadata.keywords.join(', ')}\n`;
+    }
+    if (chunk.ai_metadata?.summary) {
+      md += `- **Summary:** ${chunk.ai_metadata.summary}\n`;
+    }
+    md += '\n';
+    return md;
+  };
+
+  // Copy single chunk
+  const copySingleChunk = async (chunk: RagChunk, idx: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const md = chunkToMarkdown(chunk, idx);
+    const success = await copyToClipboard(md);
+    if (success) {
+      setCopiedChunk(idx);
+      setTimeout(() => setCopiedChunk(null), 2000);
+    }
+  };
+
+  // Copy all chunks
+  const copyAllChunks = async () => {
+    if (!page) return;
+    const chunks = page.chunks || [];
+    let md = `# RAG Chunks für ${page.url}\n\n`;
+    md += `Gesamt: ${chunks.length} Chunks\n\n---\n\n`;
+    chunks.forEach((chunk, idx) => {
+      md += chunkToMarkdown(chunk, idx);
+    });
+    const success = await copyToClipboard(md);
+    if (success) {
+      setCopied('chunks');
+      setTimeout(() => setCopied(null), 2000);
+    }
+  };
+
+  // Copy content as Markdown
+  const copyContentMarkdown = async () => {
+    if (!page?.scrapedData) return;
+    let content = `# ${page.title || page.url}\n\n`;
+    content += page.scrapedData.orderedElements.map(elementToMarkdown).join('');
+    const success = await copyToClipboard(content);
+    if (success) {
+      setCopied('content');
+      setTimeout(() => setCopied(null), 2000);
+    }
+  };
 
   const deleteMutation = useMutation({
     mutationFn: async () => {
@@ -364,8 +495,22 @@ export default function SinglePageDetail() {
 
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-6 min-h-0">
         <div className="flex flex-col min-h-0 bg-card border border-border rounded-xl">
-          <div className="px-4 py-3 border-b border-border shrink-0">
+          <div className="px-4 py-3 border-b border-border shrink-0 flex items-center justify-between">
             <h2 className="text-sm font-semibold text-foreground">{t('content')}</h2>
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              onClick={copyContentMarkdown}
+              className="gap-1.5"
+              data-testid="copy-content-btn"
+            >
+              {copied === 'content' ? (
+                <Check className="w-3.5 h-3.5 text-emerald-400" />
+              ) : (
+                <Copy className="w-3.5 h-3.5" />
+              )}
+              <span className="text-xs">{copied === 'content' ? t('copied') : 'Markdown'}</span>
+            </Button>
           </div>
           <div className="flex-1 overflow-y-auto p-4">
             {elements.length > 0 ? (
@@ -380,10 +525,24 @@ export default function SinglePageDetail() {
         </div>
 
         <div className="flex flex-col min-h-0 bg-card border border-border rounded-xl">
-          <div className="px-4 py-3 border-b border-border shrink-0">
+          <div className="px-4 py-3 border-b border-border shrink-0 flex items-center justify-between">
             <h2 className="text-sm font-semibold text-foreground">
               RAG {t('chunks')} ({chunks.length})
             </h2>
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              onClick={copyAllChunks}
+              className="gap-1.5"
+              data-testid="copy-all-chunks-btn"
+            >
+              {copied === 'chunks' ? (
+                <Check className="w-3.5 h-3.5 text-emerald-400" />
+              ) : (
+                <Copy className="w-3.5 h-3.5" />
+              )}
+              <span className="text-xs">{copied === 'chunks' ? t('copied') : t('copyAll')}</span>
+            </Button>
           </div>
           <div className="flex-1 overflow-y-auto p-4">
             {chunks.length > 0 ? (
@@ -391,16 +550,32 @@ export default function SinglePageDetail() {
                 {chunks.map((chunk: RagChunk, i: number) => (
                   <div 
                     key={chunk.chunk_id || i} 
-                    className="bg-secondary rounded-lg p-3 border border-border"
+                    className={`bg-secondary rounded-lg p-3 border border-border cursor-pointer transition-all hover:bg-secondary/80 ${expandedChunk === i ? 'ring-2 ring-primary' : ''}`}
+                    onClick={() => setExpandedChunk(expandedChunk === i ? null : i)}
                     data-testid={`chunk-card-${i}`}
                   >
                     <div className="flex items-start justify-between gap-2 mb-2">
-                      <code className="text-xs text-muted-foreground font-mono">
-                        {(chunk.chunk_id || '').slice(0, 12)}...
-                      </code>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-mono text-muted-foreground">
+                          #{i + 1}
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6"
+                          onClick={(e) => copySingleChunk(chunk, i, e)}
+                          data-testid={`copy-chunk-${i}`}
+                        >
+                          {copiedChunk === i ? (
+                            <Check className="w-3 h-3 text-emerald-400" />
+                          ) : (
+                            <Copy className="w-3 h-3" />
+                          )}
+                        </Button>
+                      </div>
                       <div className="flex items-center gap-2 shrink-0">
                         <Badge variant="outline" className="text-[10px]">
-                          {chunk.chunk_type || 'text'}
+                          ~{chunk.tokens_estimate} tokens
                         </Badge>
                         {chunk.quality && (
                           <Badge 
@@ -412,15 +587,44 @@ export default function SinglePageDetail() {
                         )}
                       </div>
                     </div>
-                    <p className="text-xs text-foreground line-clamp-3 mb-2">
-                      {chunk.text?.slice(0, 150)}{chunk.text && chunk.text.length > 150 ? '...' : ''}
+                    <p className={`text-xs text-foreground mb-2 ${expandedChunk === i ? '' : 'line-clamp-3'}`}>
+                      {chunk.text}
                     </p>
-                    <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
-                      <span>{t('tokens')}: {chunk.tokens_estimate}</span>
-                      {chunk.quality && (
-                        <span>{t('totalWords')}: {chunk.quality.wordCount}</span>
-                      )}
-                    </div>
+                    
+                    {chunk.structure?.heading && (
+                      <div className="mt-2 flex items-center gap-1 text-[10px] text-muted-foreground">
+                        <Tag className="w-3 h-3" />
+                        <span className="truncate">{chunk.structure.heading}</span>
+                      </div>
+                    )}
+                    
+                    {expandedChunk === i && chunk.ai_metadata?.keywords && chunk.ai_metadata.keywords.length > 0 && (
+                      <div className="mt-3 pt-3 border-t border-border">
+                        <div className="flex items-center gap-1 mb-2 text-[10px] text-muted-foreground">
+                          <Sparkles className="w-3 h-3" />
+                          Keywords
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {chunk.ai_metadata.keywords.map((kw: string, ki: number) => (
+                            <Badge key={ki} variant="outline" className="text-[10px]">
+                              {kw}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    
+                    {expandedChunk === i && chunk.ai_metadata?.summary && (
+                      <div className="mt-3 pt-3 border-t border-border">
+                        <div className="flex items-center gap-1 mb-2 text-[10px] text-muted-foreground">
+                          <FileText className="w-3 h-3" />
+                          {t('summary')}
+                        </div>
+                        <p className="text-[10px] text-muted-foreground italic">
+                          {chunk.ai_metadata.summary}
+                        </p>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>

@@ -226,7 +226,7 @@ export default function ChunkingProgress({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-md w-[400px]" data-testid="chunking-progress-modal">
+      <DialogContent className="sm:max-w-md w-[400px] max-h-[90vh] overflow-hidden" data-testid="chunking-progress-modal">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             {t('generateChunks')}
@@ -250,9 +250,9 @@ export default function ChunkingProgress({
           </div>
 
           {progress.currentUrl && progress.status === 'processing' && (
-            <div className="text-xs text-muted-foreground bg-secondary p-2 rounded w-full max-w-full overflow-hidden">
+            <div className="text-xs text-muted-foreground bg-secondary p-2 rounded overflow-hidden">
               <span className="font-medium">Aktuelle URL: </span>
-              <span className="block truncate w-full" style={{ maxWidth: '100%' }}>{progress.currentUrl}</span>
+              <span className="block truncate max-w-[340px]">{progress.currentUrl}</span>
             </div>
           )}
 

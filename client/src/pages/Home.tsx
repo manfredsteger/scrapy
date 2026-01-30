@@ -797,8 +797,10 @@ export default function Home() {
   const isPaused = activeProject?.status === 'paused' || activeProject?.status === 'content_paused';
   const hasActiveProcess = isProcessing || isPaused;
   const remainingUrls = activeProject?.queue?.length || 0;
-  const scrapedCount = (activeProject?.results || []).filter(r => r.scrapedData).length;
-  const pendingContentScrape = (activeProject?.results || []).filter(r => !r.scrapedData).length;
+  // Use API-provided counts for accurate display (handles large projects with truncated results)
+  const totalUrls = getResultsCount(activeProject);
+  const scrapedCount = getScrapedCount(activeProject);
+  const pendingContentScrape = totalUrls - scrapedCount;
 
   if (langLoading || isLoading) {
     return (
@@ -1330,7 +1332,11 @@ export default function Home() {
                     </TabsTrigger>
                   </TabsList>
                   <TabsContent value="urls" className="m-0 min-h-[400px]">
-                    <UrlList urls={activeProject?.results || []} t={t} />
+                    <UrlList 
+                      urls={activeProject?.results || []} 
+                      t={t} 
+                      allScraped={scrapedCount > 0 && scrapedCount >= totalUrls}
+                    />
                   </TabsContent>
                   <TabsContent value="errors" className="m-0 min-h-[400px]">
                     <ErrorLogs errors={activeProject?.errors || []} t={t} />

@@ -13,9 +13,11 @@ import type { SitemapUrlEntry } from '@shared/schema';
 interface UrlListProps {
   urls: SitemapUrlEntry[];
   t: (key: any) => string;
+  // If true, treat all URLs as scraped (for projects where data is stored in chunks, not scrapedData)
+  allScraped?: boolean;
 }
 
-export default function UrlList({ urls, t }: UrlListProps) {
+export default function UrlList({ urls, t, allScraped = false }: UrlListProps) {
   const [filter, setFilter] = useState('');
   const [activeFolder, setActiveFolder] = useState<string | null>(null);
   const [previewEntry, setPreviewEntry] = useState<SitemapUrlEntry | null>(null);
@@ -196,7 +198,7 @@ export default function UrlList({ urls, t }: UrlListProps) {
                     )}
                   </td>
                   <td>
-                    {url.scrapedData ? (
+                    {(url.scrapedData || allScraped) ? (
                       <span className="badge-green whitespace-nowrap">
                         <CheckCircle className="w-3 h-3 shrink-0" />
                         Scraped

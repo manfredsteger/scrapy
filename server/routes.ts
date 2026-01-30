@@ -1920,6 +1920,24 @@ function extractStructuredData(doc: Document): StructuredData {
   return structuredData;
 }
 
+// Skip URLs that point to non-HTML content (PDFs, images, etc.)
+const SKIP_EXTENSIONS = new Set(['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.rar', '.tar', '.gz', '.7z', '.exe', '.dmg', '.iso', '.mp3', '.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.ogg', '.wav', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.webp', '.ico', '.tiff']);
+
+function shouldSkipUrl(url: string): boolean {
+  try {
+    const parsedUrl = new URL(url);
+    const pathname = parsedUrl.pathname.toLowerCase();
+    for (const ext of SKIP_EXTENSIONS) {
+      if (pathname.endsWith(ext)) {
+        return true;
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 function scrapePageContent(html: string, url: string, extractStructuredDataFlag: boolean = true): any {
   const dom = new JSDOM(html);
   const doc = dom.window.document;
@@ -2417,6 +2435,11 @@ export async function registerRoutes(
 
       const domain = parsedUrl.hostname;
 
+      // Skip non-HTML URLs (PDFs, images, etc.)
+      if (shouldSkipUrl(parsedUrl.href)) {
+        return res.status(400).json({ message: 'Cannot scrape non-HTML content (PDF, image, etc.)' });
+      }
+
       // Create the single page record with status "scraping"
       const singlePage = await storage.createSinglePage({
         url: parsedUrl.href,
@@ -2833,6 +2856,11 @@ export async function registerRoutes(
       
       const results = await Promise.all(urls.map(async (url) => {
         try {
+          // Skip non-HTML URLs (PDFs, images, etc.)
+          if (shouldSkipUrl(url)) {
+            return { url, data: null, error: 'Skipped: non-HTML content (PDF, image, etc.)', skipped: true };
+          }
+          
           const { text: html, usedProxy } = await fetchWithRateLimitAndProxy(url, {
             rateLimiter,
             proxyRotator,

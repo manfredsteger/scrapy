@@ -238,6 +238,7 @@ function renderElement(el: ScrapedElement, idx: number) {
 
 export default function ContentPreview({ entry, onClose, t, chunks = [] }: ContentPreviewProps) {
   const [copied, setCopied] = useState<string | null>(null);
+  const [copiedChunk, setCopiedChunk] = useState<number | null>(null);
   const [selectedChunk, setSelectedChunk] = useState<number | null>(null);
   const data = entry.scrapedData;
   
@@ -247,6 +248,65 @@ export default function ContentPreview({ entry, onClose, t, chunks = [] }: Conte
   }, [chunks, entry.loc]);
   
   const hasChunks = urlChunks.length > 0;
+  
+  // Format single chunk as Markdown
+  const chunkToMarkdown = (chunk: RagChunk, idx: number): string => {
+    let md = `## Chunk ${idx + 1}\n\n`;
+    if (chunk.structure.heading) {
+      md += `**Heading:** ${chunk.structure.heading}\n\n`;
+    }
+    md += chunk.text + '\n\n';
+    md += `---\n`;
+    md += `- **Tokens:** ~${chunk.tokens_estimate}\n`;
+    if (chunk.quality) {
+      md += `- **Quality:** ${chunk.quality.quality}\n`;
+    }
+    if (chunk.ai_metadata?.keywords && chunk.ai_metadata.keywords.length > 0) {
+      md += `- **Keywords:** ${chunk.ai_metadata.keywords.join(', ')}\n`;
+    }
+    if (chunk.ai_metadata?.summary) {
+      md += `- **Summary:** ${chunk.ai_metadata.summary}\n`;
+    }
+    md += '\n';
+    return md;
+  };
+  
+  // Copy single chunk
+  const copySingleChunk = async (chunk: RagChunk, idx: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const md = chunkToMarkdown(chunk, idx);
+    const success = await copyToClipboard(md);
+    if (success) {
+      setCopiedChunk(idx);
+      setTimeout(() => setCopiedChunk(null), 2000);
+    }
+  };
+  
+  // Copy all chunks
+  const copyAllChunks = async () => {
+    let md = `# RAG Chunks für ${entry.loc}\n\n`;
+    md += `Gesamt: ${urlChunks.length} Chunks\n\n---\n\n`;
+    urlChunks.forEach((chunk, idx) => {
+      md += chunkToMarkdown(chunk, idx);
+    });
+    const success = await copyToClipboard(md);
+    if (success) {
+      setCopied('chunks');
+      setTimeout(() => setCopied(null), 2000);
+    }
+  };
+  
+  // Copy content only
+  const copyContentOnly = async () => {
+    if (!data) return;
+    let content = `# ${data.title}\n\n`;
+    content += data.orderedElements.map(elementToMarkdown).join('');
+    const success = await copyToClipboard(content);
+    if (success) {
+      setCopied('content');
+      setTimeout(() => setCopied(null), 2000);
+    }
+  };
   
   const copyContent = async (format: 'markdown' | 'json' | 'html') => {
     if (!data) return;
@@ -361,11 +421,25 @@ export default function ContentPreview({ entry, onClose, t, chunks = [] }: Conte
         <div className={`flex-1 overflow-hidden ${hasChunks ? 'flex' : ''}`}>
           {/* Left side: Content */}
           <div className={`${hasChunks ? 'w-1/2 border-r border-border' : 'w-full'} overflow-y-auto p-6`}>
-            <div className="mb-4">
+            <div className="mb-4 flex items-center justify-between">
               <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-2">
                 <FileText className="w-4 h-4" />
-                Content
+                {t('content')}
               </h4>
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                onClick={copyContentOnly}
+                className="gap-1.5"
+                data-testid="copy-content-btn"
+              >
+                {copied === 'content' ? (
+                  <Check className="w-3.5 h-3.5 text-emerald-400" />
+                ) : (
+                  <Copy className="w-3.5 h-3.5" />
+                )}
+                <span className="text-xs">{copied === 'content' ? t('copied') : 'Markdown'}</span>
+              </Button>
             </div>
             {data?.orderedElements.map((el, i) => renderElement(el, i))}
             
@@ -379,11 +453,25 @@ export default function ContentPreview({ entry, onClose, t, chunks = [] }: Conte
           {/* Right side: Chunks Preview */}
           {hasChunks && (
             <div className="w-1/2 flex flex-col overflow-hidden">
-              <div className="p-4 border-b border-border shrink-0">
+              <div className="p-4 border-b border-border shrink-0 flex items-center justify-between">
                 <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-2">
                   <Layers className="w-4 h-4" />
                   RAG Chunks ({urlChunks.length})
                 </h4>
+                <Button 
+                  variant="ghost" 
+                  size="sm" 
+                  onClick={copyAllChunks}
+                  className="gap-1.5"
+                  data-testid="copy-all-chunks-btn"
+                >
+                  {copied === 'chunks' ? (
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5" />
+                  )}
+                  <span className="text-xs">{copied === 'chunks' ? t('copied') : t('copyAll')}</span>
+                </Button>
               </div>
               <ScrollArea className="flex-1">
                 <div className="p-4 space-y-3">
@@ -395,9 +483,24 @@ export default function ContentPreview({ entry, onClose, t, chunks = [] }: Conte
                       data-testid={`chunk-preview-${idx}`}
                     >
                       <div className="flex items-center justify-between mb-2">
-                        <span className="text-xs font-mono text-muted-foreground">
-                          #{idx + 1}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-mono text-muted-foreground">
+                            #{idx + 1}
+                          </span>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6"
+                            onClick={(e) => copySingleChunk(chunk, idx, e)}
+                            data-testid={`copy-chunk-${idx}`}
+                          >
+                            {copiedChunk === idx ? (
+                              <Check className="w-3 h-3 text-emerald-400" />
+                            ) : (
+                              <Copy className="w-3 h-3" />
+                            )}
+                          </Button>
+                        </div>
                         <div className="flex items-center gap-2">
                           <Badge variant="outline" className="text-xs">
                             ~{chunk.tokens_estimate} tokens

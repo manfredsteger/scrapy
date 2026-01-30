@@ -111,6 +111,20 @@ export const api = {
     },
   },
   scrape: {
+    detect: {
+      method: 'POST' as const,
+      path: '/api/scrape/detect',
+      input: z.object({ url: z.string() }),
+      responses: {
+        200: z.object({
+          url: z.string(),
+          type: z.enum(['wikijs', 'wordpress', 'generic']),
+          confidence: z.number(),
+          indicators: z.array(z.string()),
+        }),
+        400: errorSchemas.validation,
+      },
+    },
     discover: {
       method: 'POST' as const,
       path: '/api/scrape/discover',
@@ -238,4 +252,17 @@ export function buildUrl(path: string, params?: Record<string, string | number>)
 }
 
 export type ProjectResponse = z.infer<typeof projectResponseSchema>;
+
+const incrementalUpdateResponseSchema = z.object({
+  newChunks: z.array(z.any()),
+  updatedChunks: z.array(z.any()),
+  deletedChunkIds: z.array(z.string()),
+  exportedAt: z.string(),
+  stats: z.object({
+    totalNew: z.number(),
+    totalUpdated: z.number(),
+    totalDeleted: z.number(),
+  }),
+});
+
 export type IncrementalUpdateResponse = z.infer<typeof incrementalUpdateResponseSchema>;

@@ -31,13 +31,6 @@ import { useToast } from '@/hooks/use-toast';
 import { apiRequest, queryClient } from '@/lib/queryClient';
 import type { Project, SitemapUrlEntry, ProjectSettings as ProjectSettingsType, SinglePage } from '@shared/schema';
 
-// Extended Project type with summary counts from API
-interface ProjectWithCounts extends Project {
-  _resultsCount?: number;
-  _scrapedCount?: number;
-  _chunksCount?: number;
-}
-
 const BATCH_SIZE = 10;
 
 export default function Home() {
@@ -65,23 +58,12 @@ export default function Home() {
   const processingRef = useRef(false);
   const abortedProjectsRef = useRef<Set<number>>(new Set());
 
-  const { data: projects = [], isLoading, refetch: refetchProjects } = useQuery<ProjectWithCounts[]>({
+  const { data: projects = [], isLoading, refetch: refetchProjects } = useQuery<Project[]>({
     queryKey: ['/api/projects'],
     refetchOnMount: true,
     refetchOnWindowFocus: true,
     staleTime: 1000, // Consider data stale after 1 second
   });
-  
-  // Helper functions to get actual counts (use API counts when available)
-  const getResultsCount = (project: ProjectWithCounts | undefined) => {
-    if (!project) return 0;
-    return project._resultsCount ?? project.results?.length ?? 0;
-  };
-  
-  const getScrapedCount = (project: ProjectWithCounts | undefined) => {
-    if (!project) return 0;
-    return project._scrapedCount ?? project.results?.filter(r => r.scrapedData).length ?? 0;
-  };
 
   const { data: singlePages = [], isLoading: singlePagesLoading } = useQuery<SinglePage[]>({
     queryKey: ['/api/single-pages'],
@@ -240,7 +222,7 @@ export default function Home() {
   });
 
   const resyncProjectMutation = useMutation({
-    mutationFn: async (project: ProjectWithCounts) => {
+    mutationFn: async (project: Project) => {
       // Re-discover sitemaps/URLs for the project
       let domain = project.domain;
       if (!domain.startsWith('http')) domain = `https://${domain}`;
@@ -249,59 +231,44 @@ export default function Home() {
       const discoverData = await discoverRes.json();
       const { sitemaps, wikiJsPages, isWikiJs } = discoverData;
       
-      // IMPORTANT: For non-Wiki.js sites, we DON'T reset results - we only update the queue
-      // This preserves existing scraped data and allows re-scraping
+      // If Wiki.js site detected, use the discovered pages directly
       let initialQueue = sitemaps;
       let useCrawlMode = false;
       let isWikiJsSite = isWikiJs || false;
+      let initialResults: Array<{ loc: string; images: Array<unknown>; videos: Array<unknown> }> = [];
       let projectStatus: string = 'scraping';
       
-      // Build the update payload - only include results for Wiki.js sites
-      const updatePayload: Record<string, unknown> = {
+      if (isWikiJs && wikiJsPages && wikiJsPages.length > 0) {
+        // Wiki.js site - convert URLs to result format and start content scraping
+        initialResults = wikiJsPages.map((url: string) => ({ loc: url, images: [], videos: [] }));
+        initialQueue = wikiJsPages; // Queue for content scraping
+        projectStatus = 'content_scraping';
+        console.log(`[Wiki.js] Resync: Using ${wikiJsPages.length} discovered pages for content scraping`);
+      } else if (sitemaps.length === 0) {
+        let baseUrl = domain.trim();
+        if (!baseUrl.startsWith('http')) baseUrl = `https://${baseUrl}`;
+        baseUrl = baseUrl.replace(/\/$/, '');
+        initialQueue = [baseUrl];
+        useCrawlMode = true;
+        projectStatus = 'crawling';
+      }
+      
+      // Update project with new queue and reset stats
+      const res = await apiRequest('PUT', `/api/projects/${project.id}`, {
         status: projectStatus,
         queue: initialQueue,
         processed: [],
+        results: initialResults,
         errors: [],
         stats: {
           totalSitemaps: isWikiJsSite ? 0 : sitemaps.length,
           processedSitemaps: 0,
-          totalUrls: 0,
+          totalUrls: isWikiJsSite ? wikiJsPages?.length || 0 : (useCrawlMode ? 1 : 0),
           totalImages: 0,
           totalVideos: 0,
           startTime: Date.now(),
         },
-      };
-      
-      if (isWikiJs && wikiJsPages && wikiJsPages.length > 0) {
-        // Wiki.js site - convert URLs to result format and start content scraping
-        const initialResults = wikiJsPages.map((url: string) => ({ loc: url, images: [], videos: [] }));
-        updatePayload.results = initialResults;
-        updatePayload.queue = wikiJsPages; // Queue for content scraping
-        updatePayload.status = 'content_scraping';
-        projectStatus = 'content_scraping';
-        (updatePayload.stats as Record<string, unknown>).totalUrls = wikiJsPages.length;
-        console.log(`[Wiki.js] Resync: Using ${wikiJsPages.length} discovered pages for content scraping`);
-      } else if (sitemaps.length === 0) {
-        // No sitemaps found - use crawl mode but KEEP existing results
-        let baseUrl = domain.trim();
-        if (!baseUrl.startsWith('http')) baseUrl = `https://${baseUrl}`;
-        baseUrl = baseUrl.replace(/\/$/, '');
-        updatePayload.queue = [baseUrl];
-        updatePayload.status = 'crawling';
-        projectStatus = 'crawling';
-        useCrawlMode = true;
-        (updatePayload.stats as Record<string, unknown>).totalUrls = 1;
-        // Do NOT set results - keep existing data!
-        console.log(`[Resync] Crawl mode - keeping ${getResultsCount(project)} existing results`);
-      } else {
-        // Has sitemaps - start fresh sitemap processing but keep existing results
-        (updatePayload.stats as Record<string, unknown>).totalUrls = 0;
-        // Do NOT set results - keep existing data!
-        console.log(`[Resync] Sitemap mode - keeping ${getResultsCount(project)} existing results, processing ${sitemaps.length} sitemaps`);
-      }
-      
-      // Update project with new queue
-      const res = await apiRequest('PUT', `/api/projects/${project.id}`, updatePayload);
+      });
       return { 
         project: await res.json(), 
         useCrawlMode, 
@@ -797,10 +764,8 @@ export default function Home() {
   const isPaused = activeProject?.status === 'paused' || activeProject?.status === 'content_paused';
   const hasActiveProcess = isProcessing || isPaused;
   const remainingUrls = activeProject?.queue?.length || 0;
-  // Use API-provided counts for accurate display (handles large projects with truncated results)
-  const totalUrls = getResultsCount(activeProject);
-  const scrapedCount = getScrapedCount(activeProject);
-  const pendingContentScrape = totalUrls - scrapedCount;
+  const scrapedCount = (activeProject?.results || []).filter(r => r.scrapedData).length;
+  const pendingContentScrape = (activeProject?.results || []).filter(r => !r.scrapedData).length;
 
   if (langLoading || isLoading) {
     return (
@@ -833,7 +798,7 @@ export default function Home() {
       <div className="flex-1 flex flex-col min-w-0">
         <Header 
           title={activeProject ? (activeProject.displayName || activeProject.domain) : 'Dashboard'}
-          subtitle={activeProject ? `${getResultsCount(activeProject)} URLs` : undefined}
+          subtitle={activeProject ? `${activeProject.results?.length || 0} URLs` : undefined}
           language={language}
           onLanguageChange={setLanguage}
           t={t}
@@ -1058,15 +1023,15 @@ export default function Home() {
                       </DropdownMenuItem>
                       <DropdownMenuItem 
                         onClick={() => {
-                          const scrapedCount = getScrapedCount(activeProject);
+                          const scrapedCount = activeProject?.results?.filter(r => r.scrapedData).length || 0;
                           if (scrapedCount === 0) {
                             toast({ title: t('deepScrapingRequired'), variant: 'destructive' });
                             return;
                           }
                           setShowChunkingProgress(true);
                         }}
-                        className={`gap-2 ${getScrapedCount(activeProject) === 0 ? 'opacity-50' : ''}`}
-                        disabled={getScrapedCount(activeProject) === 0}
+                        className={`gap-2 ${(activeProject?.results?.filter(r => r.scrapedData).length || 0) === 0 ? 'opacity-50' : ''}`}
+                        disabled={(activeProject?.results?.filter(r => r.scrapedData).length || 0) === 0}
                       >
                         <Layers className="w-4 h-4" />
                         {t('generateChunks')}
@@ -1308,8 +1273,8 @@ export default function Home() {
 
               <StatsCards 
                 stats={activeProject?.stats || null} 
-                urlCount={getResultsCount(activeProject)}
-                scrapedCount={getScrapedCount(activeProject)}
+                urlCount={activeProject?.results?.length || 0}
+                scrapedCount={activeProject?.results?.filter(r => r.scrapedData).length || 0}
                 t={t} 
               />
 
@@ -1321,7 +1286,7 @@ export default function Home() {
                       className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent px-6 py-3"
                       data-testid="tab-urls"
                     >
-                      {t('analyzedPages')} ({getResultsCount(activeProject)})
+                      {t('analyzedPages')} ({activeProject?.results?.length || 0})
                     </TabsTrigger>
                     <TabsTrigger 
                       value="errors" 
@@ -1332,12 +1297,7 @@ export default function Home() {
                     </TabsTrigger>
                   </TabsList>
                   <TabsContent value="urls" className="m-0 min-h-[400px]">
-                    <UrlList 
-                      urls={activeProject?.results || []} 
-                      t={t} 
-                      allScraped={scrapedCount > 0 && scrapedCount >= totalUrls}
-                      projectId={activeProject?.id}
-                    />
+                    <UrlList urls={activeProject?.results || []} t={t} />
                   </TabsContent>
                   <TabsContent value="errors" className="m-0 min-h-[400px]">
                     <ErrorLogs errors={activeProject?.errors || []} t={t} />
@@ -1368,7 +1328,7 @@ export default function Home() {
           open={showChunkingProgress}
           onClose={() => setShowChunkingProgress(false)}
           projectId={activeProject.id}
-          totalPages={getScrapedCount(activeProject)}
+          totalPages={activeProject.results?.filter(r => r.scrapedData).length || 0}
           onComplete={(result) => {
             queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
             toast({ 

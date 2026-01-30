@@ -2280,36 +2280,7 @@ export async function registerRoutes(
   
   app.get(api.projects.list.path, async (req, res) => {
     const allProjects = await storage.getProjects();
-    // Return lightweight summaries without full results/chunks data to prevent memory issues
-    const summaries = allProjects.map(p => ({
-      ...p,
-      // For very large projects, don't send full results - just count
-      results: p.results && p.results.length > 100 
-        ? p.results.slice(0, 20) // Send first 20 for preview
-        : p.results,
-      // Add result count for UI
-      _resultsCount: p.results?.length || 0,
-      // Calculate scraped count using multiple fallbacks:
-      // 1. Count results with scrapedData
-      // 2. Use stats.scrapedPages if available
-      // 3. If chunks exist, assume all results were scraped
-      _scrapedCount: (() => {
-        const scrapedDataCount = p.results?.filter(r => r.scrapedData).length || 0;
-        if (scrapedDataCount > 0) return scrapedDataCount;
-        // Check stats.scrapedPages
-        const statsScrapedPages = (p.stats as any)?.scrapedPages;
-        if (statsScrapedPages && statsScrapedPages > 0) return statsScrapedPages;
-        // If chunks exist, assume all results were scraped (project completed chunking)
-        if (p.chunks && p.chunks.length > 0) {
-          return p.results?.length || 0;
-        }
-        return 0;
-      })(),
-      // Don't send large chunks array in list view
-      chunks: undefined,
-      _chunksCount: p.chunks?.length || 0,
-    }));
-    res.json(summaries);
+    res.json(allProjects);
   });
 
   app.get(api.projects.get.path, async (req, res) => {
@@ -3341,39 +3312,6 @@ export async function registerRoutes(
       sendEvent({ type: 'error', message: (err as Error).message });
       res.end();
       activeChunkingJobs.delete(projectId);
-    }
-  });
-
-  // Get chunks for a specific URL
-  app.get('/api/projects/:id/chunks/by-url', async (req, res) => {
-    try {
-      const projectId = parseInt(req.params.id);
-      const url = req.query.url as string;
-      
-      if (!url) {
-        return res.status(400).json({ message: 'URL parameter required' });
-      }
-      
-      const project = await storage.getProject(projectId);
-      if (!project) {
-        return res.status(404).json({ message: 'Project not found' });
-      }
-      
-      // Chunks can have source_url in different locations depending on schema version
-      // Normalize URLs by removing trailing slash for comparison
-      const normalizeUrl = (u: string) => u?.replace(/\/$/, '') || '';
-      const normalizedSearchUrl = normalizeUrl(url);
-      
-      // Use location.url first as it contains the specific page URL
-      const chunks = (project.chunks || []).filter((chunk: any) => {
-        const chunkUrl = chunk.location?.url || chunk.source?.source_url || chunk.source_url;
-        return normalizeUrl(chunkUrl) === normalizedSearchUrl;
-      });
-      
-      res.json({ chunks, total: chunks.length });
-    } catch (error) {
-      console.error('Error fetching chunks by URL:', error);
-      res.status(500).json({ message: 'Failed to fetch chunks' });
     }
   });
 

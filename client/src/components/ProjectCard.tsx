@@ -4,8 +4,14 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import type { Project } from '@shared/schema';
 
+interface ProjectWithCounts extends Project {
+  _resultsCount?: number;
+  _scrapedCount?: number;
+  _chunksCount?: number;
+}
+
 interface ProjectCardProps {
-  project: Project;
+  project: ProjectWithCounts;
   onSelect: () => void;
   onDelete: () => void;
   onRename: (newName: string) => void;
@@ -35,8 +41,9 @@ export default function ProjectCard({ project, onSelect, onDelete, onRename, t }
   };
 
   const isActive = project.status !== 'idle';
-  const urlCount = project.results?.length || 0;
-  const scrapedCount = project.results?.filter(r => r.scrapedData).length || 0;
+  // Use API-provided counts when available, fallback to calculating from results
+  const urlCount = project._resultsCount ?? project.results?.length ?? 0;
+  const scrapedCount = project._scrapedCount ?? project.results?.filter(r => r.scrapedData).length ?? 0;
 
   return (
     <div

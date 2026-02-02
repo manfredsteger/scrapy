@@ -3025,18 +3025,15 @@ export async function registerRoutes(
         extractStructuredDataFlag = settings.extractStructuredData ?? true;
       }
       
+      // Collect all updates in memory first to avoid race conditions
+      // Map: url -> { scrapedData?, errorStatus?, errorMessage? }
+      const urlUpdates = new Map<string, { scrapedData?: any; errorStatus?: string; errorMessage?: string }>();
+      
       const results = await Promise.all(urls.map(async (url) => {
         try {
           // Skip non-HTML URLs (PDFs, images, etc.)
           if (shouldSkipUrl(url)) {
-            // Mark skipped URLs in DB with error status
-            const currentProject = await storage.getProject(projectId);
-            if (currentProject) {
-              const updatedResults = (currentProject.results || []).map(existing => 
-                existing.loc === url ? { ...existing, errorStatus: 'skipped', errorMessage: 'Non-HTML content (PDF, image, etc.)' } : existing
-              );
-              await storage.updateProject(projectId, { results: updatedResults });
-            }
+            urlUpdates.set(url, { errorStatus: 'skipped', errorMessage: 'Non-HTML content (PDF, image, etc.)' });
             return { url, success: false, error: 'Skipped: non-HTML content (PDF, image, etc.)', skipped: true };
           }
           
@@ -3046,15 +3043,9 @@ export async function registerRoutes(
           });
           const data = scrapePageContent(html, url, extractStructuredDataFlag);
           
-          // Save scraped data directly to DB (hasScrapedData is computed at API response time from scrapedData presence)
+          // Store update in memory - will be applied in batch
           if (data) {
-            const currentProject = await storage.getProject(projectId);
-            if (currentProject) {
-              const updatedResults = (currentProject.results || []).map(existing => 
-                existing.loc === url ? { ...existing, scrapedData: data, errorStatus: undefined, errorMessage: undefined } : existing
-              );
-              await storage.updateProject(projectId, { results: updatedResults });
-            }
+            urlUpdates.set(url, { scrapedData: data, errorStatus: undefined, errorMessage: undefined });
           }
           
           // Return lightweight response without full scrapedData
@@ -3062,18 +3053,27 @@ export async function registerRoutes(
         } catch (err) {
           const errorMessage = (err as Error).message;
           
-          // Mark failed URLs in DB with error status so they're not retried
-          const currentProject = await storage.getProject(projectId);
-          if (currentProject) {
-            const updatedResults = (currentProject.results || []).map(existing => 
-              existing.loc === url ? { ...existing, errorStatus: 'failed', errorMessage: errorMessage } : existing
-            );
-            await storage.updateProject(projectId, { results: updatedResults });
-          }
+          // Store error in memory - will be applied in batch
+          urlUpdates.set(url, { errorStatus: 'failed', errorMessage: errorMessage });
           
           return { url, success: false, error: errorMessage };
         }
       }));
+      
+      // Apply all updates in a single batch to avoid race conditions
+      if (urlUpdates.size > 0) {
+        const currentProject = await storage.getProject(projectId);
+        if (currentProject) {
+          const updatedResults = (currentProject.results || []).map(existing => {
+            const update = urlUpdates.get(existing.loc);
+            if (update) {
+              return { ...existing, ...update };
+            }
+            return existing;
+          });
+          await storage.updateProject(projectId, { results: updatedResults });
+        }
+      }
       
       // Include rate limiter state in response for debugging
       const rateLimitState = rateLimiter?.getState();

@@ -57,6 +57,7 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const processingRef = useRef(false);
   const abortedProjectsRef = useRef<Set<number>>(new Set());
+  const contentQueueRef = useRef<{projectId: number, queue: string[]} | null>(null);
 
   const { data: projects = [], isLoading, refetch: refetchProjects } = useQuery<Project[]>({
     queryKey: ['/api/projects'],
@@ -520,14 +521,29 @@ export default function Home() {
       // Check if project was marked for deletion - stop immediately
       if (abortedProjectsRef.current.has(contentScrapingProject.id)) {
         console.log(`[Process] Content scraping project ${contentScrapingProject.id} was aborted, skipping`);
+        contentQueueRef.current = null;
         return;
       }
       
-      if (!contentScrapingProject.queue || contentScrapingProject.queue.length === 0) {
+      // Initialize queue ref if not set or different project
+      if (!contentQueueRef.current || contentQueueRef.current.projectId !== contentScrapingProject.id) {
+        contentQueueRef.current = {
+          projectId: contentScrapingProject.id,
+          queue: [...(contentScrapingProject.queue || [])]
+        };
+        console.log(`[ProcessStep] Initialized queue ref with ${contentQueueRef.current.queue.length} URLs`);
+      }
+      
+      // Use the ref queue, not the stale project queue
+      const currentQueue = contentQueueRef.current.queue;
+      
+      if (currentQueue.length === 0) {
+        contentQueueRef.current = null;
         await updateProjectMutation.mutateAsync({ 
           id: contentScrapingProject.id, 
           updates: { 
             status: 'idle',
+            queue: [],
             stats: { ...contentScrapingProject.stats!, endTime: Date.now() }
           } 
         });
@@ -536,8 +552,11 @@ export default function Home() {
 
       processingRef.current = true;
       lastActivityRef.current = Date.now();
-      const batchUrls = (contentScrapingProject.queue || []).slice(0, BATCH_SIZE);
-      const remainingQueue = (contentScrapingProject.queue || []).slice(BATCH_SIZE);
+      const batchUrls = currentQueue.slice(0, BATCH_SIZE);
+      const remainingQueue = currentQueue.slice(BATCH_SIZE);
+      
+      // Update ref immediately - this is the source of truth for next batch
+      contentQueueRef.current.queue = remainingQueue;
       
       // Helper to schedule next batch - centralized logic
       // Keep processingRef true until after scheduling to prevent overlapping calls
@@ -546,13 +565,14 @@ export default function Home() {
         if (queueLength > 0) {
           console.log(`[ProcessStep] Scheduling next batch in 1s, ${queueLength} remaining`);
           // Schedule first, then release lock
-          const timer = setTimeout(() => {
+          setTimeout(() => {
             processStep();
           }, 1000);
           // Release lock only after timer is set
           processingRef.current = false;
         } else {
           console.log('[ProcessStep] Queue empty, extraction complete');
+          contentQueueRef.current = null;
           processingRef.current = false;
         }
       };
@@ -586,6 +606,7 @@ export default function Home() {
         // Check again if project was aborted during API call
         if (abortedProjectsRef.current.has(contentScrapingProject.id)) {
           console.log(`[Process] Content scraping project ${contentScrapingProject.id} was aborted during processing, not saving results`);
+          contentQueueRef.current = null;
           processingRef.current = false;
           // Don't schedule next batch - project was aborted
           return;
@@ -612,12 +633,11 @@ export default function Home() {
             },
           });
           
-          // CRITICAL: Optimistically update BOTH list and detail caches IMMEDIATELY so next batch sees updated queue
+          // Update caches for UI display
           queryClient.setQueryData(['/api/projects'], (old: Project[] | undefined) => {
             if (!old) return old;
             return old.map(p => p.id === contentScrapingProject.id ? updatedProject : p);
           });
-          // Also update detail cache if this project is actively selected
           queryClient.setQueryData(['/api/projects', contentScrapingProject.id], updatedProject);
         } catch (updateErr) {
           console.error('[ProcessStep] Failed to save batch results:', updateErr);
@@ -655,12 +675,11 @@ export default function Home() {
             },
           });
           
-          // CRITICAL: Optimistically update BOTH list and detail caches IMMEDIATELY
+          // Update caches for UI display
           queryClient.setQueryData(['/api/projects'], (old: Project[] | undefined) => {
             if (!old) return old;
             return old.map(p => p.id === contentScrapingProject.id ? updatedErrorProject : p);
           });
-          // Also update detail cache if this project is actively selected
           queryClient.setQueryData(['/api/projects', contentScrapingProject.id], updatedErrorProject);
         } catch (updateErr) {
           console.error('[ProcessStep] Failed to update queue after batch error:', updateErr);
@@ -920,9 +939,11 @@ export default function Home() {
     }
     if (activeProject.status === 'content_scraping' || activeProject.status === 'content_paused') {
       // Use queue-based calculation: progress = (total - remaining) / total
-      // This is consistent with remainingUrls shown in progress bar
+      // Use contentQueueRef for live updates during active processing
       const total = (activeProject as any)?.urlCount ?? (activeProject.results || []).length;
-      const remaining = activeProject.queue?.length || 0;
+      const remaining = (contentQueueRef.current?.projectId === activeProject.id)
+        ? contentQueueRef.current.queue.length
+        : (activeProject.queue?.length || 0);
       const processed = total - remaining;
       return total === 0 ? 0 : Math.min(100, Math.round((processed / total) * 100));
     }
@@ -932,7 +953,10 @@ export default function Home() {
   const isProcessing = activeProject?.status === 'scraping' || activeProject?.status === 'content_scraping';
   const isPaused = activeProject?.status === 'paused' || activeProject?.status === 'content_paused';
   const hasActiveProcess = isProcessing || isPaused;
-  const remainingUrls = activeProject?.queue?.length || 0;
+  // Use contentQueueRef for live updates during active processing, fallback to project queue
+  const remainingUrls = (activeProject?.status === 'content_scraping' && contentQueueRef.current?.projectId === activeProject?.id)
+    ? contentQueueRef.current.queue.length
+    : (activeProject?.queue?.length || 0);
   // Use API-computed counts when available (more reliable), fallback to client-side calculation
   const scrapedCount = (activeProject as any)?.scrapedCount ?? (activeProject?.results || []).filter(r => r.scrapedData || r.hasScrapedData).length;
   const failedCount = (activeProject as any)?.failedCount ?? (activeProject?.results || []).filter((r: any) => r.errorStatus === 'failed' || r.errorStatus === 'skipped').length;

@@ -526,18 +526,19 @@ export default function Home() {
       const remainingQueue = (contentScrapingProject.queue || []).slice(BATCH_SIZE);
 
       try {
-        const res = await apiRequest('POST', '/api/scrape/content', { urls: batchUrls });
+        // Send projectId so server saves scrapedData directly to DB
+        const res = await apiRequest('POST', '/api/scrape/content', { 
+          urls: batchUrls, 
+          projectId: contentScrapingProject.id 
+        });
         const { results } = await res.json();
 
-        let newResults = [...(contentScrapingProject.results || [])];
+        // Server saves scrapedData directly - we only track errors and stats
         let newErrors = [...(contentScrapingProject.errors || [])];
         let scrapedInBatch = 0;
 
-        results.forEach((r: { url: string; data: any; error: string | null }) => {
-          if (r.data) {
-            newResults = newResults.map(existing => 
-              existing.loc === r.url ? { ...existing, scrapedData: r.data } : existing
-            );
+        results.forEach((r: { url: string; success: boolean; error: string | null }) => {
+          if (r.success) {
             scrapedInBatch++;
           } else if (r.error) {
             newErrors.push({ 
@@ -555,11 +556,11 @@ export default function Home() {
           return;
         }
 
+        // Only update queue, errors and stats - NOT results (server handles that)
         await updateProjectMutation.mutateAsync({
           id: contentScrapingProject.id,
           updates: {
             queue: remainingQueue,
-            results: newResults,
             errors: newErrors,
             stats: {
               ...contentScrapingProject.stats!,
@@ -765,7 +766,7 @@ export default function Home() {
       return total === 0 ? 0 : Math.min(100, Math.round(((activeProject.processed?.length || 0) / total) * 100));
     }
     if (activeProject.status === 'content_scraping' || activeProject.status === 'content_paused') {
-      const scraped = (activeProject.results || []).filter(r => r.scrapedData).length;
+      const scraped = (activeProject.results || []).filter(r => r.scrapedData || r.hasScrapedData).length;
       const total = (activeProject.results || []).length;
       return total === 0 ? 0 : Math.min(100, Math.round((scraped / total) * 100));
     }
@@ -776,8 +777,8 @@ export default function Home() {
   const isPaused = activeProject?.status === 'paused' || activeProject?.status === 'content_paused';
   const hasActiveProcess = isProcessing || isPaused;
   const remainingUrls = activeProject?.queue?.length || 0;
-  const scrapedCount = (activeProject?.results || []).filter(r => r.scrapedData).length;
-  const pendingContentScrape = (activeProject?.results || []).filter(r => !r.scrapedData).length;
+  const scrapedCount = (activeProject?.results || []).filter(r => r.scrapedData || r.hasScrapedData).length;
+  const pendingContentScrape = (activeProject?.results || []).filter(r => !r.scrapedData && !r.hasScrapedData).length;
 
   if (langLoading || isLoading) {
     return (
@@ -1035,15 +1036,15 @@ export default function Home() {
                       </DropdownMenuItem>
                       <DropdownMenuItem 
                         onClick={() => {
-                          const scrapedCount = activeProject?.results?.filter(r => r.scrapedData).length || 0;
+                          const scrapedCount = activeProject?.results?.filter(r => r.scrapedData || r.hasScrapedData).length || 0;
                           if (scrapedCount === 0) {
                             toast({ title: t('deepScrapingRequired'), variant: 'destructive' });
                             return;
                           }
                           setShowChunkingProgress(true);
                         }}
-                        className={`gap-2 ${(activeProject?.results?.filter(r => r.scrapedData).length || 0) === 0 ? 'opacity-50' : ''}`}
-                        disabled={(activeProject?.results?.filter(r => r.scrapedData).length || 0) === 0}
+                        className={`gap-2 ${(activeProject?.results?.filter(r => r.scrapedData || r.hasScrapedData).length || 0) === 0 ? 'opacity-50' : ''}`}
+                        disabled={(activeProject?.results?.filter(r => r.scrapedData || r.hasScrapedData).length || 0) === 0}
                       >
                         <Layers className="w-4 h-4" />
                         {t('generateChunks')}
@@ -1286,7 +1287,7 @@ export default function Home() {
               <StatsCards 
                 stats={activeProject?.stats || null} 
                 urlCount={activeProject?.results?.length || 0}
-                scrapedCount={activeProject?.results?.filter(r => r.scrapedData).length || 0}
+                scrapedCount={activeProject?.results?.filter(r => r.scrapedData || r.hasScrapedData).length || 0}
                 t={t} 
               />
 
@@ -1340,7 +1341,7 @@ export default function Home() {
           open={showChunkingProgress}
           onClose={() => setShowChunkingProgress(false)}
           projectId={activeProject.id}
-          totalPages={activeProject.results?.filter(r => r.scrapedData).length || 0}
+          totalPages={activeProject.results?.filter(r => r.scrapedData || r.hasScrapedData).length || 0}
           onComplete={(result) => {
             queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
             toast({ 

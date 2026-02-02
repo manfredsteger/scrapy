@@ -538,14 +538,34 @@ export default function Home() {
       lastActivityRef.current = Date.now();
       const batchUrls = (contentScrapingProject.queue || []).slice(0, BATCH_SIZE);
       const remainingQueue = (contentScrapingProject.queue || []).slice(BATCH_SIZE);
+      
+      // Helper to schedule next batch - centralized logic
+      // Keep processingRef true until after scheduling to prevent overlapping calls
+      const scheduleNextBatch = (queueLength: number) => {
+        lastActivityRef.current = Date.now();
+        if (queueLength > 0) {
+          console.log(`[ProcessStep] Scheduling next batch in 1s, ${queueLength} remaining`);
+          // Schedule first, then release lock
+          const timer = setTimeout(() => {
+            processStep();
+          }, 1000);
+          // Release lock only after timer is set
+          processingRef.current = false;
+        } else {
+          console.log('[ProcessStep] Queue empty, extraction complete');
+          processingRef.current = false;
+        }
+      };
 
       try {
         // Send projectId so server saves scrapedData directly to DB
+        console.log(`[ProcessStep] Starting batch of ${batchUrls.length} URLs, ${remainingQueue.length} remaining`);
         const res = await apiRequest('POST', '/api/scrape/content', { 
           urls: batchUrls, 
           projectId: contentScrapingProject.id 
         });
         const { results } = await res.json();
+        console.log(`[ProcessStep] Batch completed, ${results.length} results`);
 
         // Server saves scrapedData directly - we only track errors and stats
         let newErrors = [...(contentScrapingProject.errors || [])];
@@ -567,36 +587,37 @@ export default function Home() {
         if (abortedProjectsRef.current.has(contentScrapingProject.id)) {
           console.log(`[Process] Content scraping project ${contentScrapingProject.id} was aborted during processing, not saving results`);
           processingRef.current = false;
+          // Don't schedule next batch - project was aborted
           return;
         }
 
         // Only update queue, errors and stats - NOT results (server handles that)
-        await updateProjectMutation.mutateAsync({
-          id: contentScrapingProject.id,
-          updates: {
-            queue: remainingQueue,
-            errors: newErrors,
-            stats: {
-              ...contentScrapingProject.stats!,
-              scrapedPages: (contentScrapingProject.stats?.scrapedPages || 0) + scrapedInBatch,
+        try {
+          await updateProjectMutation.mutateAsync({
+            id: contentScrapingProject.id,
+            updates: {
+              queue: remainingQueue,
+              errors: newErrors,
+              stats: {
+                ...contentScrapingProject.stats!,
+                scrapedPages: (contentScrapingProject.stats?.scrapedPages || 0) + scrapedInBatch,
+              },
             },
-          },
-        });
-        // Update activity timestamp after successful batch processing
-        lastActivityRef.current = Date.now();
-        
-        // Self-schedule next batch if queue still has items
-        if (remainingQueue.length > 0) {
-          processingRef.current = false;
-          setTimeout(() => {
-            if (!processingRef.current) {
-              processStep();
-            }
-          }, 1000);
+          });
+        } catch (updateErr) {
+          console.error('[ProcessStep] Failed to save batch results:', updateErr);
         }
+        
+        // Always schedule next batch regardless of mutation success
+        scheduleNextBatch(remainingQueue.length);
       } catch (err) {
         // On network/API error, still update queue to skip failed batch and continue
-        console.error('[ProcessStep] Content scraping batch error, skipping batch:', err);
+        console.error('[ProcessStep] Content scraping batch error:', {
+          error: err,
+          message: err instanceof Error ? err.message : 'Unknown',
+          batchSize: batchUrls.length,
+          remainingCount: remainingQueue.length
+        });
         const errorMessage = err instanceof Error ? err.message : 'Unknown batch error';
         const batchErrors = batchUrls.map(url => ({
           url,
@@ -612,21 +633,12 @@ export default function Home() {
               errors: [...(contentScrapingProject.errors || []), ...batchErrors],
             },
           });
-          
-          // Continue with next batch even after error
-          if (remainingQueue.length > 0) {
-            processingRef.current = false;
-            setTimeout(() => {
-              if (!processingRef.current) {
-                processStep();
-              }
-            }, 1000);
-          }
         } catch (updateErr) {
           console.error('[ProcessStep] Failed to update queue after batch error:', updateErr);
         }
-      } finally {
-        processingRef.current = false;
+        
+        // Always schedule next batch even after error
+        scheduleNextBatch(remainingQueue.length);
       }
     }
   }, [projects, updateProjectMutation]);

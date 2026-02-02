@@ -688,6 +688,7 @@ export default function Home() {
   }, [activeProject, toast, t, refetchProjects]);
 
   const [isSyncingErrors, setIsSyncingErrors] = useState(false);
+  const [processAction, setProcessAction] = useState<'pause' | 'resume' | 'stop' | null>(null);
   const syncErrors = useCallback(async () => {
     if (!activeProject) return;
     
@@ -720,45 +721,60 @@ export default function Home() {
     }
   }, [activeProject, toast, t, refetchProjects]);
 
-  const stopProcess = useCallback(() => {
-    if (!activeProject) return;
-    updateProjectMutation.mutate({
-      id: activeProject.id,
-      updates: { status: 'idle', queue: [] },
-    });
-  }, [activeProject, updateProjectMutation]);
-
-  const pauseProcess = useCallback(() => {
-    if (!activeProject) return;
-    const currentStatus = activeProject.status;
-    if (currentStatus === 'content_scraping') {
-      updateProjectMutation.mutate({
+  const stopProcess = useCallback(async () => {
+    if (!activeProject || processAction) return;
+    setProcessAction('stop');
+    try {
+      await updateProjectMutation.mutateAsync({
         id: activeProject.id,
-        updates: { status: 'content_paused' },
+        updates: { status: 'idle', queue: [] },
       });
-    } else if (currentStatus === 'scraping') {
-      updateProjectMutation.mutate({
-        id: activeProject.id,
-        updates: { status: 'paused' },
-      });
+    } finally {
+      setProcessAction(null);
     }
-  }, [activeProject, updateProjectMutation]);
+  }, [activeProject, updateProjectMutation, processAction]);
 
-  const resumeProcess = useCallback(() => {
-    if (!activeProject) return;
+  const pauseProcess = useCallback(async () => {
+    if (!activeProject || processAction) return;
+    setProcessAction('pause');
     const currentStatus = activeProject.status;
-    if (currentStatus === 'content_paused') {
-      updateProjectMutation.mutate({
-        id: activeProject.id,
-        updates: { status: 'content_scraping' },
-      });
-    } else if (currentStatus === 'paused') {
-      updateProjectMutation.mutate({
-        id: activeProject.id,
-        updates: { status: 'scraping' },
-      });
+    try {
+      if (currentStatus === 'content_scraping') {
+        await updateProjectMutation.mutateAsync({
+          id: activeProject.id,
+          updates: { status: 'content_paused' },
+        });
+      } else if (currentStatus === 'scraping') {
+        await updateProjectMutation.mutateAsync({
+          id: activeProject.id,
+          updates: { status: 'paused' },
+        });
+      }
+    } finally {
+      setProcessAction(null);
     }
-  }, [activeProject, updateProjectMutation]);
+  }, [activeProject, updateProjectMutation, processAction]);
+
+  const resumeProcess = useCallback(async () => {
+    if (!activeProject || processAction) return;
+    setProcessAction('resume');
+    const currentStatus = activeProject.status;
+    try {
+      if (currentStatus === 'content_paused') {
+        await updateProjectMutation.mutateAsync({
+          id: activeProject.id,
+          updates: { status: 'content_scraping' },
+        });
+      } else if (currentStatus === 'paused') {
+        await updateProjectMutation.mutateAsync({
+          id: activeProject.id,
+          updates: { status: 'scraping' },
+        });
+      }
+    } finally {
+      setProcessAction(null);
+    }
+  }, [activeProject, updateProjectMutation, processAction]);
 
   const exportProject = useCallback(() => {
     if (!activeProject) return;
@@ -1305,17 +1321,27 @@ export default function Home() {
                           <Button
                             size="icon"
                             onClick={resumeProcess}
+                            disabled={processAction !== null}
                             data-testid="resume-button"
                           >
-                            <Play className="w-4 h-4" />
+                            {processAction === 'resume' ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <Play className="w-4 h-4" />
+                            )}
                           </Button>
                           <Button
                             size="icon"
                             variant="destructive"
                             onClick={stopProcess}
+                            disabled={processAction !== null}
                             data-testid="cancel-button"
                           >
-                            <X className="w-4 h-4" />
+                            {processAction === 'stop' ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <X className="w-4 h-4" />
+                            )}
                           </Button>
                         </>
                       ) : (
@@ -1325,17 +1351,27 @@ export default function Home() {
                             size="icon"
                             variant="outline"
                             onClick={pauseProcess}
+                            disabled={processAction !== null}
                             data-testid="pause-button"
                           >
-                            <Pause className="w-4 h-4" />
+                            {processAction === 'pause' ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <Pause className="w-4 h-4" />
+                            )}
                           </Button>
                           <Button
                             size="icon"
                             variant="destructive"
                             onClick={stopProcess}
+                            disabled={processAction !== null}
                             data-testid="stop-process-button"
                           >
-                            <Square className="w-4 h-4" />
+                            {processAction === 'stop' ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <Square className="w-4 h-4" />
+                            )}
                           </Button>
                         </>
                       )}

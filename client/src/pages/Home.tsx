@@ -343,6 +343,7 @@ export default function Home() {
       }
 
       processingRef.current = true;
+      lastActivityRef.current = Date.now();
       const batchUrls = (scrapingProject.queue || []).slice(0, BATCH_SIZE);
       const remainingQueue = (scrapingProject.queue || []).slice(BATCH_SIZE);
       
@@ -434,6 +435,7 @@ export default function Home() {
       }
 
       processingRef.current = true;
+      lastActivityRef.current = Date.now();
       const batchUrls = (crawlingProject.queue || []).slice(0, BATCH_SIZE);
       const remainingQueue = (crawlingProject.queue || []).slice(BATCH_SIZE);
       
@@ -533,6 +535,7 @@ export default function Home() {
       }
 
       processingRef.current = true;
+      lastActivityRef.current = Date.now();
       const batchUrls = (contentScrapingProject.queue || []).slice(0, BATCH_SIZE);
       const remainingQueue = (contentScrapingProject.queue || []).slice(BATCH_SIZE);
 
@@ -579,21 +582,50 @@ export default function Home() {
             },
           },
         });
+        // Update activity timestamp after successful batch processing
+        lastActivityRef.current = Date.now();
+      } catch (err) {
+        // On network/API error, still update queue to skip failed batch and continue
+        console.error('[ProcessStep] Content scraping batch error, skipping batch:', err);
+        const errorMessage = err instanceof Error ? err.message : 'Unknown batch error';
+        const batchErrors = batchUrls.map(url => ({
+          url,
+          message: `Batch Error: ${errorMessage}`,
+          timestamp: new Date().toISOString()
+        }));
+        
+        try {
+          await updateProjectMutation.mutateAsync({
+            id: contentScrapingProject.id,
+            updates: {
+              queue: remainingQueue,
+              errors: [...(contentScrapingProject.errors || []), ...batchErrors],
+            },
+          });
+        } catch (updateErr) {
+          console.error('[ProcessStep] Failed to update queue after batch error:', updateErr);
+        }
       } finally {
         processingRef.current = false;
       }
     }
   }, [projects, updateProjectMutation]);
 
-  // Reset processingRef if stuck (safety measure)
+  // Track last activity time for stuck detection
+  const lastActivityRef = useRef<number>(Date.now());
+  
+  // Reset processingRef only if genuinely stuck (no activity for 120 seconds)
   useEffect(() => {
-    const resetTimer = setTimeout(() => {
+    const checkInterval = setInterval(() => {
       if (processingRef.current) {
-        console.warn('Resetting stuck processingRef');
-        processingRef.current = false;
+        const inactiveTime = Date.now() - lastActivityRef.current;
+        if (inactiveTime > 120000) { // 120 seconds of no activity
+          console.warn('Resetting stuck processingRef after 120s inactivity');
+          processingRef.current = false;
+        }
       }
-    }, 30000); // Reset after 30 seconds if stuck
-    return () => clearTimeout(resetTimer);
+    }, 10000); // Check every 10 seconds
+    return () => clearInterval(checkInterval);
   }, []);
 
   useEffect(() => {
@@ -821,9 +853,11 @@ export default function Home() {
   const isPaused = activeProject?.status === 'paused' || activeProject?.status === 'content_paused';
   const hasActiveProcess = isProcessing || isPaused;
   const remainingUrls = activeProject?.queue?.length || 0;
-  const scrapedCount = (activeProject?.results || []).filter(r => r.scrapedData || r.hasScrapedData).length;
-  const failedCount = (activeProject?.results || []).filter((r: any) => r.errorStatus === 'failed' || r.errorStatus === 'skipped').length;
-  const pendingContentScrape = (activeProject?.results || []).filter((r: any) => !r.scrapedData && !r.hasScrapedData && !r.errorStatus).length;
+  // Use API-computed counts when available (more reliable), fallback to client-side calculation
+  const scrapedCount = (activeProject as any)?.scrapedCount ?? (activeProject?.results || []).filter(r => r.scrapedData || r.hasScrapedData).length;
+  const failedCount = (activeProject as any)?.failedCount ?? (activeProject?.results || []).filter((r: any) => r.errorStatus === 'failed' || r.errorStatus === 'skipped').length;
+  const urlCount = (activeProject as any)?.urlCount ?? (activeProject?.results || []).length;
+  const pendingContentScrape = urlCount - scrapedCount - failedCount;
   const errorsArrayCount = (activeProject?.errors || []).length;
   const hasUnsyncedErrors = errorsArrayCount > 0 && pendingContentScrape > 0;
 
@@ -1352,8 +1386,8 @@ export default function Home() {
 
               <StatsCards 
                 stats={activeProject?.stats || null} 
-                urlCount={activeProject?.results?.length || 0}
-                scrapedCount={activeProject?.results?.filter(r => r.scrapedData || r.hasScrapedData).length || 0}
+                urlCount={urlCount}
+                scrapedCount={scrapedCount}
                 failedCount={failedCount}
                 pendingCount={pendingContentScrape}
                 t={t} 

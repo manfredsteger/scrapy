@@ -1,14 +1,15 @@
-import { FileText, Image as ImageIcon, Video, Clock, Activity, ListOrdered, Globe, CheckCircle } from 'lucide-react';
+import { FileText, Image as ImageIcon, Video, Clock, Activity, ListOrdered, Globe, CheckCircle, XCircle } from 'lucide-react';
 import type { ScrapingStats } from '@shared/schema';
 
 interface StatsCardsProps {
   stats: ScrapingStats | null;
   urlCount?: number;
   scrapedCount?: number;
+  failedCount?: number;
   t: (key: any) => string;
 }
 
-export default function StatsCards({ stats, urlCount = 0, scrapedCount = 0, t }: StatsCardsProps) {
+export default function StatsCards({ stats, urlCount = 0, scrapedCount = 0, failedCount = 0, t }: StatsCardsProps) {
   const duration = stats?.endTime 
     ? (stats.endTime - stats.startTime) / 1000 
     : stats?.startTime 
@@ -48,15 +49,27 @@ export default function StatsCards({ stats, urlCount = 0, scrapedCount = 0, t }:
           </div>
         </div>
         
-        <div className="stat-card-blue rounded-xl p-4">
-          <div className="flex items-start justify-between">
-            <div>
-              <p className="text-xs font-medium opacity-80 uppercase tracking-wide">{t('sitemaps')}</p>
-              <p className="text-3xl font-bold mt-1">{stats?.processedSitemaps || 0}</p>
+        {failedCount > 0 ? (
+          <div className="rounded-xl p-4 bg-red-500/10 border border-red-500/30">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-xs font-medium text-red-400 uppercase tracking-wide">Failed</p>
+                <p className="text-3xl font-bold text-red-400 mt-1">{failedCount}</p>
+              </div>
+              <XCircle className="w-6 h-6 text-red-400/60" />
             </div>
-            <FileText className="w-6 h-6 opacity-60" />
           </div>
-        </div>
+        ) : (
+          <div className="stat-card-blue rounded-xl p-4">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-xs font-medium opacity-80 uppercase tracking-wide">{t('sitemaps')}</p>
+                <p className="text-3xl font-bold mt-1">{stats?.processedSitemaps || 0}</p>
+              </div>
+              <FileText className="w-6 h-6 opacity-60" />
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

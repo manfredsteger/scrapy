@@ -4,7 +4,7 @@ import { useQuery, useMutation } from '@tanstack/react-query';
 import { 
   Play, Square, Loader2, Download, Settings, 
   Trash2, ScanText, Globe, ArrowLeft, Plus, RefreshCw, Pause, X,
-  Layers, Package, Cog, FileText
+  Layers, Package, Cog, FileText, AlertTriangle
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -635,6 +635,39 @@ export default function Home() {
     }
   }, [activeProject, toast, t, refetchProjects]);
 
+  const [isSyncingErrors, setIsSyncingErrors] = useState(false);
+  const syncErrors = useCallback(async () => {
+    if (!activeProject) return;
+    
+    setIsSyncingErrors(true);
+    try {
+      const res = await apiRequest('POST', `/api/projects/${activeProject.id}/sync-errors`);
+      const data = await res.json();
+      
+      if (!res.ok) {
+        throw new Error(data.message || 'Failed to sync errors');
+      }
+      
+      // Refetch projects to update UI
+      queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
+      await refetchProjects();
+      
+      toast({ 
+        title: 'Errors synced', 
+        description: `${data.synced} error URLs marked as failed` 
+      });
+    } catch (err) {
+      console.error('[SyncErrors] Failed:', err);
+      toast({ 
+        title: t('error'), 
+        description: err instanceof Error ? err.message : 'Failed to sync errors', 
+        variant: 'destructive' 
+      });
+    } finally {
+      setIsSyncingErrors(false);
+    }
+  }, [activeProject, toast, t, refetchProjects]);
+
   const stopProcess = useCallback(() => {
     if (!activeProject) return;
     updateProjectMutation.mutate({
@@ -789,7 +822,10 @@ export default function Home() {
   const hasActiveProcess = isProcessing || isPaused;
   const remainingUrls = activeProject?.queue?.length || 0;
   const scrapedCount = (activeProject?.results || []).filter(r => r.scrapedData || r.hasScrapedData).length;
-  const pendingContentScrape = (activeProject?.results || []).filter(r => !r.scrapedData && !r.hasScrapedData).length;
+  const failedCount = (activeProject?.results || []).filter((r: any) => r.errorStatus === 'failed' || r.errorStatus === 'skipped').length;
+  const pendingContentScrape = (activeProject?.results || []).filter((r: any) => !r.scrapedData && !r.hasScrapedData && !r.errorStatus).length;
+  const errorsArrayCount = (activeProject?.errors || []).length;
+  const hasUnsyncedErrors = errorsArrayCount > 0 && pendingContentScrape > 0;
 
   if (langLoading || isLoading) {
     return (
@@ -1284,13 +1320,32 @@ export default function Home() {
                     <div>
                       <p className="text-sm font-medium text-foreground">{t('deepExtraction')}</p>
                       <p className="text-xs text-muted-foreground mt-0.5">
-                        {pendingContentScrape} {t('pending')} | {scrapedCount} {t('sequentialDataReady')}
+                        {pendingContentScrape} {t('pending')} | {scrapedCount} {t('sequentialDataReady')}{failedCount > 0 ? ` | ${failedCount} Failed` : ''}
+                        {hasUnsyncedErrors && ` | ${errorsArrayCount} errors in log`}
                       </p>
                     </div>
-                    <Button onClick={startContentScrape} className="gap-2" data-testid="start-extraction-button">
-                      <Play className="w-4 h-4" />
-                      {t('startExtraction')}
-                    </Button>
+                    <div className="flex gap-2">
+                      {hasUnsyncedErrors && (
+                        <Button 
+                          variant="outline" 
+                          onClick={syncErrors} 
+                          disabled={isSyncingErrors}
+                          className="gap-2" 
+                          data-testid="sync-errors-button"
+                        >
+                          {isSyncingErrors ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <AlertTriangle className="w-4 h-4 text-amber-500" />
+                          )}
+                          Sync Errors
+                        </Button>
+                      )}
+                      <Button onClick={startContentScrape} className="gap-2" data-testid="start-extraction-button">
+                        <Play className="w-4 h-4" />
+                        {t('startExtraction')}
+                      </Button>
+                    </div>
                   </div>
                 </div>
               )}
@@ -1299,6 +1354,7 @@ export default function Home() {
                 stats={activeProject?.stats || null} 
                 urlCount={activeProject?.results?.length || 0}
                 scrapedCount={activeProject?.results?.filter(r => r.scrapedData || r.hasScrapedData).length || 0}
+                failedCount={failedCount}
                 t={t} 
               />
 

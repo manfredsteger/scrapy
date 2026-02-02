@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { ExternalLink, CheckCircle, Clock, Search, Eye, ChevronDown, Loader2 } from 'lucide-react';
+import { ExternalLink, CheckCircle, Clock, Search, Eye, ChevronDown, Loader2, XCircle, AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -233,6 +233,30 @@ export default function UrlList({ urls, projectId, t, chunks = [] }: UrlListProp
                         <CheckCircle className="w-3 h-3 shrink-0" />
                         Scraped
                       </span>
+                    ) : (url as any).errorStatus === 'failed' ? (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-500/10 text-red-500 border border-red-500/30 whitespace-nowrap cursor-help">
+                            <XCircle className="w-3 h-3 shrink-0" />
+                            Failed
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" className="max-w-xs">
+                          <p className="text-xs">{(url as any).errorMessage || 'Unknown error'}</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    ) : (url as any).errorStatus === 'skipped' ? (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-500/10 text-yellow-500 border border-yellow-500/30 whitespace-nowrap cursor-help">
+                            <AlertCircle className="w-3 h-3 shrink-0" />
+                            Skipped
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" className="max-w-xs">
+                          <p className="text-xs">{(url as any).errorMessage || 'Non-HTML content'}</p>
+                        </TooltipContent>
+                      </Tooltip>
                     ) : (
                       <span className="badge-gray whitespace-nowrap">Pending</span>
                     )}

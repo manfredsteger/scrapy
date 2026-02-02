@@ -92,7 +92,9 @@ export class DatabaseStorage implements IStorage {
               'priority', r->>'priority',
               'images', COALESCE(r->'images', '[]'::jsonb),
               'videos', COALESCE(r->'videos', '[]'::jsonb),
-              'hasScrapedData', (r->'scrapedData' IS NOT NULL AND jsonb_typeof(r->'scrapedData') = 'object')
+              'hasScrapedData', (r->'scrapedData' IS NOT NULL AND jsonb_typeof(r->'scrapedData') = 'object'),
+              'errorStatus', r->>'errorStatus',
+              'errorMessage', r->>'errorMessage'
             )
           )
           FROM jsonb_array_elements(COALESCE(results, '[]'::jsonb)) r

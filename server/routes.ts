@@ -2451,22 +2451,31 @@ export async function registerRoutes(
         return res.status(404).json({ message: 'Project not found' });
       }
 
-      // Calculate URLs that need extraction (no scrapedData AND no errorStatus - skip already failed URLs)
-      const contentUrls = (project.results || [])
-        .filter((r: any) => !r.scrapedData && !r.errorStatus)
+      // Reset errorStatus for all results and calculate URLs that need extraction
+      const results = project.results || [];
+      const resetResults = results.map((r: any) => ({
+        ...r,
+        errorStatus: null, // Clear previous error status
+      }));
+      
+      // All URLs without scrapedData need extraction (including previously failed ones)
+      const contentUrls = resetResults
+        .filter((r: any) => !r.scrapedData)
         .map((r: any) => r.loc);
 
       if (contentUrls.length === 0) {
         return res.status(400).json({ message: 'No content pages to extract' });
       }
 
-      // Update project with queue and status
+      // Update project: reset errors, reset results errorStatus, set queue and status
       const updated = await storage.updateProject(id, {
         status: 'content_scraping',
         queue: contentUrls,
+        errors: [], // Clear errors array for fresh start
+        results: resetResults, // Save results with cleared errorStatus
       });
 
-      console.log(`[StartExtraction] Started extraction for project ${id} with ${contentUrls.length} URLs`);
+      console.log(`[StartExtraction] Started extraction for project ${id} with ${contentUrls.length} URLs (errors reset)`);
       res.json(updated);
     } catch (err) {
       console.error('[StartExtraction] Error:', err);

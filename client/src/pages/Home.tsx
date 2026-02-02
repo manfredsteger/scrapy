@@ -593,7 +593,7 @@ export default function Home() {
     }
   }, [projects, processStep]);
 
-  const startContentScrape = useCallback(() => {
+  const startContentScrape = useCallback(async () => {
     if (!activeProject) return;
     
     const contentUrls = (activeProject.results || [])
@@ -605,11 +605,25 @@ export default function Home() {
       return;
     }
 
-    updateProjectMutation.mutate({
-      id: activeProject.id,
-      updates: { status: 'content_scraping', queue: contentUrls },
-    });
-  }, [activeProject, updateProjectMutation, toast, t]);
+    console.log(`[StartExtraction] Starting extraction for ${contentUrls.length} URLs`);
+    
+    // Reset processingRef to ensure the loop can start
+    processingRef.current = false;
+    
+    try {
+      await updateProjectMutation.mutateAsync({
+        id: activeProject.id,
+        updates: { status: 'content_scraping', queue: contentUrls },
+      });
+      
+      // Force refetch to ensure useEffect sees the new status
+      await refetchProjects();
+      console.log('[StartExtraction] Project updated and refetched, loop should start');
+    } catch (err) {
+      console.error('[StartExtraction] Failed to start extraction:', err);
+      toast({ title: t('error'), description: 'Failed to start extraction', variant: 'destructive' });
+    }
+  }, [activeProject, updateProjectMutation, toast, t, refetchProjects]);
 
   const stopProcess = useCallback(() => {
     if (!activeProject) return;

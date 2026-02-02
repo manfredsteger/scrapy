@@ -69,6 +69,7 @@ export const sitemapUrlEntrySchema = z.object({
   images: z.array(imageMetadataSchema),
   videos: z.array(videoMetadataSchema),
   scrapedData: scrapedDataSchema.optional(),
+  hasScrapedData: z.boolean().optional(), // Lightweight indicator from API (scrapedData stripped)
 });
 
 // Scraping error

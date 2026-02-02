@@ -2316,13 +2316,17 @@ export async function registerRoutes(
   
   app.get(api.projects.list.path, async (req, res) => {
     const allProjects = await storage.getProjects();
-    // Strip chunks from results to reduce response size
+    // Strip large data from results to reduce response size
     const lightProjects = allProjects.map(project => ({
       ...project,
       results: (project.results || []).map((r: any) => {
-        // Exclude chunks from list view to prevent huge payloads
-        const { chunks, ...rest } = r;
-        return rest;
+        // Exclude chunks and scrapedData from list view to prevent huge payloads
+        // Only keep essential metadata for display
+        const { chunks, scrapedData, ...rest } = r;
+        return {
+          ...rest,
+          hasScrapedData: !!scrapedData, // Just indicate if data exists
+        };
       }),
     }));
     res.json(lightProjects);
@@ -2333,12 +2337,16 @@ export async function registerRoutes(
     if (!project) {
       return res.status(404).json({ message: 'Project not found' });
     }
-    // Strip chunks from results to reduce response size
+    // Strip large data from results to reduce response size
     const lightProject = {
       ...project,
       results: (project.results || []).map((r: any) => {
-        const { chunks, ...rest } = r;
-        return rest;
+        // Exclude chunks and scrapedData to prevent huge payloads
+        const { chunks, scrapedData, ...rest } = r;
+        return {
+          ...rest,
+          hasScrapedData: !!scrapedData, // Just indicate if data exists
+        };
       }),
     };
     res.json(lightProject);
@@ -2892,27 +2900,36 @@ export async function registerRoutes(
     try {
       const input = api.scrape.fetchContent.input.parse(req.body);
       const urls = input.urls.slice(0, CONCURRENCY);
+      const projectId = input.projectId;
       
-      // Get project settings if projectId is provided for rate limiting/proxy support
+      // Validate projectId is required for content scraping (data persistence)
+      if (!projectId) {
+        return res.status(400).json({ message: 'projectId is required for content scraping' });
+      }
+      
+      // Get project - validate it exists
+      const project = await storage.getProject(projectId);
+      if (!project) {
+        return res.status(404).json({ message: `Project ${projectId} not found` });
+      }
+      
+      // Get project settings for rate limiting/proxy support
       let rateLimiter: RateLimiter | undefined;
       let proxyRotator: ProxyRotator | undefined;
       let extractStructuredDataFlag = true; // Default to true
       
-      if (input.projectId) {
-        const project = await storage.getProject(input.projectId);
-        if (project?.projectSettings?.scraping) {
-          const settings = project.projectSettings.scraping;
-          rateLimiter = new RateLimiter(settings.rateLimiting);
-          proxyRotator = new ProxyRotator(settings.proxies, settings.rotateProxies);
-          extractStructuredDataFlag = settings.extractStructuredData ?? true;
-        }
+      if (project.projectSettings?.scraping) {
+        const settings = project.projectSettings.scraping;
+        rateLimiter = new RateLimiter(settings.rateLimiting);
+        proxyRotator = new ProxyRotator(settings.proxies, settings.rotateProxies);
+        extractStructuredDataFlag = settings.extractStructuredData ?? true;
       }
       
       const results = await Promise.all(urls.map(async (url) => {
         try {
           // Skip non-HTML URLs (PDFs, images, etc.)
           if (shouldSkipUrl(url)) {
-            return { url, data: null, error: 'Skipped: non-HTML content (PDF, image, etc.)', skipped: true };
+            return { url, success: false, error: 'Skipped: non-HTML content (PDF, image, etc.)', skipped: true };
           }
           
           const { text: html, usedProxy } = await fetchWithRateLimitAndProxy(url, {
@@ -2920,15 +2937,29 @@ export async function registerRoutes(
             proxyRotator,
           });
           const data = scrapePageContent(html, url, extractStructuredDataFlag);
-          return { url, data, error: null, usedProxy };
+          
+          // Save scraped data directly to DB (hasScrapedData is computed at API response time from scrapedData presence)
+          if (data) {
+            const currentProject = await storage.getProject(projectId);
+            if (currentProject) {
+              const updatedResults = (currentProject.results || []).map(existing => 
+                existing.loc === url ? { ...existing, scrapedData: data } : existing
+              );
+              await storage.updateProject(projectId, { results: updatedResults });
+            }
+          }
+          
+          // Return lightweight response without full scrapedData
+          return { url, success: true, error: null, usedProxy };
         } catch (err) {
-          return { url, data: null, error: (err as Error).message };
+          return { url, success: false, error: (err as Error).message };
         }
       }));
       
       // Include rate limiter state in response for debugging
       const rateLimitState = rateLimiter?.getState();
       
+      // Return lightweight response - data is saved to DB directly
       res.json({ 
         results,
         rateLimitState,

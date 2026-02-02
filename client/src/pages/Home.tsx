@@ -592,18 +592,33 @@ export default function Home() {
         }
 
         // Only update queue, errors and stats - NOT results (server handles that)
+        const updatedProject = {
+          ...contentScrapingProject,
+          queue: remainingQueue,
+          errors: newErrors,
+          stats: {
+            ...contentScrapingProject.stats!,
+            scrapedPages: (contentScrapingProject.stats?.scrapedPages || 0) + scrapedInBatch,
+          },
+        };
+        
         try {
           await updateProjectMutation.mutateAsync({
             id: contentScrapingProject.id,
             updates: {
               queue: remainingQueue,
               errors: newErrors,
-              stats: {
-                ...contentScrapingProject.stats!,
-                scrapedPages: (contentScrapingProject.stats?.scrapedPages || 0) + scrapedInBatch,
-              },
+              stats: updatedProject.stats,
             },
           });
+          
+          // CRITICAL: Optimistically update BOTH list and detail caches IMMEDIATELY so next batch sees updated queue
+          queryClient.setQueryData(['/api/projects'], (old: Project[] | undefined) => {
+            if (!old) return old;
+            return old.map(p => p.id === contentScrapingProject.id ? updatedProject : p);
+          });
+          // Also update detail cache if this project is actively selected
+          queryClient.setQueryData(['/api/projects', contentScrapingProject.id], updatedProject);
         } catch (updateErr) {
           console.error('[ProcessStep] Failed to save batch results:', updateErr);
         }
@@ -625,14 +640,28 @@ export default function Home() {
           timestamp: new Date().toISOString()
         }));
         
+        const updatedErrorProject = {
+          ...contentScrapingProject,
+          queue: remainingQueue,
+          errors: [...(contentScrapingProject.errors || []), ...batchErrors],
+        };
+        
         try {
           await updateProjectMutation.mutateAsync({
             id: contentScrapingProject.id,
             updates: {
               queue: remainingQueue,
-              errors: [...(contentScrapingProject.errors || []), ...batchErrors],
+              errors: updatedErrorProject.errors,
             },
           });
+          
+          // CRITICAL: Optimistically update BOTH list and detail caches IMMEDIATELY
+          queryClient.setQueryData(['/api/projects'], (old: Project[] | undefined) => {
+            if (!old) return old;
+            return old.map(p => p.id === contentScrapingProject.id ? updatedErrorProject : p);
+          });
+          // Also update detail cache if this project is actively selected
+          queryClient.setQueryData(['/api/projects', contentScrapingProject.id], updatedErrorProject);
         } catch (updateErr) {
           console.error('[ProcessStep] Failed to update queue after batch error:', updateErr);
         }
@@ -890,9 +919,12 @@ export default function Home() {
       return total === 0 ? 0 : Math.min(100, Math.round(((activeProject.processed?.length || 0) / total) * 100));
     }
     if (activeProject.status === 'content_scraping' || activeProject.status === 'content_paused') {
-      const scraped = (activeProject.results || []).filter(r => r.scrapedData || r.hasScrapedData).length;
-      const total = (activeProject.results || []).length;
-      return total === 0 ? 0 : Math.min(100, Math.round((scraped / total) * 100));
+      // Use queue-based calculation: progress = (total - remaining) / total
+      // This is consistent with remainingUrls shown in progress bar
+      const total = (activeProject as any)?.urlCount ?? (activeProject.results || []).length;
+      const remaining = activeProject.queue?.length || 0;
+      const processed = total - remaining;
+      return total === 0 ? 0 : Math.min(100, Math.round((processed / total) * 100));
     }
     return 0;
   }, [activeProject]);
@@ -905,7 +937,10 @@ export default function Home() {
   const scrapedCount = (activeProject as any)?.scrapedCount ?? (activeProject?.results || []).filter(r => r.scrapedData || r.hasScrapedData).length;
   const failedCount = (activeProject as any)?.failedCount ?? (activeProject?.results || []).filter((r: any) => r.errorStatus === 'failed' || r.errorStatus === 'skipped').length;
   const urlCount = (activeProject as any)?.urlCount ?? (activeProject?.results || []).length;
-  const pendingContentScrape = urlCount - scrapedCount - failedCount;
+  // During active processing, use queue length as source of truth for pending
+  // Otherwise use math-based calculation (more accurate for completed projects)
+  const isActivelyProcessing = activeProject?.status === 'content_scraping' || activeProject?.status === 'content_paused';
+  const pendingContentScrape = isActivelyProcessing ? remainingUrls : Math.max(0, urlCount - scrapedCount - failedCount);
   const errorsArrayCount = (activeProject?.errors || []).length;
   const hasUnsyncedErrors = errorsArrayCount > 0 && pendingContentScrape > 0;
 

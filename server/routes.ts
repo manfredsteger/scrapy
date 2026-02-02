@@ -2316,7 +2316,16 @@ export async function registerRoutes(
   
   app.get(api.projects.list.path, async (req, res) => {
     const allProjects = await storage.getProjects();
-    res.json(allProjects);
+    // Strip chunks from results to reduce response size
+    const lightProjects = allProjects.map(project => ({
+      ...project,
+      results: (project.results || []).map((r: any) => {
+        // Exclude chunks from list view to prevent huge payloads
+        const { chunks, ...rest } = r;
+        return rest;
+      }),
+    }));
+    res.json(lightProjects);
   });
 
   app.get(api.projects.get.path, async (req, res) => {
@@ -2324,7 +2333,15 @@ export async function registerRoutes(
     if (!project) {
       return res.status(404).json({ message: 'Project not found' });
     }
-    res.json(project);
+    // Strip chunks from results to reduce response size
+    const lightProject = {
+      ...project,
+      results: (project.results || []).map((r: any) => {
+        const { chunks, ...rest } = r;
+        return rest;
+      }),
+    };
+    res.json(lightProject);
   });
 
   app.post(api.projects.create.path, async (req, res) => {

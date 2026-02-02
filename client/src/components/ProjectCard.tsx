@@ -36,7 +36,7 @@ export default function ProjectCard({ project, onSelect, onDelete, onRename, t }
 
   const isActive = project.status !== 'idle';
   const urlCount = project.results?.length || 0;
-  const scrapedCount = project.results?.filter(r => r.scrapedData).length || 0;
+  const scrapedCount = project.results?.filter(r => r.scrapedData || r.hasScrapedData).length || 0;
 
   return (
     <div

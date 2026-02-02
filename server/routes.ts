@@ -2450,9 +2450,9 @@ export async function registerRoutes(
         return res.status(404).json({ message: 'Project not found' });
       }
 
-      // Calculate URLs that need extraction (no scrapedData)
+      // Calculate URLs that need extraction (no scrapedData AND no errorStatus - skip already failed URLs)
       const contentUrls = (project.results || [])
-        .filter((r: any) => !r.scrapedData)
+        .filter((r: any) => !r.scrapedData && !r.errorStatus)
         .map((r: any) => r.loc);
 
       if (contentUrls.length === 0) {
@@ -2470,6 +2470,67 @@ export async function registerRoutes(
     } catch (err) {
       console.error('[StartExtraction] Error:', err);
       res.status(500).json({ message: 'Failed to start extraction' });
+    }
+  });
+
+  // Sync errors array to results - marks URLs with errorStatus based on errors array
+  app.post('/api/projects/:id/sync-errors', async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ message: 'Invalid project ID' });
+      }
+
+      const project = await storage.getProject(id);
+      if (!project) {
+        return res.status(404).json({ message: 'Project not found' });
+      }
+
+      const errors = project.errors || [];
+      const results = project.results || [];
+      
+      if (errors.length === 0) {
+        return res.json({ message: 'No errors to sync', synced: 0 });
+      }
+
+      // Build a set of error URLs for fast lookup
+      const errorUrlSet = new Set<string>();
+      const errorMessageMap = new Map<string, string>();
+      for (const err of errors) {
+        if (err.url) {
+          errorUrlSet.add(err.url);
+          errorMessageMap.set(err.url, err.message || 'Unknown error');
+        }
+      }
+
+      // Update results with errorStatus for matching URLs
+      let synced = 0;
+      const updatedResults = results.map((r: any) => {
+        // Skip if already has scraped data or errorStatus
+        if (r.scrapedData || r.hasScrapedData || r.errorStatus) {
+          return r;
+        }
+        
+        if (errorUrlSet.has(r.loc)) {
+          synced++;
+          return {
+            ...r,
+            errorStatus: 'failed' as const,
+            errorMessage: errorMessageMap.get(r.loc) || 'Error during scraping'
+          };
+        }
+        return r;
+      });
+
+      if (synced > 0) {
+        await storage.updateProject(id, { results: updatedResults });
+      }
+
+      console.log(`[SyncErrors] Synced ${synced} error URLs for project ${id}`);
+      res.json({ message: `Synced ${synced} error URLs`, synced });
+    } catch (err) {
+      console.error('[SyncErrors] Error:', err);
+      res.status(500).json({ message: 'Failed to sync errors' });
     }
   });
 
@@ -2958,6 +3019,14 @@ export async function registerRoutes(
         try {
           // Skip non-HTML URLs (PDFs, images, etc.)
           if (shouldSkipUrl(url)) {
+            // Mark skipped URLs in DB with error status
+            const currentProject = await storage.getProject(projectId);
+            if (currentProject) {
+              const updatedResults = (currentProject.results || []).map(existing => 
+                existing.loc === url ? { ...existing, errorStatus: 'skipped', errorMessage: 'Non-HTML content (PDF, image, etc.)' } : existing
+              );
+              await storage.updateProject(projectId, { results: updatedResults });
+            }
             return { url, success: false, error: 'Skipped: non-HTML content (PDF, image, etc.)', skipped: true };
           }
           
@@ -2972,7 +3041,7 @@ export async function registerRoutes(
             const currentProject = await storage.getProject(projectId);
             if (currentProject) {
               const updatedResults = (currentProject.results || []).map(existing => 
-                existing.loc === url ? { ...existing, scrapedData: data } : existing
+                existing.loc === url ? { ...existing, scrapedData: data, errorStatus: undefined, errorMessage: undefined } : existing
               );
               await storage.updateProject(projectId, { results: updatedResults });
             }
@@ -2981,7 +3050,18 @@ export async function registerRoutes(
           // Return lightweight response without full scrapedData
           return { url, success: true, error: null, usedProxy };
         } catch (err) {
-          return { url, success: false, error: (err as Error).message };
+          const errorMessage = (err as Error).message;
+          
+          // Mark failed URLs in DB with error status so they're not retried
+          const currentProject = await storage.getProject(projectId);
+          if (currentProject) {
+            const updatedResults = (currentProject.results || []).map(existing => 
+              existing.loc === url ? { ...existing, errorStatus: 'failed', errorMessage: errorMessage } : existing
+            );
+            await storage.updateProject(projectId, { results: updatedResults });
+          }
+          
+          return { url, success: false, error: errorMessage };
         }
       }));
       

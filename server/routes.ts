@@ -2334,6 +2334,7 @@ export async function registerRoutes(
         // Direct counts for efficient rendering - no fake arrays
         urlCount: p.urlCount,
         scrapedCount: p.scrapedCount,
+        failedCount: p.failedCount,
         // Empty results array for compatibility
         results: [],
       }));

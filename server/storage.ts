@@ -16,6 +16,7 @@ export interface ProjectLite {
   createdAt: Date | null;
   urlCount: number;
   scrapedCount: number;
+  failedCount: number;
 }
 
 export interface IStorage {
@@ -48,7 +49,9 @@ export class DatabaseStorage implements IStorage {
         project_settings, last_scraped, created_at,
         jsonb_array_length(COALESCE(results, '[]'::jsonb)) as url_count,
         (SELECT count(*) FROM jsonb_array_elements(COALESCE(results, '[]'::jsonb)) r 
-         WHERE r->'scrapedData' IS NOT NULL AND jsonb_typeof(r->'scrapedData') = 'object') as scraped_count
+         WHERE r->'scrapedData' IS NOT NULL AND jsonb_typeof(r->'scrapedData') = 'object') as scraped_count,
+        (SELECT count(*) FROM jsonb_array_elements(COALESCE(results, '[]'::jsonb)) r 
+         WHERE r->>'errorStatus' IS NOT NULL) as failed_count
       FROM projects 
       ORDER BY last_scraped DESC NULLS LAST
     `);
@@ -66,6 +69,7 @@ export class DatabaseStorage implements IStorage {
       createdAt: row.created_at,
       urlCount: parseInt(row.url_count) || 0,
       scrapedCount: parseInt(row.scraped_count) || 0,
+      failedCount: parseInt(row.failed_count) || 0,
     }));
   }
 

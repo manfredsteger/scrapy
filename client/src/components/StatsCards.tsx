@@ -50,27 +50,15 @@ export default function StatsCards({ stats, urlCount = 0, scrapedCount = 0, fail
           </div>
         </div>
         
-        {failedCount > 0 ? (
-          <div className="rounded-xl p-4 bg-red-500/10 border border-red-500/30">
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="text-xs font-medium text-red-400 uppercase tracking-wide">Failed</p>
-                <p className="text-3xl font-bold text-red-400 mt-1">{failedCount}</p>
-              </div>
-              <XCircle className="w-6 h-6 text-red-400/60" />
+        <div className={`rounded-xl p-4 ${failedCount > 0 ? 'bg-red-500/10 border border-red-500/30' : 'stat-card-neutral'}`}>
+          <div className="flex items-start justify-between">
+            <div>
+              <p className={`text-xs font-medium uppercase tracking-wide ${failedCount > 0 ? 'text-red-400' : 'text-muted-foreground'}`}>Failed</p>
+              <p className={`text-3xl font-bold mt-1 ${failedCount > 0 ? 'text-red-400' : 'text-foreground'}`}>{failedCount}</p>
             </div>
+            <XCircle className={`w-6 h-6 ${failedCount > 0 ? 'text-red-400/60' : 'text-muted-foreground'}`} />
           </div>
-        ) : (
-          <div className="stat-card-blue rounded-xl p-4">
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="text-xs font-medium opacity-80 uppercase tracking-wide">{t('sitemaps')}</p>
-                <p className="text-3xl font-bold mt-1">{stats?.processedSitemaps || 0}</p>
-              </div>
-              <FileText className="w-6 h-6 opacity-60" />
-            </div>
-          </div>
-        )}
+        </div>
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

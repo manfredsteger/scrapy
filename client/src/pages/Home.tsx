@@ -1512,7 +1512,6 @@ export default function Home() {
               )}
 
               <StatsCards 
-                stats={activeProject?.stats || null} 
                 urlCount={urlCount}
                 scrapedCount={scrapedCount}
                 failedCount={failedCount}

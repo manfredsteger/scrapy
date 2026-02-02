@@ -69,6 +69,32 @@ Bevorzugte Kommunikation: Einfache, alltägliche Sprache (Deutsch).
 - **Komponentenbibliothek**: Shadcn/ui bietet barrierefreie, anpassbare Komponenten ohne externe Abhängigkeiten
 - **Build-Optimierung**: Produktions-Builds bündeln kritische Abhängigkeiten für schnellere Startzeiten
 
+### API-Performance-Optimierung
+
+Die Anwendung verwendet eine mehrstufige Ladeoptimierung für große Datensätze:
+
+#### Projektlisten-API (`GET /api/projects`)
+- **SQL-basierte Zählung**: `urlCount` und `scrapedCount` werden in SQL berechnet
+- **Kein Datentransfer**: `results`-Array wird leer zurückgegeben
+- **Response-Größe**: Reduziert von mehreren MB auf ~12KB
+- **Response-Zeit**: ~25ms für Projekte mit 1000+ URLs
+
+#### Projekt-Detail-API (`GET /api/projects/:id`)
+- **Leichte Ergebnisse**: `results`-Array ohne `scrapedData`, nur `hasScrapedData` boolean
+- **Metadaten erhalten**: loc, images, videos, lastmod bleiben verfügbar
+- **Chunks ausgeschlossen**: Nur `chunkCount` statt vollem `chunks`-Array
+
+#### Lazy-Loading für Content-Vorschau (`GET /api/projects/:id/url-content`)
+- **On-Demand-Loading**: `scrapedData` wird nur bei Klick auf Vorschau geladen
+- **URL-Parameter**: `?loc=<encoded-url>` für spezifische URL
+- **Client-seitiges Caching**: Geladene Inhalte werden im Component-State gecached
+- **Loading-Indikator**: Spinner während des Ladens
+
+#### Frontend-Architektur
+- **Separate React Queries**: Liste und Detail verwenden getrennte Query-Keys
+- **Optimistisches UI**: Dashboard zeigt Counts sofort, Detail lädt asynchron
+- **Backward-Kompatibilität**: ProjectCard unterstützt sowohl direkte Counts als auch results-Array
+
 ## RAG Pack Feature
 
 Die Anwendung enthält ein umfassendes RAG Pack Generierungssystem für AI/RAG-Workflows:

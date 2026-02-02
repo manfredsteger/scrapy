@@ -584,6 +584,16 @@ export default function Home() {
         });
         // Update activity timestamp after successful batch processing
         lastActivityRef.current = Date.now();
+        
+        // Self-schedule next batch if queue still has items
+        if (remainingQueue.length > 0) {
+          processingRef.current = false;
+          setTimeout(() => {
+            if (!processingRef.current) {
+              processStep();
+            }
+          }, 1000);
+        }
       } catch (err) {
         // On network/API error, still update queue to skip failed batch and continue
         console.error('[ProcessStep] Content scraping batch error, skipping batch:', err);
@@ -602,6 +612,16 @@ export default function Home() {
               errors: [...(contentScrapingProject.errors || []), ...batchErrors],
             },
           });
+          
+          // Continue with next batch even after error
+          if (remainingQueue.length > 0) {
+            processingRef.current = false;
+            setTimeout(() => {
+              if (!processingRef.current) {
+                processStep();
+              }
+            }, 1000);
+          }
         } catch (updateErr) {
           console.error('[ProcessStep] Failed to update queue after batch error:', updateErr);
         }

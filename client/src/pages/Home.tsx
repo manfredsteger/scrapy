@@ -596,34 +596,32 @@ export default function Home() {
   const startContentScrape = useCallback(async () => {
     if (!activeProject) return;
     
-    const contentUrls = (activeProject.results || [])
-      .filter(r => !r.scrapedData)
-      .map(r => r.loc);
-
-    if (contentUrls.length === 0) {
-      toast({ title: t('error'), description: t('noContentPages'), variant: 'destructive' });
-      return;
-    }
-
-    console.log(`[StartExtraction] Starting extraction for ${contentUrls.length} URLs`);
+    console.log(`[StartExtraction] Starting extraction for project ${activeProject.id}`);
     
     // Reset processingRef to ensure the loop can start
     processingRef.current = false;
     
     try {
-      await updateProjectMutation.mutateAsync({
-        id: activeProject.id,
-        updates: { status: 'content_scraping', queue: contentUrls },
-      });
+      // Use dedicated server endpoint that calculates URLs server-side
+      const res = await apiRequest('POST', `/api/projects/${activeProject.id}/start-extraction`);
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.message || 'Failed to start extraction');
+      }
       
-      // Force refetch to ensure useEffect sees the new status
+      // Invalidate cache and refetch to trigger processing loop
+      queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
       await refetchProjects();
       console.log('[StartExtraction] Project updated and refetched, loop should start');
     } catch (err) {
       console.error('[StartExtraction] Failed to start extraction:', err);
-      toast({ title: t('error'), description: 'Failed to start extraction', variant: 'destructive' });
+      toast({ 
+        title: t('error'), 
+        description: err instanceof Error ? err.message : 'Failed to start extraction', 
+        variant: 'destructive' 
+      });
     }
-  }, [activeProject, updateProjectMutation, toast, t, refetchProjects]);
+  }, [activeProject, toast, t, refetchProjects]);
 
   const stopProcess = useCallback(() => {
     if (!activeProject) return;

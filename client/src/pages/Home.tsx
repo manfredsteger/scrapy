@@ -65,6 +65,14 @@ export default function Home() {
     staleTime: 1000, // Consider data stale after 1 second
   });
 
+  // Separate query for active project detail - loads full results array
+  const { data: activeProjectDetail, refetch: refetchActiveProject } = useQuery<Project>({
+    queryKey: ['/api/projects', activeProjectId],
+    enabled: activeProjectId !== null,
+    refetchOnMount: true,
+    staleTime: 2000,
+  });
+
   const { data: singlePages = [], isLoading: singlePagesLoading } = useQuery<SinglePage[]>({
     queryKey: ['/api/single-pages'],
   });
@@ -92,10 +100,13 @@ export default function Home() {
     },
   });
 
-  const activeProject = useMemo(() => 
-    projects.find(p => p.id === activeProjectId), 
-    [projects, activeProjectId]
-  );
+  // Use full project detail when available, fall back to list item
+  const activeProject = useMemo(() => {
+    if (activeProjectDetail && activeProjectDetail.id === activeProjectId) {
+      return activeProjectDetail;
+    }
+    return projects.find(p => p.id === activeProjectId);
+  }, [projects, activeProjectId, activeProjectDetail]);
 
   const createProjectMutation = useMutation({
     mutationFn: async (domain: string) => {
@@ -1310,7 +1321,7 @@ export default function Home() {
                     </TabsTrigger>
                   </TabsList>
                   <TabsContent value="urls" className="m-0 min-h-[400px]">
-                    <UrlList urls={activeProject?.results || []} t={t} chunks={activeProject?.chunks || []} />
+                    <UrlList urls={activeProject?.results || []} projectId={activeProject?.id || 0} t={t} chunks={activeProject?.chunks || []} />
                   </TabsContent>
                   <TabsContent value="errors" className="m-0 min-h-[400px]">
                     <ErrorLogs errors={activeProject?.errors || []} t={t} />

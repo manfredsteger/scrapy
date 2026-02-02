@@ -2315,41 +2315,70 @@ export async function registerRoutes(
 ): Promise<Server> {
   
   app.get(api.projects.list.path, async (req, res) => {
-    const allProjects = await storage.getProjects();
-    // Strip large data from results to reduce response size
-    const lightProjects = allProjects.map(project => ({
-      ...project,
-      results: (project.results || []).map((r: any) => {
-        // Exclude chunks and scrapedData from list view to prevent huge payloads
-        // Only keep essential metadata for display
-        const { chunks, scrapedData, ...rest } = r;
-        return {
-          ...rest,
-          hasScrapedData: !!scrapedData, // Just indicate if data exists
-        };
-      }),
-    }));
-    res.json(lightProjects);
+    try {
+      // Use optimized query that computes counts in SQL without transferring large data
+      const liteProjects = await storage.getProjectsLite();
+      
+      // Return projects with direct counts instead of fake results array
+      const projectsForList = liteProjects.map(p => ({
+        id: p.id,
+        domain: p.domain,
+        displayName: p.displayName,
+        status: p.status,
+        queue: p.queue,
+        errors: p.errors,
+        stats: p.stats,
+        projectSettings: p.projectSettings,
+        lastScraped: p.lastScraped,
+        createdAt: p.createdAt,
+        // Direct counts for efficient rendering - no fake arrays
+        urlCount: p.urlCount,
+        scrapedCount: p.scrapedCount,
+        // Empty results array for compatibility
+        results: [],
+      }));
+      
+      res.json(projectsForList);
+    } catch (error) {
+      console.error('Error fetching projects:', error);
+      res.status(500).json({ message: 'Failed to fetch projects' });
+    }
   });
 
   app.get(api.projects.get.path, async (req, res) => {
-    const project = await storage.getProject(Number(req.params.id));
-    if (!project) {
-      return res.status(404).json({ message: 'Project not found' });
+    try {
+      // Use optimized query that computes hasScrapedData in SQL
+      const project = await storage.getProjectLite(Number(req.params.id));
+      if (!project) {
+        return res.status(404).json({ message: 'Project not found' });
+      }
+      res.json(project);
+    } catch (error) {
+      console.error('Error fetching project:', error);
+      res.status(500).json({ message: 'Failed to fetch project' });
     }
-    // Strip large data from results to reduce response size
-    const lightProject = {
-      ...project,
-      results: (project.results || []).map((r: any) => {
-        // Exclude chunks and scrapedData to prevent huge payloads
-        const { chunks, scrapedData, ...rest } = r;
-        return {
-          ...rest,
-          hasScrapedData: !!scrapedData, // Just indicate if data exists
-        };
-      }),
-    };
-    res.json(lightProject);
+  });
+
+  // Lazy load scraped data for a single URL (for content preview)
+  app.get('/api/projects/:id/url-content', async (req, res) => {
+    try {
+      const projectId = Number(req.params.id);
+      const urlLoc = req.query.loc as string;
+      
+      if (!urlLoc) {
+        return res.status(400).json({ message: 'Missing loc query parameter' });
+      }
+      
+      const urlEntry = await storage.getProjectUrlScrapedData(projectId, urlLoc);
+      if (!urlEntry) {
+        return res.status(404).json({ message: 'URL not found in project' });
+      }
+      
+      res.json(urlEntry);
+    } catch (error) {
+      console.error('Error fetching URL content:', error);
+      res.status(500).json({ message: 'Failed to fetch URL content' });
+    }
   });
 
   app.post(api.projects.create.path, async (req, res) => {

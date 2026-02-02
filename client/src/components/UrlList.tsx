@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { ExternalLink, CheckCircle, Clock, Search, Eye, ChevronDown } from 'lucide-react';
+import { ExternalLink, CheckCircle, Clock, Search, Eye, ChevronDown, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -8,19 +8,49 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import ContentPreview from './ContentPreview';
+import { apiRequest } from '@/lib/queryClient';
 import type { SitemapUrlEntry, RagChunk } from '@shared/schema';
 
 interface UrlListProps {
   urls: SitemapUrlEntry[];
+  projectId: number;
   t: (key: any) => string;
   chunks?: RagChunk[];
 }
 
-export default function UrlList({ urls, t, chunks = [] }: UrlListProps) {
+export default function UrlList({ urls, projectId, t, chunks = [] }: UrlListProps) {
   const [filter, setFilter] = useState('');
   const [activeFolder, setActiveFolder] = useState<string | null>(null);
   const [previewEntry, setPreviewEntry] = useState<SitemapUrlEntry | null>(null);
   const [showFolders, setShowFolders] = useState(false);
+  const [loadingPreview, setLoadingPreview] = useState<string | null>(null);
+  const [contentCache, setContentCache] = useState<Map<string, SitemapUrlEntry>>(new Map());
+
+  const handlePreviewClick = async (url: SitemapUrlEntry) => {
+    if (url.scrapedData) {
+      setPreviewEntry(url);
+      return;
+    }
+    
+    // Check cache first
+    if (contentCache.has(url.loc)) {
+      setPreviewEntry(contentCache.get(url.loc)!);
+      return;
+    }
+    
+    try {
+      setLoadingPreview(url.loc);
+      const res = await apiRequest('GET', `/api/projects/${projectId}/url-content?loc=${encodeURIComponent(url.loc)}`);
+      const fullEntry = await res.json();
+      // Cache the result
+      setContentCache(prev => new Map(prev).set(url.loc, fullEntry));
+      setPreviewEntry(fullEntry);
+    } catch (error) {
+      console.error('Failed to load content preview:', error);
+    } finally {
+      setLoadingPreview(null);
+    }
+  };
   
   const folderStats = useMemo(() => {
     const stats: Record<string, number> = {};
@@ -198,7 +228,7 @@ export default function UrlList({ urls, t, chunks = [] }: UrlListProps) {
                     )}
                   </td>
                   <td>
-                    {url.scrapedData ? (
+                    {url.scrapedData || url.hasScrapedData ? (
                       <span className="badge-green whitespace-nowrap">
                         <CheckCircle className="w-3 h-3 shrink-0" />
                         Scraped
@@ -209,14 +239,19 @@ export default function UrlList({ urls, t, chunks = [] }: UrlListProps) {
                   </td>
                   <td className="text-right">
                     <div className="flex items-center justify-end gap-1">
-                      {url.scrapedData && (
+                      {(url.scrapedData || url.hasScrapedData) && (
                         <Button
                           variant="ghost"
                           size="icon"
-                          onClick={() => setPreviewEntry(url)}
+                          onClick={() => handlePreviewClick(url)}
+                          disabled={loadingPreview === url.loc}
                           data-testid={`view-content-${idx}`}
                         >
-                          <Eye className="w-4 h-4" />
+                          {loadingPreview === url.loc ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Eye className="w-4 h-4" />
+                          )}
                         </Button>
                       )}
                       <a href={url.loc} target="_blank" rel="noopener noreferrer">

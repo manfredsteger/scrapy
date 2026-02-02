@@ -51,7 +51,8 @@ export class DatabaseStorage implements IStorage {
         (SELECT count(*) FROM jsonb_array_elements(COALESCE(results, '[]'::jsonb)) r 
          WHERE r->'scrapedData' IS NOT NULL AND jsonb_typeof(r->'scrapedData') = 'object') as scraped_count,
         (SELECT count(*) FROM jsonb_array_elements(COALESCE(results, '[]'::jsonb)) r 
-         WHERE r->>'errorStatus' IS NOT NULL) as failed_count
+         WHERE r->>'errorStatus' IS NOT NULL 
+            OR (r->>'errorMessage' IS NOT NULL AND (r->'scrapedData' IS NULL OR jsonb_typeof(r->'scrapedData') != 'object'))) as failed_count
       FROM projects 
       ORDER BY last_scraped DESC NULLS LAST
     `);

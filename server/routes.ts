@@ -2383,6 +2383,42 @@ export async function registerRoutes(
     res.status(204).send();
   });
 
+  // Start content extraction - calculates URLs server-side for reliability
+  app.post('/api/projects/:id/start-extraction', async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ message: 'Invalid project ID' });
+      }
+
+      const project = await storage.getProject(id);
+      if (!project) {
+        return res.status(404).json({ message: 'Project not found' });
+      }
+
+      // Calculate URLs that need extraction (no scrapedData)
+      const contentUrls = (project.results || [])
+        .filter((r: any) => !r.scrapedData)
+        .map((r: any) => r.loc);
+
+      if (contentUrls.length === 0) {
+        return res.status(400).json({ message: 'No content pages to extract' });
+      }
+
+      // Update project with queue and status
+      const updated = await storage.updateProject(id, {
+        status: 'content_scraping',
+        queue: contentUrls,
+      });
+
+      console.log(`[StartExtraction] Started extraction for project ${id} with ${contentUrls.length} URLs`);
+      res.json(updated);
+    } catch (err) {
+      console.error('[StartExtraction] Error:', err);
+      res.status(500).json({ message: 'Failed to start extraction' });
+    }
+  });
+
   app.get(api.settings.get.path, async (req, res) => {
     const key = Array.isArray(req.params.key) ? req.params.key[0] : req.params.key;
     const setting = await storage.getSetting(key);

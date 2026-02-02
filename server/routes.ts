@@ -460,7 +460,7 @@ function calculateChunkQuality(
   const sentenceCount = sentences.length;
   
   // Check for meaningful content (not just whitespace/punctuation)
-  const alphanumericContent = text.replace(/[\s\p{P}]/gu, '');
+  const alphanumericContent = text.replace(/[\s.,!?;:'"()\[\]{}<>\/\\@#$%^&*_+=|~`-]/g, '');
   const hasContent = alphanumericContent.length > 0;
   
   const warnings: string[] = [];
@@ -1927,8 +1927,9 @@ function shouldSkipUrl(url: string): boolean {
   try {
     const parsedUrl = new URL(url);
     const pathname = parsedUrl.pathname.toLowerCase();
-    for (const ext of SKIP_EXTENSIONS) {
-      if (pathname.endsWith(ext)) {
+    const extensionsArray = Array.from(SKIP_EXTENSIONS);
+    for (let i = 0; i < extensionsArray.length; i++) {
+      if (pathname.endsWith(extensionsArray[i])) {
         return true;
       }
     }
@@ -2959,7 +2960,7 @@ export async function registerRoutes(
           }
           
           // Remove duplicates
-          const uniqueLinks = [...new Set(links)];
+          const uniqueLinks = Array.from(new Set(links));
           
           // Extract basic page data
           const title = doc.querySelector('title')?.textContent || '';

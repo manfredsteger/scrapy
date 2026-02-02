@@ -1,4 +1,4 @@
-import { FileText, Image as ImageIcon, Video, Clock, Activity, ListOrdered, Globe, CheckCircle, XCircle } from 'lucide-react';
+import { FileText, Video, Clock, Activity, ListOrdered, Globe, CheckCircle, XCircle, Hourglass } from 'lucide-react';
 import type { ScrapingStats } from '@shared/schema';
 
 interface StatsCardsProps {
@@ -6,10 +6,11 @@ interface StatsCardsProps {
   urlCount?: number;
   scrapedCount?: number;
   failedCount?: number;
+  pendingCount?: number;
   t: (key: any) => string;
 }
 
-export default function StatsCards({ stats, urlCount = 0, scrapedCount = 0, failedCount = 0, t }: StatsCardsProps) {
+export default function StatsCards({ stats, urlCount = 0, scrapedCount = 0, failedCount = 0, pendingCount = 0, t }: StatsCardsProps) {
   const duration = stats?.endTime 
     ? (stats.endTime - stats.startTime) / 1000 
     : stats?.startTime 
@@ -29,13 +30,13 @@ export default function StatsCards({ stats, urlCount = 0, scrapedCount = 0, fail
           </div>
         </div>
         
-        <div className="stat-card-purple rounded-xl p-4">
+        <div className="rounded-xl p-4 bg-amber-500/10 border border-amber-500/30">
           <div className="flex items-start justify-between">
             <div>
-              <p className="text-xs font-medium opacity-80 uppercase tracking-wide">{t('images')}</p>
-              <p className="text-3xl font-bold mt-1">{(stats?.totalImages || 0).toLocaleString()}</p>
+              <p className="text-xs font-medium text-amber-400 uppercase tracking-wide">Pending</p>
+              <p className="text-3xl font-bold text-amber-400 mt-1">{pendingCount}</p>
             </div>
-            <ImageIcon className="w-6 h-6 opacity-60" />
+            <Hourglass className="w-6 h-6 text-amber-400/60" />
           </div>
         </div>
         

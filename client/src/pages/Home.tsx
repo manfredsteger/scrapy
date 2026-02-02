@@ -1355,6 +1355,7 @@ export default function Home() {
                 urlCount={activeProject?.results?.length || 0}
                 scrapedCount={activeProject?.results?.filter(r => r.scrapedData || r.hasScrapedData).length || 0}
                 failedCount={failedCount}
+                pendingCount={pendingContentScrape}
                 t={t} 
               />
 

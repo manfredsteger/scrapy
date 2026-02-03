@@ -1538,7 +1538,15 @@ export default function Home() {
                     </TabsTrigger>
                   </TabsList>
                   <TabsContent value="urls" className="m-0 min-h-[400px]">
-                    <UrlList urls={activeProject?.results || []} projectId={activeProject?.id || 0} t={t} chunks={activeProject?.chunks || []} />
+                    <UrlList 
+                      urls={activeProject?.results || []} 
+                      projectId={activeProject?.id || 0} 
+                      t={t} 
+                      chunks={activeProject?.chunks || []} 
+                      onRescrapeUrl={() => {
+                        queryClient.invalidateQueries({ queryKey: ['/api/projects', activeProjectId] });
+                      }}
+                    />
                   </TabsContent>
                   <TabsContent value="errors" className="m-0 min-h-[400px]">
                     <ErrorLogs errors={activeProject?.errors || []} t={t} />

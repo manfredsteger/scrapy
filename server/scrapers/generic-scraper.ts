@@ -2,6 +2,89 @@ import { JSDOM } from "jsdom";
 import { BaseScraper, ScraperResult, ScraperOptions, WebsiteType } from "./base-scraper";
 import type { ScrapedElement } from "@shared/schema";
 
+function isCardElement(el: Element): boolean {
+  const tag = el.tagName?.toLowerCase();
+  const classList = (el.className || '').toLowerCase();
+  const cardPatterns = [
+    'card', 'person', 'team', 'member', 'profile', 'staff', 
+    'mitarbeiter', 'kontakt', 'employee', 'author', 'speaker'
+  ];
+  
+  if (tag === 'article' || tag === 'section') {
+    const hasImage = el.querySelector('img');
+    const text = el.textContent?.trim() || '';
+    if (hasImage && text.length > 20 && text.length < 500) {
+      return true;
+    }
+  }
+  
+  for (const pattern of cardPatterns) {
+    if (classList.includes(pattern)) {
+      return true;
+    }
+  }
+  
+  return false;
+}
+
+function extractCardContent(el: Element, baseUrl: string): ScrapedElement | null {
+  const img = el.querySelector('img');
+  const headings = el.querySelectorAll('h1, h2, h3, h4, h5, h6');
+  const paragraphs = el.querySelectorAll('p');
+  const links = el.querySelectorAll('a');
+  
+  const parts: string[] = [];
+  
+  headings.forEach(h => {
+    const text = h.textContent?.trim();
+    if (text) parts.push(`**${text}**`);
+  });
+  
+  paragraphs.forEach(p => {
+    const text = p.textContent?.trim();
+    if (text && text.length > 3) parts.push(text);
+  });
+  
+  if (parts.length === 0) {
+    const directText = el.textContent?.trim() || '';
+    if (directText && directText.length > 10 && directText.length < 500) {
+      parts.push(directText);
+    }
+  }
+  
+  links.forEach(a => {
+    const href = a.getAttribute('href');
+    const text = a.textContent?.trim();
+    if (href && text && (href.includes('mailto:') || href.includes('tel:'))) {
+      parts.push(`${text}: ${href.replace('mailto:', '').replace('tel:', '')}`);
+    }
+  });
+  
+  if (parts.length === 0 && !img) {
+    return null;
+  }
+  
+  let imageSrc: string | undefined;
+  let imageAlt: string | undefined;
+  
+  if (img) {
+    const src = img.getAttribute('src');
+    if (src) {
+      try {
+        imageSrc = new URL(src, baseUrl).href;
+        imageAlt = img.getAttribute('alt') || undefined;
+      } catch {}
+    }
+  }
+  
+  return {
+    type: 'card',
+    content: parts.join('\n'),
+    image: imageSrc,
+    imageAlt: imageAlt,
+  };
+}
+
 export class GenericScraper extends BaseScraper {
   get type(): WebsiteType {
     return 'generic';
@@ -12,7 +95,7 @@ export class GenericScraper extends BaseScraper {
     const doc = dom.window.document;
 
     const title = this.extractTitle(doc);
-    const content = this.extractGenericContent(doc);
+    const content = this.extractGenericContent(doc, url);
     const images = this.extractImages(doc, url);
     const videos = this.extractVideos(doc, url);
     const links = this.extractLinks(doc, url);
@@ -31,7 +114,7 @@ export class GenericScraper extends BaseScraper {
     };
   }
 
-  private extractGenericContent(doc: Document): ScrapedElement[] {
+  private extractGenericContent(doc: Document, baseUrl: string): ScrapedElement[] {
     const elements: ScrapedElement[] = [];
 
     const contentSelectors = [
@@ -200,6 +283,24 @@ export class GenericScraper extends BaseScraper {
           elements.push({ type: 'paragraph', content: figcaption.textContent?.trim() || '' });
         }
         el.childNodes.forEach(child => processNode(child));
+      } else if (tag === 'img') {
+        const src = el.getAttribute('src');
+        if (src) {
+          try {
+            const resolvedSrc = new URL(src, baseUrl).href;
+            elements.push({
+              type: 'media',
+              tag: 'img',
+              src: resolvedSrc,
+              alt: el.getAttribute('alt') || undefined,
+            });
+          } catch {}
+        }
+      } else if (isCardElement(el)) {
+        const card = extractCardContent(el, baseUrl);
+        if (card) {
+          elements.push(card);
+        }
       } else {
         el.childNodes.forEach(child => processNode(child));
       }

@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { ExternalLink, CheckCircle, Clock, Search, Eye, ChevronDown, Loader2, XCircle, AlertCircle } from 'lucide-react';
+import { ExternalLink, CheckCircle, Clock, Search, Eye, ChevronDown, Loader2, XCircle, AlertCircle, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -16,15 +16,46 @@ interface UrlListProps {
   projectId: number;
   t: (key: any) => string;
   chunks?: RagChunk[];
+  onRescrapeUrl?: (url: string) => void;
 }
 
-export default function UrlList({ urls, projectId, t, chunks = [] }: UrlListProps) {
+export default function UrlList({ urls, projectId, t, chunks = [], onRescrapeUrl }: UrlListProps) {
   const [filter, setFilter] = useState('');
   const [activeFolder, setActiveFolder] = useState<string | null>(null);
   const [previewEntry, setPreviewEntry] = useState<SitemapUrlEntry | null>(null);
   const [showFolders, setShowFolders] = useState(false);
   const [loadingPreview, setLoadingPreview] = useState<string | null>(null);
   const [contentCache, setContentCache] = useState<Map<string, SitemapUrlEntry>>(new Map());
+  const [rescrapingUrl, setRescrapingUrl] = useState<string | null>(null);
+  
+  const handleRescrape = async (url: string) => {
+    if (rescrapingUrl) return;
+    
+    setRescrapingUrl(url);
+    try {
+      const res = await apiRequest('POST', '/api/scrape/fetch-content', {
+        urls: [url],
+        projectId: projectId,
+      });
+      const data = await res.json();
+      
+      if (data.results?.[0]?.success) {
+        setContentCache(prev => {
+          const newCache = new Map(prev);
+          newCache.delete(url);
+          return newCache;
+        });
+        
+        if (onRescrapeUrl) {
+          onRescrapeUrl(url);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to rescrape URL:', error);
+    } finally {
+      setRescrapingUrl(null);
+    }
+  };
 
   const handlePreviewClick = async (url: SitemapUrlEntry) => {
     if (url.scrapedData) {
@@ -263,26 +294,60 @@ export default function UrlList({ urls, projectId, t, chunks = [] }: UrlListProp
                   </td>
                   <td className="text-right">
                     <div className="flex items-center justify-end gap-1">
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleRescrape(url.loc)}
+                            disabled={rescrapingUrl === url.loc}
+                            data-testid={`rescrape-${idx}`}
+                          >
+                            {rescrapingUrl === url.loc ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <RotateCcw className="w-4 h-4" />
+                            )}
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p>Neu scrapen</p>
+                        </TooltipContent>
+                      </Tooltip>
                       {(url.scrapedData || url.hasScrapedData) && (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => handlePreviewClick(url)}
-                          disabled={loadingPreview === url.loc}
-                          data-testid={`view-content-${idx}`}
-                        >
-                          {loadingPreview === url.loc ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                          ) : (
-                            <Eye className="w-4 h-4" />
-                          )}
-                        </Button>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => handlePreviewClick(url)}
+                              disabled={loadingPreview === url.loc}
+                              data-testid={`view-content-${idx}`}
+                            >
+                              {loadingPreview === url.loc ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <Eye className="w-4 h-4" />
+                              )}
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <p>Vorschau</p>
+                          </TooltipContent>
+                        </Tooltip>
                       )}
-                      <a href={url.loc} target="_blank" rel="noopener noreferrer">
-                        <Button variant="ghost" size="icon" data-testid={`external-link-${idx}`}>
-                          <ExternalLink className="w-4 h-4" />
-                        </Button>
-                      </a>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <a href={url.loc} target="_blank" rel="noopener noreferrer">
+                            <Button variant="ghost" size="icon" data-testid={`external-link-${idx}`}>
+                              <ExternalLink className="w-4 h-4" />
+                            </Button>
+                          </a>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p>Öffnen</p>
+                        </TooltipContent>
+                      </Tooltip>
                     </div>
                   </td>
                 </tr>

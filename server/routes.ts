@@ -2961,6 +2961,30 @@ export async function registerRoutes(
     }
   });
 
+  // Update single page (e.g., rename title)
+  app.put("/api/single-pages/:id", async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ message: 'Invalid ID' });
+      }
+
+      const { title } = req.body;
+      if (title === undefined) {
+        return res.status(400).json({ message: 'Title is required' });
+      }
+
+      const updated = await storage.updateSinglePage(id, { title });
+      if (!updated) {
+        return res.status(404).json({ message: 'Single page not found' });
+      }
+
+      res.json(updated);
+    } catch (err) {
+      res.status(500).json({ message: (err as Error).message });
+    }
+  });
+
   app.delete("/api/single-pages/:id", async (req, res) => {
     const id = Number(req.params.id);
     if (isNaN(id)) {

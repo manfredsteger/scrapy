@@ -4,7 +4,7 @@ import { useQuery, useMutation } from '@tanstack/react-query';
 import { 
   Play, Square, Loader2, Download, Settings, 
   Trash2, ScanText, Globe, ArrowLeft, Plus, RefreshCw, Pause, X,
-  Layers, Package, Cog, FileText, AlertTriangle
+  Layers, Package, Cog, FileText, AlertTriangle, Pencil
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -54,6 +54,12 @@ export default function Home() {
     pageId: null,
     pageName: '',
   });
+  const [renameSinglePage, setRenameSinglePage] = useState<{ open: boolean; pageId: number | null; currentTitle: string; newTitle: string }>({
+    open: false,
+    pageId: null,
+    currentTitle: '',
+    newTitle: '',
+  });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const processingRef = useRef(false);
   const abortedProjectsRef = useRef<Set<number>>(new Set());
@@ -98,6 +104,17 @@ export default function Home() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/single-pages'] });
+    },
+  });
+
+  const renameSinglePageMutation = useMutation({
+    mutationFn: async ({ id, title }: { id: number; title: string }) => {
+      await apiRequest('PUT', `/api/single-pages/${id}`, { title });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/single-pages'] });
+      setRenameSinglePage({ open: false, pageId: null, currentTitle: '', newTitle: '' });
+      toast({ title: t('success'), description: t('pageRenamed') || 'Seite umbenannt' });
     },
   });
 
@@ -1198,22 +1215,41 @@ export default function Home() {
                               </p>
                             )}
                           </div>
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            className="shrink-0 h-7 w-7"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setDeleteSinglePageConfirm({
-                                open: true,
-                                pageId: page.id,
-                                pageName: page.title || page.url,
-                              });
-                            }}
-                            data-testid={`delete-single-page-${page.id}`}
-                          >
-                            <Trash2 className="w-3.5 h-3.5 text-muted-foreground" />
-                          </Button>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="h-7 w-7"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setRenameSinglePage({
+                                  open: true,
+                                  pageId: page.id,
+                                  currentTitle: page.title || page.url,
+                                  newTitle: page.title || '',
+                                });
+                              }}
+                              data-testid={`rename-single-page-${page.id}`}
+                            >
+                              <Pencil className="w-3.5 h-3.5 text-muted-foreground" />
+                            </Button>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="h-7 w-7"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDeleteSinglePageConfirm({
+                                  open: true,
+                                  pageId: page.id,
+                                  pageName: page.title || page.url,
+                                });
+                              }}
+                              data-testid={`delete-single-page-${page.id}`}
+                            >
+                              <Trash2 className="w-3.5 h-3.5 text-muted-foreground" />
+                            </Button>
+                          </div>
                         </div>
                       </div>
                     ))}
@@ -1643,6 +1679,44 @@ export default function Home() {
           }
         }}
       />
+
+      {renameSinglePage.open && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setRenameSinglePage({ open: false, pageId: null, currentTitle: '', newTitle: '' })}>
+          <div className="bg-card border border-border rounded-lg p-6 w-full max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold mb-2">{t('renamePage') || 'Seite umbenennen'}</h3>
+            <p className="text-sm text-muted-foreground mb-4">{t('renamePageDescription') || 'Geben Sie einen neuen Titel für die Seite ein.'}</p>
+            <Input
+              value={renameSinglePage.newTitle}
+              onChange={(e) => setRenameSinglePage(prev => ({ ...prev, newTitle: e.target.value }))}
+              placeholder={renameSinglePage.currentTitle}
+              className="mb-4"
+              data-testid="rename-page-input"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && renameSinglePage.pageId && renameSinglePage.newTitle.trim()) {
+                  renameSinglePageMutation.mutate({ id: renameSinglePage.pageId, title: renameSinglePage.newTitle.trim() });
+                }
+              }}
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setRenameSinglePage({ open: false, pageId: null, currentTitle: '', newTitle: '' })} data-testid="cancel-rename-button">
+                {t('cancel')}
+              </Button>
+              <Button 
+                onClick={() => {
+                  if (renameSinglePage.pageId && renameSinglePage.newTitle.trim()) {
+                    renameSinglePageMutation.mutate({ id: renameSinglePage.pageId, title: renameSinglePage.newTitle.trim() });
+                  }
+                }}
+                disabled={!renameSinglePage.newTitle.trim() || renameSinglePageMutation.isPending}
+                data-testid="confirm-rename-button"
+              >
+                {renameSinglePageMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : (t('save') || 'Speichern')}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

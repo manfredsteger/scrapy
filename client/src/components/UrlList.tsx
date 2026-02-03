@@ -208,7 +208,24 @@ export default function UrlList({ urls, projectId, t, chunks = [], onRescrapeUrl
             {filteredUrls.slice(0, 500).map((url, idx) => {
               let displayPath = url.loc;
               try {
-                displayPath = new URL(url.loc).pathname || '/';
+                const parsedUrl = new URL(url.loc);
+                const pathname = parsedUrl.pathname || '/';
+                const hash = parsedUrl.hash || '';
+                
+                // For Moodle course sections, use the title or extract section name
+                const isMoodleSection = pathname.includes('/course/view.php') && hash.includes('#section-');
+                const pageTitle = url.scrapedData?.title;
+                
+                if (isMoodleSection && pageTitle) {
+                  // Extract chapter name from title (format: "Kursname - Kapitelname")
+                  const parts = pageTitle.split(' - ');
+                  displayPath = parts.length > 1 ? parts.slice(-1)[0] : pageTitle;
+                } else if (pageTitle && pathname === '/course/view.php') {
+                  // For Moodle pages without section, use title
+                  displayPath = pageTitle;
+                } else {
+                  displayPath = pathname + hash;
+                }
               } catch {}
               
               // Truncate long paths for display

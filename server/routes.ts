@@ -9,6 +9,7 @@ import crypto from "crypto";
 import JSZip from "jszip";
 import { ProxyAgent, fetch as undiciFetch } from "undici";
 import type { RagChunk, ProjectSettings, ScrapedElement, SitemapUrlEntry, StructuredData, ChunkQuality, TableChunk, CodeBlock, RateLimitState, ProxyConfig, ChunkStats } from "@shared/schema";
+import { MoodleScraper } from "./scrapers/moodle-scraper";
 
 const CONCURRENCY = 10;
 
@@ -2114,12 +2115,43 @@ function shouldSkipUrl(url: string): boolean {
 }
 
 function scrapePageContent(html: string, url: string, extractStructuredDataFlag: boolean = true): any {
-  const dom = new JSDOM(html);
+  const dom = new JSDOM(html, { url });
   const doc = dom.window.document;
   
   // Check for <base> tag to get the correct base URL for resolving relative URLs
   const baseTag = doc.querySelector('base');
   const effectiveBaseUrl = baseTag?.getAttribute('href') || url;
+  
+  // Check if this is a Moodle page and use MoodleScraper for proper extraction
+  const isMoodlePage = 
+    doc.querySelector('#course-toc, .snap-course-content, #snap-course-wrapper, .course-content') !== null ||
+    doc.querySelector('meta[name="keywords"][content*="moodle"]') !== null ||
+    doc.querySelector('link[href*="/theme/snap/"]') !== null ||
+    html.includes('class="path-course-view"') ||
+    html.includes('class="path-course"') ||
+    url.includes('/course/view.php') ||
+    url.includes('/mod/');
+  
+  if (isMoodlePage) {
+    console.log(`[scrapePageContent] Detected Moodle page, using MoodleScraper for: ${url}`);
+    const moodleScraper = new MoodleScraper(url, { extractStructuredData: extractStructuredDataFlag });
+    const result = moodleScraper.scrapePageContent(html, url);
+    
+    // Convert to the expected format
+    const structuredData = extractStructuredDataFlag ? extractStructuredData(doc) : null;
+    const wordCount = result.content.reduce((count: number, el: any) => {
+      const text = el.content || (el.children ? el.children.join(' ') : '');
+      return count + (text.match(/\S+/g) || []).length;
+    }, 0);
+    
+    return {
+      title: result.title,
+      timestamp: new Date().toISOString(),
+      wordCount,
+      structuredData,
+      orderedElements: result.content,
+    };
+  }
   
   const orderedElements: any[] = [];
   let totalWords = 0;

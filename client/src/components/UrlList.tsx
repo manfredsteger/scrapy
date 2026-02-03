@@ -33,7 +33,7 @@ export default function UrlList({ urls, projectId, t, chunks = [], onRescrapeUrl
     
     setRescrapingUrl(url);
     try {
-      const res = await apiRequest('POST', '/api/scrape/fetch-content', {
+      const res = await apiRequest('POST', '/api/scrape/content', {
         urls: [url],
         projectId: projectId,
       });

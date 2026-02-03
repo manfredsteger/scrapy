@@ -283,6 +283,13 @@ export class GenericScraper extends BaseScraper {
           elements.push({ type: 'paragraph', content: figcaption.textContent?.trim() || '' });
         }
         el.childNodes.forEach(child => processNode(child));
+      } else if (isCardElement(el)) {
+        // Check for card elements BEFORE processing individual images
+        const card = extractCardContent(el, baseUrl);
+        if (card) {
+          elements.push(card);
+        }
+        // Don't recurse into children - card extraction handles everything
       } else if (tag === 'img') {
         const src = el.getAttribute('src');
         if (src) {
@@ -295,11 +302,6 @@ export class GenericScraper extends BaseScraper {
               alt: el.getAttribute('alt') || undefined,
             });
           } catch {}
-        }
-      } else if (isCardElement(el)) {
-        const card = extractCardContent(el, baseUrl);
-        if (card) {
-          elements.push(card);
         }
       } else {
         el.childNodes.forEach(child => processNode(child));

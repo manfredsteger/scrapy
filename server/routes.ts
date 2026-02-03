@@ -1943,6 +1943,10 @@ function scrapePageContent(html: string, url: string, extractStructuredDataFlag:
   const dom = new JSDOM(html);
   const doc = dom.window.document;
   
+  // Check for <base> tag to get the correct base URL for resolving relative URLs
+  const baseTag = doc.querySelector('base');
+  const effectiveBaseUrl = baseTag?.getAttribute('href') || url;
+  
   const orderedElements: any[] = [];
   let totalWords = 0;
   
@@ -2137,7 +2141,7 @@ function scrapePageContent(html: string, url: string, extractStructuredDataFlag:
           }
           if (imgSrc && !imgSrc.startsWith('data:')) {
             try {
-              const absoluteSrc = new URL(imgSrc, url).href;
+              const absoluteSrc = new URL(imgSrc, effectiveBaseUrl).href;
               tableImages.push({ 
                 src: absoluteSrc, 
                 alt: img.getAttribute('alt') || undefined,
@@ -2253,7 +2257,7 @@ function scrapePageContent(html: string, url: string, extractStructuredDataFlag:
       
       if (src && !src.startsWith('data:')) {
         try {
-          const absolute = new URL(src, url).href;
+          const absolute = new URL(src, effectiveBaseUrl).href;
           orderedElements.push({ 
             type: 'media', 
             tag: 'img', 
@@ -2266,7 +2270,7 @@ function scrapePageContent(html: string, url: string, extractStructuredDataFlag:
       const src = el.getAttribute('src') || el.querySelector('source')?.getAttribute('src');
       if (src) {
         try {
-          const absolute = new URL(src, url).href;
+          const absolute = new URL(src, effectiveBaseUrl).href;
           orderedElements.push({ type: 'media', tag: 'video', src: absolute });
         } catch {}
       }

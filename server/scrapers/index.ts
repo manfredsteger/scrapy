@@ -1,12 +1,14 @@
 import { BaseScraper, ScraperOptions, ScraperResult, WebsiteType, WebsiteDetectionResult } from "./base-scraper";
 import { WikiJsScraper } from "./wikijs-scraper";
 import { WordPressScraper } from "./wordpress-scraper";
+import { MoodleScraper } from "./moodle-scraper";
 import { GenericScraper } from "./generic-scraper";
 import { detectWebsiteType } from "../utils/detector";
 
 export { BaseScraper, ScraperResult, WebsiteType, WebsiteDetectionResult } from "./base-scraper";
 export { WikiJsScraper } from "./wikijs-scraper";
 export { WordPressScraper } from "./wordpress-scraper";
+export { MoodleScraper } from "./moodle-scraper";
 export { GenericScraper } from "./generic-scraper";
 export { detectWebsiteType } from "../utils/detector";
 
@@ -17,6 +19,7 @@ export interface ScraperRegistry {
 const scraperRegistry: ScraperRegistry = {
   wikijs: WikiJsScraper,
   wordpress: WordPressScraper,
+  moodle: MoodleScraper,
   generic: GenericScraper,
 };
 

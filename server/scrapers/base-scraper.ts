@@ -19,7 +19,7 @@ export interface ScraperOptions {
   timeout?: number;
 }
 
-export type WebsiteType = 'wikijs' | 'wordpress' | 'generic';
+export type WebsiteType = 'wikijs' | 'wordpress' | 'moodle' | 'generic';
 
 export interface WebsiteDetectionResult {
   type: WebsiteType;

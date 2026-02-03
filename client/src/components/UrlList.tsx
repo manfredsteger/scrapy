@@ -225,26 +225,39 @@ export default function UrlList({ urls, projectId, t, chunks = [], onRescrapeUrl
                       {needsTruncation ? (
                         <Tooltip>
                           <TooltipTrigger asChild>
-                            <span 
-                              className="text-sm font-medium text-foreground cursor-help truncate block max-w-full"
+                            <button 
+                              className={`text-sm font-medium truncate block max-w-full text-left ${
+                                (url.scrapedData || url.hasScrapedData) 
+                                  ? 'text-foreground hover:text-primary cursor-pointer hover:underline' 
+                                  : 'text-foreground cursor-help'
+                              }`}
+                              onClick={() => (url.scrapedData || url.hasScrapedData) && handlePreviewClick(url)}
                               data-testid={`text-url-truncated-${idx}`}
                             >
                               {truncatedPath}
-                            </span>
+                            </button>
                           </TooltipTrigger>
                           <TooltipContent side="top" className="max-w-md break-all" data-testid={`text-url-full-${idx}`}>
                             <p className="text-xs">{displayPath}</p>
                             <p className="text-[10px] text-muted-foreground mt-1">{url.loc}</p>
+                            {(url.scrapedData || url.hasScrapedData) && (
+                              <p className="text-[10px] text-primary mt-1">Klicken für Vorschau</p>
+                            )}
                           </TooltipContent>
                         </Tooltip>
                       ) : (
-                        <span 
-                          className="text-sm font-medium text-foreground truncate block max-w-full" 
-                          title={url.loc}
+                        <button 
+                          className={`text-sm font-medium truncate block max-w-full text-left ${
+                            (url.scrapedData || url.hasScrapedData) 
+                              ? 'text-foreground hover:text-primary cursor-pointer hover:underline' 
+                              : 'text-foreground cursor-default'
+                          }`}
+                          onClick={() => (url.scrapedData || url.hasScrapedData) && handlePreviewClick(url)}
+                          title={(url.scrapedData || url.hasScrapedData) ? 'Klicken für Vorschau' : url.loc}
                           data-testid={`text-url-${idx}`}
                         >
                           {displayPath}
-                        </span>
+                        </button>
                       )}
                     </div>
                   </td>

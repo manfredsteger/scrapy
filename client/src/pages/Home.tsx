@@ -114,12 +114,13 @@ export default function Home() {
       setIsCreating(true);
       const discoverRes = await apiRequest('POST', '/api/scrape/discover', { domain });
       const discoverData = await discoverRes.json();
-      const { sitemaps, wikiJsPages, isWikiJs } = discoverData;
+      const { sitemaps, wikiJsPages, isWikiJs, moodlePages, isMoodle } = discoverData;
       
-      // If Wiki.js site detected, use the discovered pages directly
+      // If Wiki.js or Moodle site detected, use the discovered pages directly
       let initialQueue = sitemaps;
       let useCrawlMode = false;
       let isWikiJsSite = isWikiJs || false;
+      let isMoodleSite = isMoodle || false;
       let initialResults: Array<{ loc: string; images: Array<unknown>; videos: Array<unknown> }> = [];
       let projectStatus: string = 'scraping';
       
@@ -129,6 +130,12 @@ export default function Home() {
         initialQueue = wikiJsPages; // Queue for content scraping
         projectStatus = 'content_scraping';
         console.log(`[Wiki.js] Using ${wikiJsPages.length} discovered pages for content scraping`);
+      } else if (isMoodle && moodlePages && moodlePages.length > 0) {
+        // Moodle site - convert course URLs to result format and start content scraping
+        initialResults = moodlePages.map((url: string) => ({ loc: url, images: [], videos: [] }));
+        initialQueue = moodlePages; // Queue for content scraping
+        projectStatus = 'content_scraping';
+        console.log(`[Moodle] Using ${moodlePages.length} discovered course pages for content scraping`);
       } else if (sitemaps.length === 0) {
         // No sitemaps found - use crawl mode starting from base URL
         let baseUrl = domain.trim();
@@ -148,16 +155,22 @@ export default function Home() {
         results: initialResults,
         errors: [],
         stats: {
-          totalSitemaps: isWikiJsSite ? 0 : sitemaps.length,
+          totalSitemaps: (isWikiJsSite || isMoodleSite) ? 0 : sitemaps.length,
           processedSitemaps: 0,
-          totalUrls: isWikiJsSite ? wikiJsPages?.length || 0 : (useCrawlMode ? 1 : 0),
+          totalUrls: isWikiJsSite ? wikiJsPages?.length || 0 : (isMoodleSite ? moodlePages?.length || 0 : (useCrawlMode ? 1 : 0)),
           totalImages: 0,
           totalVideos: 0,
           startTime: Date.now(),
         },
       });
       const projectData = await project.json();
-      return { ...projectData, isWikiJs: isWikiJsSite, wikiPageCount: wikiJsPages?.length || 0 };
+      return { 
+        ...projectData, 
+        isWikiJs: isWikiJsSite, 
+        isMoodle: isMoodleSite,
+        wikiPageCount: wikiJsPages?.length || 0,
+        moodlePageCount: moodlePages?.length || 0,
+      };
     },
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
@@ -171,6 +184,11 @@ export default function Home() {
         toast({ 
           title: 'Wiki.js erkannt', 
           description: `${result.wikiPageCount} Seiten gefunden und werden gescrapt.`,
+        });
+      } else if (result.isMoodle) {
+        toast({ 
+          title: 'Moodle erkannt', 
+          description: `${result.moodlePageCount} Kursseiten gefunden und werden gescrapt.`,
         });
       } else if (result.status === 'crawling') {
         toast({ 
@@ -241,12 +259,13 @@ export default function Home() {
       
       const discoverRes = await apiRequest('POST', '/api/scrape/discover', { domain });
       const discoverData = await discoverRes.json();
-      const { sitemaps, wikiJsPages, isWikiJs } = discoverData;
+      const { sitemaps, wikiJsPages, isWikiJs, moodlePages, isMoodle } = discoverData;
       
-      // If Wiki.js site detected, use the discovered pages directly
+      // If Wiki.js or Moodle site detected, use the discovered pages directly
       let initialQueue = sitemaps;
       let useCrawlMode = false;
       let isWikiJsSite = isWikiJs || false;
+      let isMoodleSite = isMoodle || false;
       let initialResults: Array<{ loc: string; images: Array<unknown>; videos: Array<unknown> }> = [];
       let projectStatus: string = 'scraping';
       
@@ -256,6 +275,12 @@ export default function Home() {
         initialQueue = wikiJsPages; // Queue for content scraping
         projectStatus = 'content_scraping';
         console.log(`[Wiki.js] Resync: Using ${wikiJsPages.length} discovered pages for content scraping`);
+      } else if (isMoodle && moodlePages && moodlePages.length > 0) {
+        // Moodle site - convert course URLs to result format and start content scraping
+        initialResults = moodlePages.map((url: string) => ({ loc: url, images: [], videos: [] }));
+        initialQueue = moodlePages; // Queue for content scraping
+        projectStatus = 'content_scraping';
+        console.log(`[Moodle] Resync: Using ${moodlePages.length} discovered course pages for content scraping`);
       } else if (sitemaps.length === 0) {
         let baseUrl = domain.trim();
         if (!baseUrl.startsWith('http')) baseUrl = `https://${baseUrl}`;
@@ -273,9 +298,9 @@ export default function Home() {
         results: initialResults,
         errors: [],
         stats: {
-          totalSitemaps: isWikiJsSite ? 0 : sitemaps.length,
+          totalSitemaps: (isWikiJsSite || isMoodleSite) ? 0 : sitemaps.length,
           processedSitemaps: 0,
-          totalUrls: isWikiJsSite ? wikiJsPages?.length || 0 : (useCrawlMode ? 1 : 0),
+          totalUrls: isWikiJsSite ? wikiJsPages?.length || 0 : (isMoodleSite ? moodlePages?.length || 0 : (useCrawlMode ? 1 : 0)),
           totalImages: 0,
           totalVideos: 0,
           startTime: Date.now(),

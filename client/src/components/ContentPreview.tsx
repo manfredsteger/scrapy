@@ -418,9 +418,9 @@ export default function ContentPreview({ entry, onClose, t, chunks = [] }: Conte
           )}
         </div>
 
-        <div className={`flex-1 overflow-hidden ${hasChunks ? 'flex' : ''}`}>
+        <div className={`flex-1 min-h-0 ${hasChunks ? 'flex' : 'overflow-y-auto'}`}>
           {/* Left side: Content */}
-          <div className={`${hasChunks ? 'w-1/2 border-r border-border' : 'w-full'} overflow-y-auto p-6`}>
+          <div className={`${hasChunks ? 'w-1/2 border-r border-border overflow-y-auto' : 'w-full'} p-6`}>
             <div className="mb-4 flex items-center justify-between">
               <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-2">
                 <FileText className="w-4 h-4" />

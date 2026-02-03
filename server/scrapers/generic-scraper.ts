@@ -1,5 +1,6 @@
 import { JSDOM } from "jsdom";
-import { BaseScraper, ScraperResult, ScraperOptions, WebsiteType } from "./base-scraper";
+import { BaseScraper } from "./base-scraper";
+import type { ScraperResult, ScraperOptions, WebsiteType } from "./base-scraper";
 import type { ScrapedElement } from "@shared/schema";
 
 function isCardElement(el: Element): boolean {

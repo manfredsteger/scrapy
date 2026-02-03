@@ -1,5 +1,6 @@
 import { JSDOM } from "jsdom";
-import { BaseScraper, ScraperResult, WebsiteType } from "./base-scraper";
+import { BaseScraper } from "./base-scraper";
+import type { ScraperResult, WebsiteType } from "./base-scraper";
 import type { ScrapedElement } from "@shared/schema";
 
 export class MoodleScraper extends BaseScraper {

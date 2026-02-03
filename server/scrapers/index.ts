@@ -1,11 +1,13 @@
-import { BaseScraper, ScraperOptions, ScraperResult, WebsiteType, WebsiteDetectionResult } from "./base-scraper";
+import { BaseScraper, ScraperOptions } from "./base-scraper";
+import type { ScraperResult, WebsiteType, WebsiteDetectionResult } from "./base-scraper";
 import { WikiJsScraper } from "./wikijs-scraper";
 import { WordPressScraper } from "./wordpress-scraper";
 import { MoodleScraper } from "./moodle-scraper";
 import { GenericScraper } from "./generic-scraper";
 import { detectWebsiteType } from "../utils/detector";
 
-export { BaseScraper, ScraperResult, WebsiteType, WebsiteDetectionResult } from "./base-scraper";
+export { BaseScraper } from "./base-scraper";
+export type { ScraperResult, WebsiteType, WebsiteDetectionResult } from "./base-scraper";
 export { WikiJsScraper } from "./wikijs-scraper";
 export { WordPressScraper } from "./wordpress-scraper";
 export { MoodleScraper } from "./moodle-scraper";

@@ -3202,6 +3202,14 @@ export async function registerRoutes(
           // Extract internal links - use both DOM and regex-based extraction
           const links: string[] = [];
           
+          // URL patterns to skip (auth, admin, resources, etc.)
+          const skipPatterns = [
+            '/login/', '/auth/', '/admin/', '/user/profile',
+            '/message/', '/calendar/', '/blocks/', '/theme/',
+            '/lib/', '/pluginfile.php', 'sesskey=', 'download.moodle.org',
+            '/wp-login', '/wp-admin', '?action=logout', '&action=logout',
+          ];
+          
           // Helper function to process href
           const processHref = (href: string) => {
             if (!href) return;
@@ -3216,11 +3224,39 @@ export async function registerRoutes(
               // Only include links from the same domain
               if (urlDomain === domain || urlDomain.endsWith('.' + domain)) {
                 // Skip file extensions we don't want
-                if (!resolvedUrl.match(/\.(pdf|jpg|jpeg|png|gif|svg|css|js|zip|tar|gz|ico|woff|woff2|ttf|eot)$/i)) {
-                  const cleanUrl = resolvedUrl.split('#')[0].split('?')[0];
-                  if (cleanUrl && !cleanUrl.endsWith('/manifest.json')) {
-                    links.push(cleanUrl);
-                  }
+                if (resolvedUrl.match(/\.(pdf|jpg|jpeg|png|gif|svg|css|js|zip|tar|gz|ico|woff|woff2|ttf|eot)$/i)) return;
+                
+                // Skip auth/admin/resource URLs
+                if (skipPatterns.some(pattern => resolvedUrl.includes(pattern))) return;
+                
+                // Remove hash fragment only, keep query params (important for Moodle, PHP sites)
+                let cleanUrl = resolvedUrl.split('#')[0];
+                
+                // For PHP files, validate required params exist
+                if (cleanUrl.includes('.php')) {
+                  const urlObj = new URL(cleanUrl);
+                  const pathname = urlObj.pathname;
+                  
+                  // Skip PHP files that require params but don't have them
+                  if (pathname.endsWith('/view.php') && !urlObj.searchParams.has('id')) return;
+                  if (pathname.endsWith('/mod.php') && !urlObj.searchParams.has('id')) return;
+                  
+                  // Keep only essential params to avoid duplicates from tracking params
+                  const essentialParams = ['id', 'section', 'chapterid', 'page', 'p', 'cat', 'tag'];
+                  const newParams = new URLSearchParams();
+                  essentialParams.forEach(param => {
+                    const val = urlObj.searchParams.get(param);
+                    if (val) newParams.set(param, val);
+                  });
+                  urlObj.search = newParams.toString();
+                  cleanUrl = urlObj.href;
+                } else {
+                  // For non-PHP URLs, remove query params to avoid duplicates
+                  cleanUrl = cleanUrl.split('?')[0];
+                }
+                
+                if (cleanUrl && !cleanUrl.endsWith('/manifest.json')) {
+                  links.push(cleanUrl);
                 }
               }
             } catch {}

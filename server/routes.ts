@@ -2031,18 +2031,23 @@ function scrapePageContent(html: string, url: string, extractStructuredDataFlag:
     const tag = el.tagName?.toLowerCase();
     if (skipTags.has(tag)) return true;
     
-    // Check element's own classes and id
-    const classList = el.className?.toLowerCase?.() || '';
+    // Check element's own classes and id - use word-boundary matching
+    const classListStr = el.className?.toLowerCase?.() || '';
+    const classListArr = classListStr.split(/\s+/).filter(Boolean);
     const id = el.id?.toLowerCase() || '';
     
-    const skipClassesArr = Array.from(skipClasses);
-    for (let i = 0; i < skipClassesArr.length; i++) {
-      if (classList.includes(skipClassesArr[i])) return true;
+    // Check each individual class name against skipClasses
+    for (const cls of classListArr) {
+      if (skipClasses.has(cls)) return true;
+      // Also check if class name starts with skip class prefix (like nav-, menu-, etc.)
+      for (const skipCls of skipClasses) {
+        if (cls.startsWith(skipCls + '-') || cls.startsWith(skipCls + '_')) return true;
+      }
     }
     
-    const skipIdsArr = Array.from(skipIds);
-    for (let i = 0; i < skipIdsArr.length; i++) {
-      if (id.includes(skipIdsArr[i])) return true;
+    // Check ID - use word-boundary matching
+    for (const skipId of skipIds) {
+      if (id === skipId || id.startsWith(skipId + '-') || id.startsWith(skipId + '_')) return true;
     }
     
     // Check for role="navigation"
@@ -2061,7 +2066,7 @@ function scrapePageContent(html: string, url: string, extractStructuredDataFlag:
     const el = node as Element;
     const tag = el.tagName?.toLowerCase();
     
-    // Use enhanced skip detection
+    // Use enhanced skip detection with word-boundary matching
     if (shouldSkipElement(el)) {
       return;
     }
@@ -2352,6 +2357,7 @@ function scrapePageContent(html: string, url: string, extractStructuredDataFlag:
         } catch {}
       }
     } else {
+      // Recurse into child nodes
       el.childNodes.forEach(child => processNode(child, depth + 1));
     }
   }

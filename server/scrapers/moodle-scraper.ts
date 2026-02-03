@@ -12,11 +12,28 @@ export class MoodleScraper extends BaseScraper {
     const dom = new JSDOM(html, { url });
     const doc = dom.window.document;
 
-    const title = this.extractTitle(doc);
-    const content = this.extractMoodleContent(doc);
-    const images = this.extractImages(doc, url);
-    const videos = this.extractVideos(doc, url);
-    const links = this.extractMoodleLinks(doc, url);
+    // Check if URL has a section hash (e.g., #section-3)
+    const sectionMatch = url.match(/#section-(\d+)/);
+    const targetSection = sectionMatch ? parseInt(sectionMatch[1]) : null;
+
+    // Get the section element if targeting a specific section
+    let scopeElement: Element | null = null;
+    if (targetSection !== null) {
+      scopeElement = doc.querySelector(`#section-${targetSection}, [data-section="${targetSection}"], li#section-${targetSection}`);
+    }
+
+    const title = this.extractTitle(doc, targetSection);
+    const content = this.extractMoodleContent(doc, targetSection);
+    
+    // Extract images/videos/links from section scope if available, otherwise from full doc
+    const images = scopeElement 
+      ? this.extractImagesFromElement(scopeElement, url)
+      : this.extractImages(doc, url);
+    const videos = scopeElement 
+      ? this.extractVideosFromElement(scopeElement, url)
+      : this.extractVideos(doc, url);
+    const links = this.extractMoodleLinks(doc, url, scopeElement);
+    
     const structuredData = this.options.extractStructuredData 
       ? this.extractStructuredData(doc) 
       : undefined;
@@ -31,38 +48,118 @@ export class MoodleScraper extends BaseScraper {
       structuredData,
     };
   }
+  
+  private extractImagesFromElement(element: Element, baseUrl: string): { loc: string; title?: string }[] {
+    const images: { loc: string; title?: string }[] = [];
+    const seen = new Set<string>();
+    element.querySelectorAll('img[src]').forEach(img => {
+      const src = img.getAttribute('src');
+      if (src && !src.startsWith('data:')) {
+        try {
+          const absoluteUrl = new URL(src, baseUrl).href;
+          if (!seen.has(absoluteUrl)) {
+            seen.add(absoluteUrl);
+            const alt = img.getAttribute('alt');
+            images.push({ loc: absoluteUrl, title: alt || undefined });
+          }
+        } catch {}
+      }
+    });
+    return images;
+  }
+  
+  private extractVideosFromElement(element: Element, baseUrl: string): { loc: string; title?: string }[] {
+    const videos: { loc: string; title?: string }[] = [];
+    const seen = new Set<string>();
+    element.querySelectorAll('video source[src], video[src], iframe[src]').forEach(el => {
+      const src = el.getAttribute('src');
+      if (src) {
+        try {
+          const absoluteUrl = new URL(src, baseUrl).href;
+          if (!seen.has(absoluteUrl)) {
+            seen.add(absoluteUrl);
+            videos.push({ loc: absoluteUrl });
+          }
+        } catch {}
+      }
+    });
+    return videos;
+  }
 
-  protected extractTitle(doc: Document): string {
+  protected extractTitle(doc: Document, targetSection: number | null = null): string {
+    // If targeting a specific section, try to get section title
+    if (targetSection !== null) {
+      const sectionEl = doc.querySelector(`#section-${targetSection}, [data-section="${targetSection}"], li#section-${targetSection}`);
+      if (sectionEl) {
+        const sectionTitle = sectionEl.querySelector('h3, h4, .sectionname, .section-title');
+        if (sectionTitle?.textContent?.trim()) {
+          const courseTitle = doc.querySelector('.page-header-headings h1, #page-header h1')?.textContent?.trim();
+          const sectionName = sectionTitle.textContent.trim();
+          return courseTitle ? `${courseTitle} - ${sectionName}` : sectionName;
+        }
+      }
+    }
+    
     const courseTitle = doc.querySelector('.page-header-headings h1, #page-header h1');
     if (courseTitle?.textContent?.trim()) {
-      return courseTitle.textContent.trim();
+      return targetSection !== null 
+        ? `${courseTitle.textContent.trim()} - Sektion ${targetSection}` 
+        : courseTitle.textContent.trim();
     }
     
     const pageTitle = doc.querySelector('title')?.textContent?.trim() || '';
     return pageTitle.replace(/\s*\|\s*.*$/, '').trim() || pageTitle;
   }
 
-  private extractMoodleContent(doc: Document): ScrapedElement[] {
+  private extractMoodleContent(doc: Document, targetSection: number | null = null): ScrapedElement[] {
     const elements: ScrapedElement[] = [];
     
-    const contentSelectors = [
-      '#region-main',
-      '#page-content',
-      '.course-content',
-      '.activity-description',
-      'section#region-main',
-      'main#maincontent',
-      '[role="main"]',
-      '.snap-activity',
-      '.snap-course-content',
-    ];
-
+    // If targeting a specific section, extract only that section's content
     let mainContent: Element | null = null;
-    for (const selector of contentSelectors) {
-      const el = doc.querySelector(selector);
-      if (el && el.textContent && el.textContent.trim().length > 50) {
-        mainContent = el;
-        break;
+    
+    if (targetSection !== null) {
+      // Try to find the specific section element
+      const sectionSelectors = [
+        `#section-${targetSection}`,
+        `[data-section="${targetSection}"]`,
+        `li#section-${targetSection}`,
+        `section#section-${targetSection}`,
+      ];
+      
+      for (const selector of sectionSelectors) {
+        const sectionEl = doc.querySelector(selector);
+        if (sectionEl && sectionEl.textContent && sectionEl.textContent.trim().length > 10) {
+          mainContent = sectionEl;
+          console.log(`[MoodleScraper] Found section ${targetSection} using selector: ${selector}`);
+          break;
+        }
+      }
+      
+      if (!mainContent) {
+        console.log(`[MoodleScraper] Section ${targetSection} not found, falling back to full page`);
+      }
+    }
+    
+    // If no section found or not targeting section, use standard content selectors
+    if (!mainContent) {
+      const contentSelectors = [
+        '#region-main',
+        '#page-content',
+        '.course-content',
+        '.activity-description',
+        'section#region-main',
+        'main#maincontent',
+        '[role="main"]',
+        '.snap-activity',
+        '.snap-course-content',
+      ];
+
+      for (const selector of contentSelectors) {
+        const el = doc.querySelector(selector);
+        if (el && el.textContent && el.textContent.trim().length > 50) {
+          mainContent = el;
+          break;
+        }
       }
     }
 
@@ -130,7 +227,8 @@ export class MoodleScraper extends BaseScraper {
 
     Array.from(mainContent.children).forEach(child => processElement(child));
 
-    const activities = doc.querySelectorAll('.activity, .snap-activity, .activityinstance');
+    // Extract activities from within mainContent only (not entire document)
+    const activities = mainContent.querySelectorAll('.activity, .snap-activity, .activityinstance');
     activities.forEach(activity => {
       const title = activity.querySelector('.instancename, .activityname, .snap-asset-link')?.textContent?.trim();
       const description = activity.querySelector('.contentafterlink, .activity-description, .snap-asset-description')?.textContent?.trim();
@@ -154,7 +252,7 @@ export class MoodleScraper extends BaseScraper {
     return elements;
   }
 
-  extractMoodleLinks(doc: Document, baseUrl: string): string[] {
+  extractMoodleLinks(doc: Document, baseUrl: string, scopeElement: Element | null = null): string[] {
     const links: string[] = [];
     const baseDomain = new URL(baseUrl).origin;
     
@@ -186,7 +284,9 @@ export class MoodleScraper extends BaseScraper {
       '/course/index.php',
     ];
 
-    doc.querySelectorAll('a[href]').forEach(a => {
+    // Use scope element if provided, otherwise use full document
+    const searchRoot = scopeElement || doc;
+    searchRoot.querySelectorAll('a[href]').forEach(a => {
       const href = a.getAttribute('href');
       if (!href) return;
       if (href.startsWith('#') || href.startsWith('javascript:') || 

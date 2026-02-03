@@ -1730,9 +1730,120 @@ async function isWikiJsSite(baseUrl: string): Promise<boolean> {
   }
 }
 
+// Discover sections within a Moodle course
+async function discoverMoodleCourseSections(courseUrl: string): Promise<string[]> {
+  const sections: string[] = [];
+  const foundSections = new Set<number>();
+  
+  try {
+    const html = await fetchWithTimeout(courseUrl);
+    const dom = new JSDOM(html, { url: courseUrl });
+    const doc = dom.window.document;
+    
+    // Clean URL to base course URL (remove any existing hash)
+    const urlObj = new URL(courseUrl);
+    urlObj.hash = '';
+    const baseCourseUrl = urlObj.href;
+    
+    // Method 1: Check course-toc navigation for section links
+    const tocNav = doc.querySelector('#course-toc, nav.course-toc, .drawer-course-content, .course-index');
+    if (tocNav) {
+      tocNav.querySelectorAll('a[href*="#section-"]').forEach(a => {
+        const href = a.getAttribute('href');
+        if (href) {
+          const match = href.match(/#section-(\d+)/);
+          if (match) {
+            foundSections.add(parseInt(match[1]));
+          }
+        }
+      });
+    }
+    
+    // Method 2: Check for section elements directly in the page (various Moodle DOM variants)
+    const sectionSelectors = [
+      '[id^="section-"]',
+      'li[id^="section-"]', 
+      'section[id^="section-"]',
+      'li.section[data-sectionid]',
+      '.section[data-sectionid]',
+      '.course-section[data-sectionnum]',
+    ];
+    
+    sectionSelectors.forEach(selector => {
+      doc.querySelectorAll(selector).forEach(el => {
+        // Check for id="section-X"
+        const id = el.getAttribute('id');
+        if (id) {
+          const match = id.match(/section-(\d+)/);
+          if (match) {
+            foundSections.add(parseInt(match[1]));
+          }
+        }
+        // Check for data-sectionid or data-sectionnum
+        const sectionId = el.getAttribute('data-sectionid') || el.getAttribute('data-sectionnum');
+        if (sectionId) {
+          const num = parseInt(sectionId);
+          if (!isNaN(num)) foundSections.add(num);
+        }
+      });
+    });
+    
+    // Method 3: Check for data-section attributes
+    doc.querySelectorAll('[data-section]').forEach(el => {
+      const sectionAttr = el.getAttribute('data-section');
+      if (sectionAttr) {
+        const sectionNum = parseInt(sectionAttr);
+        if (!isNaN(sectionNum)) foundSections.add(sectionNum);
+      }
+    });
+    
+    // Method 4: Check .section list items in course-content
+    doc.querySelectorAll('.course-content li.section, ul.topics > li, ul.weeks > li').forEach((el, index) => {
+      // These are typically sequential sections
+      const sectionId = el.getAttribute('data-sectionid');
+      if (sectionId) {
+        foundSections.add(parseInt(sectionId));
+      } else {
+        // Use index as section number
+        foundSections.add(index);
+      }
+    });
+    
+    // If we found actual sections, use them; otherwise just return the base course URL
+    if (foundSections.size > 0) {
+      // Sort and generate section URLs
+      const sortedSections = Array.from(foundSections).sort((a, b) => a - b);
+      for (const sectionNum of sortedSections) {
+        sections.push(`${baseCourseUrl}#section-${sectionNum}`);
+      }
+      console.log(`[Moodle] Discovered ${sections.length} sections for course: ${baseCourseUrl}`);
+    } else {
+      // No sections found - just scrape the course page as a whole
+      sections.push(baseCourseUrl);
+      console.log(`[Moodle] No sections detected, using course URL: ${baseCourseUrl}`);
+    }
+  } catch (error) {
+    console.error('[Moodle] Error discovering course sections:', error);
+    // Return at least the base course URL
+    sections.push(courseUrl);
+  }
+  return sections;
+}
+
+// Check if URL is a direct Moodle course URL
+function isMoodleCourseUrl(url: string): boolean {
+  return /\/course\/view\.php\?id=\d+/.test(url);
+}
+
 async function discoverMoodleCourses(baseUrl: string): Promise<string[]> {
   const courses: string[] = [];
   try {
+    // If this is a direct course URL, discover its sections instead
+    if (isMoodleCourseUrl(baseUrl)) {
+      console.log(`[Moodle] Direct course URL detected, discovering sections...`);
+      return await discoverMoodleCourseSections(baseUrl);
+    }
+    
     const html = await fetchWithTimeout(baseUrl);
     const dom = new JSDOM(html, { url: baseUrl });
     const doc = dom.window.document;

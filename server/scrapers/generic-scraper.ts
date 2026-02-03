@@ -94,11 +94,15 @@ export class GenericScraper extends BaseScraper {
     const dom = new JSDOM(html);
     const doc = dom.window.document;
 
+    // Check for <base> tag to get the correct base URL for resolving relative URLs
+    const baseTag = doc.querySelector('base');
+    const effectiveBaseUrl = baseTag?.getAttribute('href') || url;
+
     const title = this.extractTitle(doc);
-    const content = this.extractGenericContent(doc, url);
-    const images = this.extractImages(doc, url);
-    const videos = this.extractVideos(doc, url);
-    const links = this.extractLinks(doc, url);
+    const content = this.extractGenericContent(doc, effectiveBaseUrl);
+    const images = this.extractImages(doc, effectiveBaseUrl);
+    const videos = this.extractVideos(doc, effectiveBaseUrl);
+    const links = this.extractLinks(doc, effectiveBaseUrl);
     const structuredData = this.options.extractStructuredData 
       ? this.extractStructuredData(doc) 
       : undefined;

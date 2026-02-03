@@ -2066,6 +2066,83 @@ function scrapePageContent(html: string, url: string, extractStructuredDataFlag:
       return;
     }
     
+    // Detect CSS-based team/member lists (like mod_teamList, layout_teamMember)
+    const classList = el.className?.toLowerCase?.() || '';
+    const isTeamMemberCard = classList.includes('teammember') || classList.includes('team-member') ||
+      classList.includes('layout_teammember') || classList.includes('person-card') ||
+      classList.includes('staff-card') || classList.includes('mitarbeiter');
+    
+    if (isTeamMemberCard) {
+      // Extract team member card with image, name, role, contact info
+      const img = el.querySelector('img');
+      const nameEl = el.querySelector('.name, .title, h3, h4, a[href*="profil"], a[href*="team"]');
+      const roleEl = el.querySelector('.position, .role, .job, .function, .subtitle');
+      const phoneEl = el.querySelector('.phone, .telefon, .tel, [class*="phone"]');
+      const emailEl = el.querySelector('.email, .mail, a[href^="mailto:"]');
+      
+      const parts: string[] = [];
+      
+      // Name (bold)
+      const name = nameEl?.textContent?.trim();
+      if (name) parts.push(`**${name}**`);
+      
+      // Role/Position
+      const role = roleEl?.textContent?.trim();
+      if (role && role !== name) parts.push(role);
+      
+      // Phone - clean up the text
+      let phone = phoneEl?.textContent?.trim();
+      if (phone) {
+        // Remove "Telefon:", "Tel:", "Mobile:" prefixes if present
+        phone = phone.replace(/^(Telefon|Tel|Phone|Mobile):\s*/gi, '').trim();
+        // Remove empty labels
+        phone = phone.replace(/^(Telefon|Tel|Phone|Mobile):\s*$/gim, '').trim();
+        if (phone && phone.length > 3) parts.push(`Tel: ${phone}`);
+      }
+      
+      // Email - clean up the text
+      let email = emailEl?.getAttribute('href')?.replace('mailto:', '') || emailEl?.textContent?.trim();
+      if (email) {
+        // Remove "E-Mail:" prefix if present
+        email = email.replace(/^(E-Mail|Email|Mail):\s*/gi, '').trim();
+        if (email.includes('@')) parts.push(`E-Mail: ${email}`);
+      }
+      
+      // If no structured content found, get all text
+      if (parts.length === 0) {
+        const allText = el.textContent?.trim();
+        if (allText && allText.length > 10 && allText.length < 500) {
+          parts.push(allText);
+        }
+      }
+      
+      // Get image
+      let imageSrc: string | undefined;
+      let imageAlt: string | undefined;
+      if (img) {
+        let src = img.getAttribute('src');
+        if (!src || src.startsWith('data:')) {
+          src = img.getAttribute('data-src') || img.getAttribute('data-lazy-src');
+        }
+        if (src && !src.startsWith('data:')) {
+          try {
+            imageSrc = new URL(src, effectiveBaseUrl).href;
+            imageAlt = img.getAttribute('alt') || undefined;
+          } catch {}
+        }
+      }
+      
+      if (parts.length > 0 || imageSrc) {
+        orderedElements.push({
+          type: 'card',
+          content: parts.join('\n'),
+          image: imageSrc,
+          imageAlt: imageAlt,
+        });
+      }
+      return; // Don't recurse into children, we've extracted everything
+    }
+    
     if (tag && tag.match(/^h[1-6]$/)) {
       const text = el.textContent?.trim() || '';
       if (text && text.length > 1) {

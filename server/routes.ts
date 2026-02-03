@@ -1730,6 +1730,69 @@ async function isWikiJsSite(baseUrl: string): Promise<boolean> {
   }
 }
 
+async function discoverMoodleCourses(baseUrl: string): Promise<string[]> {
+  const courses: string[] = [];
+  try {
+    const html = await fetchWithTimeout(baseUrl);
+    const dom = new JSDOM(html, { url: baseUrl });
+    const doc = dom.window.document;
+    const origin = new URL(baseUrl).origin;
+    
+    // Extract course links from homepage
+    const coursePattern = /\/course\/view\.php\?id=\d+/;
+    doc.querySelectorAll('a[href]').forEach(a => {
+      const href = a.getAttribute('href');
+      if (!href) return;
+      
+      try {
+        const resolvedUrl = new URL(href, baseUrl).href;
+        if (coursePattern.test(resolvedUrl) && resolvedUrl.startsWith(origin)) {
+          // Clean URL: keep only id parameter
+          const urlObj = new URL(resolvedUrl);
+          const id = urlObj.searchParams.get('id');
+          if (id) {
+            const cleanUrl = `${urlObj.origin}${urlObj.pathname}?id=${id}`;
+            if (!courses.includes(cleanUrl)) {
+              courses.push(cleanUrl);
+            }
+          }
+        }
+      } catch {}
+    });
+    
+    // Also add the homepage itself
+    if (!courses.includes(baseUrl)) {
+      courses.unshift(baseUrl);
+    }
+    
+    console.log(`[Moodle] Discovered ${courses.length} course URLs from ${baseUrl}`);
+  } catch (error) {
+    console.error('[Moodle] Error discovering courses:', error);
+  }
+  return courses;
+}
+
+async function isMoodleSite(baseUrl: string): Promise<boolean> {
+  try {
+    const html = await fetchWithTimeout(baseUrl);
+    const htmlLower = html.toLowerCase();
+    
+    // Check for Moodle indicators
+    const indicators = [
+      html.includes('M.cfg') || html.includes('M.util'),
+      htmlLower.includes('moodle'),
+      html.includes('/course/view.php') || html.includes('/mod/'),
+      html.includes('theme/') && html.includes('/pix/'),
+      html.includes('/login/index.php'),
+    ];
+    
+    const matchCount = indicators.filter(Boolean).length;
+    return matchCount >= 2;
+  } catch {
+    return false;
+  }
+}
+
 async function discoverSitemaps(domain: string): Promise<string[]> {
   const sitemaps = new Set<string>();
   let baseUrl = domain.trim();
@@ -3047,14 +3110,24 @@ export async function registerRoutes(
         console.log(`[Wiki.js] Detected Wiki.js site: ${baseUrl}`);
         const wikiPages = await discoverWikiJsPages(baseUrl);
         if (wikiPages.length > 0) {
-          // Return wiki pages as direct URLs (not sitemaps)
-          res.json({ sitemaps: [], wikiJsPages: wikiPages, isWikiJs: true });
+          res.json({ sitemaps: [], wikiJsPages: wikiPages, isWikiJs: true, isMoodle: false });
+          return;
+        }
+      }
+      
+      // Check if this is a Moodle site
+      const isMoodle = await isMoodleSite(baseUrl);
+      if (isMoodle) {
+        console.log(`[Moodle] Detected Moodle site: ${baseUrl}`);
+        const moodleCourses = await discoverMoodleCourses(baseUrl);
+        if (moodleCourses.length > 0) {
+          res.json({ sitemaps: [], moodlePages: moodleCourses, isMoodle: true, isWikiJs: false });
           return;
         }
       }
       
       const sitemaps = await discoverSitemaps(input.domain);
-      res.json({ sitemaps, isWikiJs: false });
+      res.json({ sitemaps, isWikiJs: false, isMoodle: false });
     } catch (err) {
       if (err instanceof z.ZodError) {
         return res.status(400).json({

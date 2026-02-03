@@ -55,6 +55,17 @@ function elementToMarkdown(el: ScrapedElement): string {
     });
     return md + '\n';
   }
+  if (el.type === 'card') {
+    const cardEl = el as any;
+    let md = '';
+    if (cardEl.image) {
+      md += `![${cardEl.imageAlt || ''}](${cardEl.image})\n\n`;
+    }
+    if (cardEl.content) {
+      md += cardEl.content + '\n\n';
+    }
+    return md;
+  }
   return '';
 }
 
@@ -210,16 +221,84 @@ function renderElement(el: ScrapedElement, idx: number) {
     );
   }
   
+  if (el.type === 'card') {
+    const cardEl = el as any;
+    return (
+      <div key={idx} className="my-4 bg-secondary/50 rounded-lg p-4 flex gap-4">
+        {cardEl.image && (
+          <div className="shrink-0">
+            <img 
+              src={cardEl.image} 
+              alt={cardEl.imageAlt || ''} 
+              className="w-20 h-20 object-cover rounded-lg border border-border"
+              loading="lazy"
+              onError={(e) => {
+                (e.target as HTMLImageElement).style.display = 'none';
+              }}
+            />
+          </div>
+        )}
+        <div className="flex-1 min-w-0">
+          {cardEl.content?.split('\n').map((line: string, i: number) => {
+            if (line.startsWith('**') && line.endsWith('**')) {
+              return (
+                <p key={i} className="font-semibold text-foreground">
+                  {line.replace(/\*\*/g, '')}
+                </p>
+              );
+            }
+            return (
+              <p key={i} className="text-sm text-muted-foreground">
+                {line}
+              </p>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+  
   if (el.type === 'media') {
+    if (el.tag === 'img') {
+      return (
+        <div key={idx} className="my-4">
+          <img 
+            src={el.src} 
+            alt={el.alt || ''} 
+            className="max-w-full h-auto rounded-lg border border-border"
+            loading="lazy"
+            onError={(e) => {
+              const target = e.target as HTMLImageElement;
+              target.style.display = 'none';
+              const fallback = target.nextElementSibling as HTMLElement;
+              if (fallback) fallback.style.display = 'flex';
+            }}
+          />
+          <div className="hidden bg-secondary rounded-lg p-4 items-center gap-3">
+            <ImageIcon className="w-5 h-5 text-purple-400 shrink-0" />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs text-muted-foreground uppercase">Image (failed to load)</p>
+              <a 
+                href={el.src} 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="text-xs text-primary truncate block hover:underline"
+              >
+                {el.src}
+              </a>
+            </div>
+          </div>
+          {el.alt && (
+            <p className="text-xs text-muted-foreground mt-1 italic">{el.alt}</p>
+          )}
+        </div>
+      );
+    }
     return (
       <div key={idx} className="my-4 bg-secondary rounded-lg p-4 flex items-center gap-3">
-        {el.tag === 'img' ? (
-          <ImageIcon className="w-5 h-5 text-purple-400 shrink-0" />
-        ) : (
-          <Video className="w-5 h-5 text-orange-400 shrink-0" />
-        )}
+        <Video className="w-5 h-5 text-orange-400 shrink-0" />
         <div className="min-w-0 flex-1">
-          <p className="text-xs text-muted-foreground uppercase">{el.tag === 'img' ? 'Image' : 'Video'}</p>
+          <p className="text-xs text-muted-foreground uppercase">Video</p>
           <a 
             href={el.src} 
             target="_blank" 

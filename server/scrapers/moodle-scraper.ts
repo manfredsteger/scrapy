@@ -87,24 +87,64 @@ export class MoodleScraper extends BaseScraper {
   }
 
   protected extractTitle(doc: Document, targetSection: number | null = null): string {
-    // If targeting a specific section, try to get section title
+    const courseTitle = doc.querySelector('.page-header-headings h1, #page-header h1')?.textContent?.trim() || '';
+    
+    console.log(`[MoodleScraper] extractTitle called with targetSection=${targetSection}, courseTitle="${courseTitle}"`);
+    
+    // If targeting a specific section, get chapter name from navigation
     if (targetSection !== null) {
-      const sectionEl = doc.querySelector(`#section-${targetSection}, [data-section="${targetSection}"], li#section-${targetSection}`);
+      // Method 1: Get chapter title from navigation (most reliable for Snap theme)
+      // Try multiple selector variations for compatibility
+      const selectors = [
+        `#chapters a.chapter-title[section-number="${targetSection}"]`,
+        `#chapters a.chapter-title[href="#section-${targetSection}"]`,
+        `ol.chapters a[section-number="${targetSection}"]`,
+        `ol.chapters a[href="#section-${targetSection}"]`,
+      ];
+      
+      let chapterLink: Element | null = null;
+      for (const selector of selectors) {
+        chapterLink = doc.querySelector(selector);
+        if (chapterLink) {
+          console.log(`[MoodleScraper] Found chapter link with selector: ${selector}`);
+          break;
+        }
+      }
+      
+      if (chapterLink) {
+        const chapterName = chapterLink.getAttribute('title') || chapterLink.textContent?.trim();
+        console.log(`[MoodleScraper] Chapter name: "${chapterName}"`);
+        if (chapterName) {
+          return courseTitle ? `${courseTitle} - ${chapterName}` : chapterName;
+        }
+      } else {
+        console.log(`[MoodleScraper] No chapter link found for section ${targetSection}`);
+      }
+      
+      // Method 2: Get section name from .sectionname heading within section
+      const sectionEl = doc.querySelector(`#section-${targetSection}, li#section-${targetSection}`);
       if (sectionEl) {
-        const sectionTitle = sectionEl.querySelector('h3, h4, .sectionname, .section-title');
+        const sectionTitle = sectionEl.querySelector('.sectionname, h2.sectionname, h3, h4');
         if (sectionTitle?.textContent?.trim()) {
-          const courseTitle = doc.querySelector('.page-header-headings h1, #page-header h1')?.textContent?.trim();
           const sectionName = sectionTitle.textContent.trim();
           return courseTitle ? `${courseTitle} - ${sectionName}` : sectionName;
         }
+        
+        // Method 3: Get from aria-label attribute
+        const ariaLabel = sectionEl.getAttribute('aria-label');
+        if (ariaLabel) {
+          return courseTitle ? `${courseTitle} - ${ariaLabel}` : ariaLabel;
+        }
+      }
+      
+      // Fallback: course title + section number
+      if (courseTitle) {
+        return `${courseTitle} - Sektion ${targetSection}`;
       }
     }
     
-    const courseTitle = doc.querySelector('.page-header-headings h1, #page-header h1');
-    if (courseTitle?.textContent?.trim()) {
-      return targetSection !== null 
-        ? `${courseTitle.textContent.trim()} - Sektion ${targetSection}` 
-        : courseTitle.textContent.trim();
+    if (courseTitle) {
+      return courseTitle;
     }
     
     const pageTitle = doc.querySelector('title')?.textContent?.trim() || '';
@@ -175,10 +215,62 @@ export class MoodleScraper extends BaseScraper {
       '.editing_button', '.mod-indent-outer',
       'script', 'style', 'noscript', 'form',
       '.langmenu', '.contextual-menu',
+      '#coursetools', '#coursetools-list', '.snap-draft-tag', '.snap-stealth-tag',
+      '.snap-completion-meta', '.badge-secondary', '.sr-only',
+      '.disabled-snap-asset-completion-tracking',
     ]);
 
+    // First, extract content from Snap theme's activity content blocks
+    const extractSnapContent = (container: Element) => {
+      // Extract from .snap-asset-content and .contentwithoutlink (Snap theme)
+      container.querySelectorAll('.snap-asset-content .contentwithoutlink, .snap-asset-content .no-overflow, .activity-description, .contentafterlink').forEach(contentEl => {
+        // Extract headings
+        contentEl.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(h => {
+          const text = h.textContent?.trim();
+          if (text && text.length > 2) {
+            const tag = h.tagName.toLowerCase();
+            elements.push({ type: 'heading', tag, content: text, level: parseInt(tag[1]) });
+          }
+        });
+        
+        // Extract paragraphs and text content
+        contentEl.querySelectorAll('p, .accordion-body, .card-body').forEach(p => {
+          const text = p.textContent?.trim();
+          if (text && text.length > 20) {
+            elements.push({ type: 'paragraph', content: text });
+          }
+        });
+        
+        // Extract lists
+        contentEl.querySelectorAll('ul, ol').forEach(list => {
+          const items: string[] = [];
+          list.querySelectorAll(':scope > li').forEach(li => {
+            const text = li.textContent?.trim();
+            if (text) items.push(text);
+          });
+          if (items.length > 0) {
+            elements.push({ type: 'list', tag: list.tagName.toLowerCase(), children: items });
+          }
+        });
+      });
+      
+      // Extract section summary
+      const summary = container.querySelector('.summary');
+      if (summary?.textContent?.trim() && summary.textContent.trim().length > 20) {
+        elements.push({ type: 'paragraph', content: summary.textContent.trim() });
+      }
+    };
+    
+    // Extract Snap theme content first
+    extractSnapContent(mainContent);
+    
     const processElement = (el: Element): void => {
       const tag = el.tagName.toLowerCase();
+      
+      // Skip if already processed by Snap extractor
+      if (el.matches('.snap-asset-content, .contentwithoutlink, .no-overflow') || el.closest('.snap-asset-content')) {
+        return;
+      }
       
       const skipArr = Array.from(skipSelectors);
       for (let i = 0; i < skipArr.length; i++) {
@@ -249,7 +341,25 @@ export class MoodleScraper extends BaseScraper {
       }
     });
 
-    return elements;
+    // Deduplicate elements based on content
+    const seenContent = new Set<string>();
+    const deduplicatedElements: ScrapedElement[] = [];
+    
+    for (const el of elements) {
+      const contentKey = el.content || (el.children ? el.children.join('|') : '');
+      // Skip very short content that might be just whitespace
+      if (contentKey.length < 5) continue;
+      
+      // Normalize content for comparison (remove extra whitespace)
+      const normalizedKey = contentKey.replace(/\s+/g, ' ').trim().toLowerCase();
+      
+      if (!seenContent.has(normalizedKey)) {
+        seenContent.add(normalizedKey);
+        deduplicatedElements.push(el);
+      }
+    }
+    
+    return deduplicatedElements;
   }
 
   extractMoodleLinks(doc: Document, baseUrl: string, scopeElement: Element | null = null): string[] {

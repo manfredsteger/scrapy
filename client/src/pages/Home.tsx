@@ -1300,15 +1300,16 @@ export default function Home() {
                       </DropdownMenuItem>
                       <DropdownMenuItem 
                         onClick={() => {
-                          if ((activeProject?.chunks?.length || 0) === 0) {
+                          const chunkCount = (activeProject as any)?.chunkCount || activeProject?.chunks?.length || 0;
+                          if (chunkCount === 0) {
                             toast({ title: t('noChunksYet'), variant: 'destructive' });
                             return;
                           }
                           toast({ title: t('exportRagPack'), description: 'Export wird vorbereitet...' });
                           window.open(`/api/projects/${activeProject!.id}/rag-pack`, '_blank');
                         }}
-                        className={`gap-2 ${(activeProject?.chunks?.length || 0) === 0 ? 'opacity-50' : ''}`}
-                        disabled={(activeProject?.chunks?.length || 0) === 0}
+                        className={`gap-2 ${((activeProject as any)?.chunkCount || activeProject?.chunks?.length || 0) === 0 ? 'opacity-50' : ''}`}
+                        disabled={((activeProject as any)?.chunkCount || activeProject?.chunks?.length || 0) === 0}
                       >
                         <Package className="w-4 h-4" />
                         {t('exportRagPack')}

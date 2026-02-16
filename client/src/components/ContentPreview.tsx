@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { X, Image as ImageIcon, Video, FileText, Hash, Copy, Check, ChevronDown, Layers, Tag, Sparkles } from 'lucide-react';
+import { X, Image as ImageIcon, Video, FileText, Hash, Copy, Check, ChevronDown, Layers, Tag, Sparkles, FileDown, ExternalLink } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -470,7 +470,7 @@ export default function ContentPreview({ entry, onClose, t, chunks = [] }: Conte
           </div>
         </div>
         
-        <div className={`grid ${hasChunks ? 'grid-cols-4' : 'grid-cols-3'} gap-4 p-4 border-b border-border shrink-0`}>
+        <div className={`grid ${hasChunks ? 'grid-cols-5' : (data?.linkedPdfs?.length ? 'grid-cols-4' : 'grid-cols-3')} gap-4 p-4 border-b border-border shrink-0`}>
           <div className="bg-secondary rounded-lg p-3 text-center">
             <FileText className="w-4 h-4 mx-auto mb-1 text-muted-foreground" />
             <p className="text-xs text-muted-foreground">{t('totalWords')}</p>
@@ -488,6 +488,13 @@ export default function ContentPreview({ entry, onClose, t, chunks = [] }: Conte
               {data?.orderedElements.filter(e => e.type === 'media').length}
             </p>
           </div>
+          {(data?.linkedPdfs?.length || 0) > 0 && (
+            <div className="bg-secondary rounded-lg p-3 text-center">
+              <FileDown className="w-4 h-4 mx-auto mb-1 text-red-500" />
+              <p className="text-xs text-muted-foreground">PDFs</p>
+              <p className="text-lg font-bold text-foreground">{data?.linkedPdfs?.length}</p>
+            </div>
+          )}
           {hasChunks && (
             <div className="bg-secondary rounded-lg p-3 text-center">
               <Layers className="w-4 h-4 mx-auto mb-1 text-muted-foreground" />
@@ -525,6 +532,43 @@ export default function ContentPreview({ entry, onClose, t, chunks = [] }: Conte
             {(!data?.orderedElements || data.orderedElements.length === 0) && (
               <div className="py-12 text-center">
                 <p className="text-muted-foreground">{t('noDataExtracted')}</p>
+              </div>
+            )}
+
+            {data?.linkedPdfs && data.linkedPdfs.length > 0 && (
+              <div className="mt-6 pt-4 border-t border-border">
+                <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-2 mb-3">
+                  <FileDown className="w-4 h-4 text-red-500" />
+                  Verlinkte PDFs ({data.linkedPdfs.length})
+                </h4>
+                <div className="space-y-2">
+                  {data.linkedPdfs.map((pdf, i) => (
+                    <div 
+                      key={i} 
+                      className="flex items-center gap-3 p-2 rounded-md bg-secondary"
+                      data-testid={`linked-pdf-${i}`}
+                    >
+                      <FileDown className="w-4 h-4 text-red-500 shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-foreground truncate">
+                          {pdf.title || pdf.linkText || pdf.url.split('/').pop() || 'PDF'}
+                        </p>
+                        <p className="text-xs text-muted-foreground truncate">{pdf.url}</p>
+                      </div>
+                      <a 
+                        href={pdf.url} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="shrink-0"
+                        data-testid={`link-pdf-open-${i}`}
+                      >
+                        <Button variant="ghost" size="icon">
+                          <ExternalLink className="w-4 h-4" />
+                        </Button>
+                      </a>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </div>

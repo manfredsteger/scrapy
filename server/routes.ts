@@ -2144,13 +2144,39 @@ function scrapePageContent(html: string, url: string, extractStructuredDataFlag:
       return count + (text.match(/\S+/g) || []).length;
     }, 0);
     
-    return {
+    // Extract PDF links from Moodle page
+    const moodlePdfs: Array<{ url: string; title?: string; linkText?: string }> = [];
+    const seenMoodlePdfUrls = new Set<string>();
+    doc.querySelectorAll('a[href]').forEach(anchor => {
+      const href = anchor.getAttribute('href');
+      if (!href) return;
+      try {
+        const absoluteUrl = new URL(href, effectiveBaseUrl).href;
+        const lowerUrl = absoluteUrl.toLowerCase();
+        if (lowerUrl.endsWith('.pdf') || lowerUrl.includes('.pdf?') || lowerUrl.includes('/pluginfile.php/') && lowerUrl.includes('pdf')) {
+          if (!seenMoodlePdfUrls.has(absoluteUrl)) {
+            seenMoodlePdfUrls.add(absoluteUrl);
+            const linkText = anchor.textContent?.trim() || undefined;
+            const titleAttr = anchor.getAttribute('title')?.trim() || undefined;
+            moodlePdfs.push({ url: absoluteUrl, title: titleAttr || linkText || undefined, linkText });
+          }
+        }
+      } catch {}
+    });
+    
+    const moodleResult: any = {
       title: result.title,
       timestamp: new Date().toISOString(),
       wordCount,
       structuredData,
       orderedElements: result.content,
     };
+    
+    if (moodlePdfs.length > 0) {
+      moodleResult.linkedPdfs = moodlePdfs;
+    }
+    
+    return moodleResult;
   }
   
   const orderedElements: any[] = [];
@@ -2585,12 +2611,43 @@ function scrapePageContent(html: string, url: string, extractStructuredDataFlag:
     });
   }
   
+  // Extract PDF links from the page
+  const linkedPdfs: Array<{ url: string; title?: string; linkText?: string }> = [];
+  const seenPdfUrls = new Set<string>();
+  
+  doc.querySelectorAll('a[href]').forEach(anchor => {
+    const href = anchor.getAttribute('href');
+    if (!href) return;
+    
+    try {
+      const absoluteUrl = new URL(href, effectiveBaseUrl).href;
+      const lowerUrl = absoluteUrl.toLowerCase();
+      
+      if (lowerUrl.endsWith('.pdf') || lowerUrl.includes('.pdf?') || lowerUrl.includes('/pdf/')) {
+        if (!seenPdfUrls.has(absoluteUrl)) {
+          seenPdfUrls.add(absoluteUrl);
+          const linkText = anchor.textContent?.trim() || undefined;
+          const titleAttr = anchor.getAttribute('title')?.trim() || undefined;
+          linkedPdfs.push({
+            url: absoluteUrl,
+            title: titleAttr || linkText || undefined,
+            linkText: linkText,
+          });
+        }
+      }
+    } catch {}
+  });
+
   const result: any = {
     title: doc.title || url,
     orderedElements,
     timestamp: new Date().toISOString(),
     wordCount: totalWords,
   };
+
+  if (linkedPdfs.length > 0) {
+    result.linkedPdfs = linkedPdfs;
+  }
 
   if (extractStructuredDataFlag) {
     const structuredData = extractStructuredData(doc);
@@ -3159,7 +3216,7 @@ export async function registerRoutes(
       const now = new Date().toISOString();
       const docId = `doc_${sha256(singlePage.url).slice(0, 12)}`;
 
-      const documentObj = {
+      const documentObj: any = {
         doc_id: docId,
         title: singlePage.title || '',
         url: singlePage.url,
@@ -3183,6 +3240,15 @@ export async function registerRoutes(
           content_sha256: sha256(JSON.stringify(singlePage.scrapedData?.orderedElements || [])),
         },
       };
+      
+      const spLinkedPdfs = (singlePage.scrapedData as any)?.linkedPdfs;
+      if (spLinkedPdfs && spLinkedPdfs.length > 0) {
+        documentObj.linked_pdfs = spLinkedPdfs.map((pdf: any) => ({
+          url: pdf.url,
+          title: pdf.title || pdf.linkText || undefined,
+          link_text: pdf.linkText || undefined,
+        }));
+      }
 
       const documentsJsonl = JSON.stringify(documentObj);
       const chunksJsonl = chunks.map(chunk => {
@@ -4218,7 +4284,7 @@ export async function registerRoutes(
       // Create documents.jsonl
       const documentsJsonl = scrapedResults.map(entry => {
         const docId = `doc_${sha256(entry.loc).slice(0, 12)}`;
-        return JSON.stringify({
+        const doc: any = {
           doc_id: docId,
           title: entry.scrapedData?.title || '',
           url: entry.loc,
@@ -4234,7 +4300,18 @@ export async function registerRoutes(
           hashes: {
             content_sha256: sha256(JSON.stringify(entry.scrapedData?.orderedElements || [])),
           },
-        });
+        };
+        
+        const linkedPdfs = (entry.scrapedData as any)?.linkedPdfs;
+        if (linkedPdfs && linkedPdfs.length > 0) {
+          doc.linked_pdfs = linkedPdfs.map((pdf: any) => ({
+            url: pdf.url,
+            title: pdf.title || pdf.linkText || undefined,
+            link_text: pdf.linkText || undefined,
+          }));
+        }
+        
+        return JSON.stringify(doc);
       }).join('\n');
 
       // Create chunks.jsonl - respect includeEmbeddings setting
@@ -4298,6 +4375,18 @@ export async function registerRoutes(
           "source": { "type": "object" },
           "dates": { "type": "object" },
           "hashes": { "type": "object" },
+          "linked_pdfs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "url": { "type": "string" },
+                "title": { "type": "string" },
+                "link_text": { "type": "string" }
+              },
+              "required": ["url"]
+            }
+          },
         },
       };
 

@@ -52,6 +52,13 @@ export const structuredDataSchema = z.object({
 
 export type StructuredData = z.infer<typeof structuredDataSchema>;
 
+// PDF link found on a page
+export const linkedPdfSchema = z.object({
+  url: z.string(),
+  title: z.string().optional(),
+  linkText: z.string().optional(),
+});
+
 // Scraped page content with DOM structure preserved
 export const scrapedDataSchema = z.object({
   title: z.string(),
@@ -60,6 +67,7 @@ export const scrapedDataSchema = z.object({
   wordCount: z.number(),
   rawHtml: z.string().optional(),
   structuredData: structuredDataSchema.optional(),
+  linkedPdfs: z.array(linkedPdfSchema).optional(),
 });
 
 // Sitemap URL entry
@@ -128,6 +136,7 @@ export type ImageMetadata = z.infer<typeof imageMetadataSchema>;
 export type VideoMetadata = z.infer<typeof videoMetadataSchema>;
 export type ScrapedElement = z.infer<typeof scrapedElementSchema>;
 export type ScrapedData = z.infer<typeof scrapedDataSchema>;
+export type LinkedPdf = z.infer<typeof linkedPdfSchema>;
 export type SitemapUrlEntry = z.infer<typeof sitemapUrlEntrySchema>;
 export type ScrapingError = z.infer<typeof scrapingErrorSchema>;
 export type ScrapingStats = z.infer<typeof scrapingStatsSchema>;

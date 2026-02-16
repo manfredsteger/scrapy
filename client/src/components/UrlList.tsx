@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { ExternalLink, CheckCircle, Clock, Search, Eye, ChevronDown, Loader2, XCircle, AlertCircle, RotateCcw } from 'lucide-react';
+import { ExternalLink, CheckCircle, Clock, Search, Eye, ChevronDown, Loader2, XCircle, AlertCircle, RotateCcw, FileDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -290,10 +290,18 @@ export default function UrlList({ urls, projectId, t, chunks = [], onRescrapeUrl
                   </td>
                   <td>
                     {url.scrapedData || url.hasScrapedData ? (
-                      <span className="badge-green whitespace-nowrap">
-                        <CheckCircle className="w-3 h-3 shrink-0" />
-                        Scraped
-                      </span>
+                      <div className="flex items-center gap-1 flex-wrap">
+                        <span className="badge-green whitespace-nowrap">
+                          <CheckCircle className="w-3 h-3 shrink-0" />
+                          Scraped
+                        </span>
+                        {((url as any).pdfCount > 0 || (url.scrapedData as any)?.linkedPdfs?.length > 0) && (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-red-500/10 text-red-500 border border-red-500/30 whitespace-nowrap" data-testid={`badge-pdf-${(url as any).pdfCount || (url.scrapedData as any)?.linkedPdfs?.length}`}>
+                            <FileDown className="w-3 h-3 shrink-0" />
+                            {(url as any).pdfCount || (url.scrapedData as any)?.linkedPdfs?.length} PDF
+                          </span>
+                        )}
+                      </div>
                     ) : (url as any).errorStatus === 'failed' ? (
                       <Tooltip>
                         <TooltipTrigger asChild>

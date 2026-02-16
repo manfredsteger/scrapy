@@ -2894,6 +2894,126 @@ export async function registerRoutes(
     }
   });
 
+  app.post('/api/projects/:id/sync-attachments', async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ message: 'Invalid project ID' });
+      }
+
+      const project = await storage.getProject(id);
+      if (!project) {
+        return res.status(404).json({ message: 'Project not found' });
+      }
+
+      const results = project.results || [];
+      const scrapedResults = results.filter((r: any) => r.scrapedData || r.hasScrapedData);
+
+      if (scrapedResults.length === 0) {
+        return res.status(400).json({ message: 'No scraped pages to sync attachments for' });
+      }
+
+      let rateLimiter: RateLimiter | undefined;
+      let proxyRotator: ProxyRotator | undefined;
+      if (project.projectSettings?.scraping) {
+        const settings = project.projectSettings.scraping;
+        rateLimiter = new RateLimiter(settings.rateLimiting);
+        proxyRotator = new ProxyRotator(settings.proxies, settings.rotateProxies);
+      }
+
+      const BATCH_SIZE = 5;
+      let totalSynced = 0;
+      let totalPdfsFound = 0;
+      let totalErrors = 0;
+
+      for (let i = 0; i < scrapedResults.length; i += BATCH_SIZE) {
+        const batch = scrapedResults.slice(i, i + BATCH_SIZE);
+        const pdfUpdates = new Map<string, any[]>();
+
+        await Promise.all(batch.map(async (entry: any) => {
+          const url = entry.loc;
+          try {
+            if (shouldSkipUrl(url)) return;
+
+            const { text: html } = await fetchWithRateLimitAndProxy(url, {
+              rateLimiter,
+              proxyRotator,
+              timeout: 10000,
+              retries: 1,
+            });
+
+            const { JSDOM } = await import('jsdom');
+            const dom = new JSDOM(html, { url });
+            const doc = dom.window.document;
+
+            const linkedPdfs: Array<{ url: string; title?: string; linkText?: string }> = [];
+            const seenPdfUrls = new Set<string>();
+            const effectiveBaseUrl = url;
+
+            doc.querySelectorAll('a[href]').forEach((anchor: any) => {
+              const href = anchor.getAttribute('href');
+              if (!href) return;
+              try {
+                const absoluteUrl = new URL(href, effectiveBaseUrl).href;
+                const lowerUrl = absoluteUrl.toLowerCase();
+                if (lowerUrl.endsWith('.pdf') || lowerUrl.includes('.pdf?') || lowerUrl.includes('/pdf/')) {
+                  if (!seenPdfUrls.has(absoluteUrl)) {
+                    seenPdfUrls.add(absoluteUrl);
+                    const linkText = anchor.textContent?.trim() || undefined;
+                    const titleAttr = anchor.getAttribute('title')?.trim() || undefined;
+                    linkedPdfs.push({
+                      url: absoluteUrl,
+                      title: titleAttr || linkText || undefined,
+                      linkText: linkText,
+                    });
+                  }
+                }
+              } catch {}
+            });
+
+            pdfUpdates.set(url, linkedPdfs);
+            totalPdfsFound += linkedPdfs.length;
+            totalSynced++;
+          } catch (err) {
+            totalErrors++;
+            console.error(`[SyncAttachments] Error fetching ${url}:`, (err as Error).message);
+          }
+        }));
+
+        if (pdfUpdates.size > 0) {
+          const currentProject = await storage.getProject(id);
+          if (currentProject) {
+            const updatedResults = (currentProject.results || []).map((existing: any) => {
+              const pdfs = pdfUpdates.get(existing.loc);
+              if (pdfs !== undefined && existing.scrapedData) {
+                return {
+                  ...existing,
+                  scrapedData: {
+                    ...existing.scrapedData,
+                    linkedPdfs: pdfs.length > 0 ? pdfs : undefined,
+                  },
+                };
+              }
+              return existing;
+            });
+            await storage.updateProject(id, { results: updatedResults });
+          }
+        }
+      }
+
+      console.log(`[SyncAttachments] Completed for project ${id}: ${totalSynced} pages synced, ${totalPdfsFound} PDFs found, ${totalErrors} errors`);
+      res.json({
+        message: `Anhänge synchronisiert: ${totalSynced} Seiten verarbeitet, ${totalPdfsFound} PDFs gefunden`,
+        synced: totalSynced,
+        pdfsFound: totalPdfsFound,
+        errors: totalErrors,
+      });
+    } catch (err) {
+      console.error('[SyncAttachments] Error:', err);
+      res.status(500).json({ message: 'Failed to sync attachments' });
+    }
+  });
+
   app.get(api.settings.get.path, async (req, res) => {
     const key = Array.isArray(req.params.key) ? req.params.key[0] : req.params.key;
     const setting = await storage.getSetting(key);

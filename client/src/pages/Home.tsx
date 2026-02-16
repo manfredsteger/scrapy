@@ -4,7 +4,7 @@ import { useQuery, useMutation } from '@tanstack/react-query';
 import { 
   Play, Square, Loader2, Download, Settings, 
   Trash2, ScanText, Globe, ArrowLeft, Plus, RefreshCw, Pause, X,
-  Layers, Package, Cog, FileText, AlertTriangle, Pencil
+  Layers, Package, Cog, FileText, AlertTriangle, Pencil, Paperclip
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -1282,6 +1282,30 @@ export default function Home() {
                       <DropdownMenuItem onClick={startContentScrape} className="gap-2">
                         <ScanText className="w-4 h-4" />
                         {t('scrapeAllContent')}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem 
+                        onClick={async () => {
+                          if (!activeProject) return;
+                          const scrapedCount = activeProject?.results?.filter((r: any) => r.scrapedData || r.hasScrapedData).length || 0;
+                          if (scrapedCount === 0) {
+                            toast({ title: t('deepScrapingRequired'), variant: 'destructive' });
+                            return;
+                          }
+                          toast({ title: t('syncAttachmentsStarted') });
+                          try {
+                            const res = await apiRequest('POST', `/api/projects/${activeProject.id}/sync-attachments`);
+                            const data = await res.json();
+                            toast({ title: t('syncAttachmentsComplete'), description: data.message });
+                            queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
+                          } catch (err) {
+                            toast({ title: t('syncAttachmentsError'), variant: 'destructive' });
+                          }
+                        }}
+                        className={`gap-2 ${(activeProject?.results?.filter((r: any) => r.scrapedData || r.hasScrapedData).length || 0) === 0 ? 'opacity-50' : ''}`}
+                        disabled={(activeProject?.results?.filter((r: any) => r.scrapedData || r.hasScrapedData).length || 0) === 0}
+                      >
+                        <Paperclip className="w-4 h-4" />
+                        {t('syncAttachments')}
                       </DropdownMenuItem>
                       <DropdownMenuItem 
                         onClick={() => {

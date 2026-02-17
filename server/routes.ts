@@ -1448,7 +1448,9 @@ function chunkText(
   let currentHeadingPath: string[] = [];
 
   function saveTextChunk(): boolean {
-    if (currentChunk && estimateTokens(currentChunk) >= minChunkTokens) {
+    if (!currentChunk || !currentChunk.trim()) return false;
+    const tokens = estimateTokens(currentChunk);
+    if (tokens >= minChunkTokens) {
       chunks.push({ 
         text: currentChunk.trim(), 
         heading: currentHeading,
@@ -1457,6 +1459,12 @@ function chunkText(
       });
       return true;
     }
+    // Short chunk: merge with previous text chunk if possible (merge_if_possible_else_drop)
+    if (chunks.length > 0 && chunks[chunks.length - 1].type === 'text') {
+      chunks[chunks.length - 1].text += '\n\n' + currentChunk.trim();
+      return true;
+    }
+    // No previous text chunk to merge with: drop the short chunk
     return false;
   }
 
@@ -3620,10 +3628,28 @@ export async function registerRoutes(
       const manifest: any = {
         version: '1.0',
         created_at: now,
+        generator: {
+          name: 'MapScraper Pro',
+          version: '1.0',
+        },
         source: {
           url: singlePage.url,
           domain: singlePage.domain,
           type: 'single_page',
+        },
+        chunking: {
+          profile: 'retrieval_v1',
+          tokenizer: 'cl100k_base',
+          chunk_size_tokens: 512,
+          chunk_overlap_tokens: 100,
+          min_chunk_tokens: 80,
+          split_strategy: 'semantic_paragraph_then_token',
+          short_chunk_policy: 'merge_if_possible_else_drop',
+          dedup: {
+            enabled: true,
+            method: 'text_sha256_and_jaccard_per_doc',
+            similarity_threshold: 0.90,
+          },
         },
         counts: {
           documents: 1,
@@ -4830,9 +4856,11 @@ export async function registerRoutes(
 
       // Create manifest.json
       const chunkingSettings = project.projectSettings?.chunking || {
-        targetTokens: 350,
-        overlapTokens: 55,
+        targetTokens: 512,
+        overlapTokens: 100,
+        minChunkTokens: 80,
         boundaryRules: ['paragraph', 'heading'],
+        deduplication: { enabled: true, similarityThreshold: 0.90 },
       };
 
       const manifest = {
@@ -4847,9 +4875,19 @@ export async function registerRoutes(
           project_name: project.displayName || project.domain,
         },
         chunking: {
-          target_tokens: chunkingSettings.targetTokens,
-          overlap_tokens: chunkingSettings.overlapTokens,
+          profile: 'retrieval_v1',
+          tokenizer: 'cl100k_base',
+          chunk_size_tokens: chunkingSettings.targetTokens,
+          chunk_overlap_tokens: chunkingSettings.overlapTokens,
+          min_chunk_tokens: chunkingSettings.minChunkTokens || 80,
+          split_strategy: 'semantic_paragraph_then_token',
+          short_chunk_policy: 'merge_if_possible_else_drop',
           boundary_rules: chunkingSettings.boundaryRules,
+          dedup: {
+            enabled: chunkingSettings.deduplication?.enabled ?? true,
+            method: 'text_sha256_and_jaccard_per_doc',
+            similarity_threshold: chunkingSettings.deduplication?.similarityThreshold ?? 0.90,
+          },
         },
         export: {
           formats: exportFormats,

@@ -1019,8 +1019,7 @@ export default function Home() {
   const isActivelyProcessing = activeProject?.status === 'content_scraping' || activeProject?.status === 'content_paused';
   const pendingContentScrape = isActivelyProcessing ? remainingUrls : Math.max(0, urlCount - scrapedCount - failedCount);
   const attachmentCount = (activeProject?.results || []).reduce((sum, r: any) => {
-    const pdfs = r.scrapedData?.linkedPdfs;
-    return sum + (Array.isArray(pdfs) ? pdfs.length : 0);
+    return sum + (r.pdfCount || 0);
   }, 0);
   const errorsArrayCount = (activeProject?.errors || []).length;
   const hasUnsyncedErrors = errorsArrayCount > 0 && pendingContentScrape > 0;

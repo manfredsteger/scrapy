@@ -41,11 +41,15 @@ MapScraper Pro utilizes a monorepo structure, hosting both the React TypeScript 
 - **Schema Management**: Drizzle ORM defines database schemas in `shared/schema.ts`, with migrations handled by Drizzle Kit.
 - **Access Pattern**: Repository pattern implemented in `server/storage.ts` for data access.
 
-### RAG Pack Generation
-- **Chunking System**: Token-based chunking using `gpt-tokenizer`, configurable target/overlap tokens, sentence-based overlap, preservation of heading hierarchy, tables, and code blocks. Includes SHA256 hashing for integrity and quality checks.
+### RAG Pack Generation (v2.0)
+- **Chunking System**: Fast character-based token estimation (`text.length / 4`), configurable target/overlap tokens, sentence-based overlap, preservation of heading hierarchy, tables, and code blocks. Includes SHA256 hashing for integrity and quality checks.
+- **PDF Text Extraction**: Uses `pdf-parse` for text extraction from linked PDFs. Multi-stage quality validation: PDF signature check, garbage ratio analysis (<5%), real word detection (≥5 words), minimum length check. Valid PDFs are chunked as separate document entries; invalid/binary PDFs are tracked in `quality_report`.
+- **Clean Title System**: Prevents URLs/filenames as titles. Fallback chain: PDF metadata → first heading → slugified filename. HTML titles cleaned of common suffixes.
+- **Enhanced Document Metadata**: `file_type` (html/pdf), `file_name`, `description`, `category` (from URL path), `source_fingerprint`, `pdf_has_text_layer`, `total_pages`.
 - **Deduplication**: Exact and near-duplicate detection using SHA256 and Jaccard similarity.
 - **AI Enrichment**: Integration with OpenAI (requires `OPENAI_API_KEY`) for embeddings generation, keyword extraction, summary generation, category recognition, and named entity extraction.
-- **Export Format**: RAG Packs are exported as ZIP archives containing `manifest.json`, `documents.jsonl`, `chunks.jsonl`, and JSON schemas for validation.
+- **Export Format**: RAG Packs v2.0 exported as ZIP archives containing `manifest.json` (with `quality_report`), `documents.jsonl`, `chunks.jsonl`, `assets.jsonl`, and JSON schemas. Quality report tracks: text layer stats, token statistics (min/max/avg), skipped binary PDFs list.
+- **Performance**: All token estimation uses fast approximation (`text.length / 4`), no expensive `gpt-tokenizer` encode() calls in chunking pipeline.
 
 ## External Dependencies
 

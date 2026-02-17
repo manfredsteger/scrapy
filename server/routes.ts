@@ -2894,23 +2894,61 @@ export async function registerRoutes(
     }
   });
 
-  app.post('/api/projects/:id/sync-attachments', async (req, res) => {
+  app.get('/api/projects/:id/sync-attachments', async (req, res) => {
+    const id = Number(req.params.id);
+    if (isNaN(id)) {
+      return res.status(400).json({ message: 'Invalid project ID' });
+    }
+
+    const project = await storage.getProject(id);
+    if (!project) {
+      return res.status(404).json({ message: 'Project not found' });
+    }
+
+    const allResults = project.results || [];
+    if (allResults.length === 0) {
+      return res.status(400).json({ message: 'No pages in project' });
+    }
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    });
+
+    let clientDisconnected = false;
+    req.on('close', () => { clientDisconnected = true; });
+
+    const sendEvent = (event: string, data: any) => {
+      if (clientDisconnected) return;
+      try {
+        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      } catch {}
+    };
+
     try {
-      const id = Number(req.params.id);
-      if (isNaN(id)) {
-        return res.status(400).json({ message: 'Invalid project ID' });
+      const directPdfUrls = new Set<string>();
+      const htmlResults: any[] = [];
+
+      for (const r of allResults) {
+        const loc = r.loc || '';
+        const lowerLoc = loc.toLowerCase();
+        if (lowerLoc.endsWith('.pdf') || lowerLoc.includes('.pdf?')) {
+          directPdfUrls.add(loc);
+        } else if (r.scrapedData || r.hasScrapedData) {
+          htmlResults.push(r);
+        }
       }
 
-      const project = await storage.getProject(id);
-      if (!project) {
-        return res.status(404).json({ message: 'Project not found' });
-      }
+      sendEvent('init', {
+        totalHtmlPages: htmlResults.length,
+        directPdfUrls: directPdfUrls.size,
+      });
 
-      const results = project.results || [];
-      const scrapedResults = results.filter((r: any) => r.scrapedData || r.hasScrapedData);
-
-      if (scrapedResults.length === 0) {
-        return res.status(400).json({ message: 'No scraped pages to sync attachments for' });
+      if (htmlResults.length === 0 && directPdfUrls.size === 0) {
+        sendEvent('complete', { synced: 0, directPdfs: 0, pdfsFound: 0, errors: 0, skipped: 0 });
+        res.end();
+        return;
       }
 
       let rateLimiter: RateLimiter | undefined;
@@ -2921,19 +2959,27 @@ export async function registerRoutes(
         proxyRotator = new ProxyRotator(settings.proxies, settings.rotateProxies);
       }
 
-      const BATCH_SIZE = 5;
+      const BATCH_SIZE = 10;
       let totalSynced = 0;
       let totalPdfsFound = 0;
       let totalErrors = 0;
+      let totalSkipped = 0;
+      const allPdfUpdates = new Map<string, any[]>();
 
-      for (let i = 0; i < scrapedResults.length; i += BATCH_SIZE) {
-        const batch = scrapedResults.slice(i, i + BATCH_SIZE);
-        const pdfUpdates = new Map<string, any[]>();
+      for (let i = 0; i < htmlResults.length; i += BATCH_SIZE) {
+        if (clientDisconnected) break;
+
+        const batch = htmlResults.slice(i, i + BATCH_SIZE);
 
         await Promise.all(batch.map(async (entry: any) => {
+          if (clientDisconnected) return;
           const url = entry.loc;
           try {
-            if (shouldSkipUrl(url)) return;
+            if (shouldSkipUrl(url)) {
+              totalSkipped++;
+              allPdfUpdates.set(url, []);
+              return;
+            }
 
             const { text: html } = await fetchWithRateLimitAndProxy(url, {
               rateLimiter,
@@ -2948,13 +2994,12 @@ export async function registerRoutes(
 
             const linkedPdfs: Array<{ url: string; title?: string; linkText?: string }> = [];
             const seenPdfUrls = new Set<string>();
-            const effectiveBaseUrl = url;
 
             doc.querySelectorAll('a[href]').forEach((anchor: any) => {
               const href = anchor.getAttribute('href');
               if (!href) return;
               try {
-                const absoluteUrl = new URL(href, effectiveBaseUrl).href;
+                const absoluteUrl = new URL(href, url).href;
                 const lowerUrl = absoluteUrl.toLowerCase();
                 if (lowerUrl.endsWith('.pdf') || lowerUrl.includes('.pdf?') || lowerUrl.includes('/pdf/')) {
                   if (!seenPdfUrls.has(absoluteUrl)) {
@@ -2971,46 +3016,84 @@ export async function registerRoutes(
               } catch {}
             });
 
-            pdfUpdates.set(url, linkedPdfs);
+            allPdfUpdates.set(url, linkedPdfs);
             totalPdfsFound += linkedPdfs.length;
             totalSynced++;
           } catch (err) {
             totalErrors++;
-            console.error(`[SyncAttachments] Error fetching ${url}:`, (err as Error).message);
+            allPdfUpdates.set(url, []);
           }
         }));
 
-        if (pdfUpdates.size > 0) {
-          const currentProject = await storage.getProject(id);
-          if (currentProject) {
-            const updatedResults = (currentProject.results || []).map((existing: any) => {
-              const pdfs = pdfUpdates.get(existing.loc);
-              if (pdfs !== undefined && existing.scrapedData) {
-                return {
-                  ...existing,
-                  scrapedData: {
-                    ...existing.scrapedData,
-                    linkedPdfs: pdfs.length > 0 ? pdfs : undefined,
-                  },
-                };
-              }
-              return existing;
-            });
-            await storage.updateProject(id, { results: updatedResults });
-          }
+        sendEvent('progress', {
+          processed: Math.min(i + BATCH_SIZE, htmlResults.length),
+          total: htmlResults.length,
+          pdfsFound: totalPdfsFound,
+          errors: totalErrors,
+        });
+      }
+
+      if (!clientDisconnected) {
+        const currentProject = await storage.getProject(id);
+        if (currentProject) {
+          const updatedResults = (currentProject.results || []).map((existing: any) => {
+            const loc = existing.loc || '';
+            const lowerLoc = loc.toLowerCase();
+
+            if (lowerLoc.endsWith('.pdf') || lowerLoc.includes('.pdf?')) {
+              const filename = loc.split('/').pop()?.replace(/\.pdf.*$/i, '') || 'PDF';
+              return {
+                ...existing,
+                scrapedData: {
+                  title: existing.scrapedData?.title || filename,
+                  orderedElements: existing.scrapedData?.orderedElements || [],
+                  timestamp: new Date().toISOString(),
+                  wordCount: existing.scrapedData?.wordCount || 0,
+                  isPdfEntry: true,
+                  linkedPdfs: [{
+                    url: loc,
+                    title: filename,
+                    linkText: filename,
+                  }],
+                },
+                hasScrapedData: true,
+              };
+            }
+
+            const pdfs = allPdfUpdates.get(loc);
+            if (pdfs !== undefined && existing.scrapedData) {
+              return {
+                ...existing,
+                scrapedData: {
+                  ...existing.scrapedData,
+                  linkedPdfs: pdfs.length > 0 ? pdfs : undefined,
+                },
+              };
+            }
+            return existing;
+          });
+          await storage.updateProject(id, { results: updatedResults });
         }
       }
 
-      console.log(`[SyncAttachments] Completed for project ${id}: ${totalSynced} pages synced, ${totalPdfsFound} PDFs found, ${totalErrors} errors`);
-      res.json({
-        message: `Anhänge synchronisiert: ${totalSynced} Seiten verarbeitet, ${totalPdfsFound} PDFs gefunden`,
+      const directPdfCount = directPdfUrls.size;
+      totalPdfsFound += directPdfCount;
+
+      console.log(`[SyncAttachments] Completed for project ${id}: ${totalSynced} HTML pages, ${directPdfCount} direct PDFs, ${totalPdfsFound} total PDFs, ${totalErrors} errors`);
+
+      sendEvent('complete', {
         synced: totalSynced,
+        directPdfs: directPdfCount,
         pdfsFound: totalPdfsFound,
         errors: totalErrors,
+        skipped: totalSkipped,
       });
+
+      res.end();
     } catch (err) {
       console.error('[SyncAttachments] Error:', err);
-      res.status(500).json({ message: 'Failed to sync attachments' });
+      sendEvent('sync-error', { message: 'Sync failed: ' + (err as Error).message });
+      res.end();
     }
   });
 

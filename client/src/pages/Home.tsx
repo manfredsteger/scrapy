@@ -26,6 +26,8 @@ import ProjectCard from '@/components/ProjectCard';
 import ProjectSettings from '@/components/ProjectSettings';
 import ChunkingProgress from '@/components/ChunkingProgress';
 import ConfirmDialog from '@/components/ConfirmDialog';
+import { Progress } from '@/components/ui/progress';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useLanguage } from '@/hooks/use-language';
 import { useToast } from '@/hooks/use-toast';
 import { apiRequest, queryClient } from '@/lib/queryClient';
@@ -43,6 +45,15 @@ export default function Home() {
   const [showNewProject, setShowNewProject] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showChunkingProgress, setShowChunkingProgress] = useState(false);
+  const [attachmentSync, setAttachmentSync] = useState<{
+    active: boolean;
+    processed: number;
+    total: number;
+    pdfsFound: number;
+    directPdfs: number;
+    errors: number;
+    done: boolean;
+  } | null>(null);
   const [singleUrlInput, setSingleUrlInput] = useState('');
   const [deleteConfirm, setDeleteConfirm] = useState<{ open: boolean; projectId: number | null; projectName: string }>({
     open: false,
@@ -1284,25 +1295,40 @@ export default function Home() {
                         {t('scrapeAllContent')}
                       </DropdownMenuItem>
                       <DropdownMenuItem 
-                        onClick={async () => {
+                        onClick={() => {
                           if (!activeProject) return;
-                          const scrapedCount = activeProject?.results?.filter((r: any) => r.scrapedData || r.hasScrapedData).length || 0;
-                          if (scrapedCount === 0) {
-                            toast({ title: t('deepScrapingRequired'), variant: 'destructive' });
-                            return;
-                          }
-                          toast({ title: t('syncAttachmentsStarted') });
-                          try {
-                            const res = await apiRequest('POST', `/api/projects/${activeProject.id}/sync-attachments`);
-                            const data = await res.json();
-                            toast({ title: t('syncAttachmentsComplete'), description: data.message });
+                          setAttachmentSync({ active: true, processed: 0, total: 0, pdfsFound: 0, directPdfs: 0, errors: 0, done: false });
+                          const es = new EventSource(`/api/projects/${activeProject.id}/sync-attachments`);
+                          es.addEventListener('init', (e) => {
+                            const data = JSON.parse(e.data);
+                            setAttachmentSync(prev => prev ? { ...prev, total: data.totalHtmlPages, directPdfs: data.directPdfUrls } : prev);
+                          });
+                          es.addEventListener('progress', (e) => {
+                            const data = JSON.parse(e.data);
+                            setAttachmentSync(prev => prev ? { ...prev, processed: data.processed, pdfsFound: data.pdfsFound, errors: data.errors } : prev);
+                          });
+                          es.addEventListener('complete', (e) => {
+                            const data = JSON.parse(e.data);
+                            setAttachmentSync(prev => prev ? { ...prev, processed: prev.total, pdfsFound: data.pdfsFound, directPdfs: data.directPdfs, errors: data.errors, done: true } : prev);
                             queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
-                          } catch (err) {
+                            es.close();
+                          });
+                          es.addEventListener('sync-error', (e) => {
+                            const data = JSON.parse(e.data);
+                            setAttachmentSync(prev => prev ? { ...prev, done: true } : prev);
+                            toast({ title: t('syncAttachmentsError'), description: data.message, variant: 'destructive' });
+                            es.close();
+                          });
+                          es.onerror = () => {
+                            if (es.readyState === EventSource.CLOSED) return;
+                            setAttachmentSync(prev => prev ? { ...prev, done: true } : prev);
                             toast({ title: t('syncAttachmentsError'), variant: 'destructive' });
-                          }
+                            es.close();
+                          };
                         }}
-                        className={`gap-2 ${(activeProject?.results?.filter((r: any) => r.scrapedData || r.hasScrapedData).length || 0) === 0 ? 'opacity-50' : ''}`}
-                        disabled={(activeProject?.results?.filter((r: any) => r.scrapedData || r.hasScrapedData).length || 0) === 0}
+                        className="gap-2"
+                        disabled={attachmentSync?.active && !attachmentSync?.done}
+                        data-testid="button-sync-attachments"
                       >
                         <Paperclip className="w-4 h-4" />
                         {t('syncAttachments')}
@@ -1673,6 +1699,68 @@ export default function Home() {
           }}
           t={t}
         />
+      )}
+
+      {attachmentSync && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" data-testid="attachment-sync-dialog">
+          <Card className="w-full max-w-md mx-4">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Paperclip className="w-5 h-5" />
+                {t('syncAttachments')}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {!attachmentSync.done && attachmentSync.total > 0 && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">
+                      {attachmentSync.processed} / {attachmentSync.total} HTML-Seiten
+                    </span>
+                    <span className="font-medium">
+                      {Math.round((attachmentSync.processed / attachmentSync.total) * 100)}%
+                    </span>
+                  </div>
+                  <Progress value={(attachmentSync.processed / attachmentSync.total) * 100} />
+                </div>
+              )}
+
+              {!attachmentSync.done && attachmentSync.total === 0 && (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  {t('syncAttachmentsStarted')}
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div className="bg-muted/50 rounded-md p-2.5">
+                  <div className="text-muted-foreground text-xs mb-0.5">PDFs auf HTML-Seiten</div>
+                  <div className="font-semibold text-lg" data-testid="text-pdfs-found">{attachmentSync.pdfsFound}</div>
+                </div>
+                <div className="bg-muted/50 rounded-md p-2.5">
+                  <div className="text-muted-foreground text-xs mb-0.5">Direkte PDF-URLs</div>
+                  <div className="font-semibold text-lg" data-testid="text-direct-pdfs">{attachmentSync.directPdfs}</div>
+                </div>
+                {attachmentSync.errors > 0 && (
+                  <div className="bg-destructive/10 rounded-md p-2.5 col-span-2">
+                    <div className="text-destructive text-xs mb-0.5">Fehler</div>
+                    <div className="font-semibold text-lg text-destructive">{attachmentSync.errors}</div>
+                  </div>
+                )}
+              </div>
+
+              {attachmentSync.done && (
+                <Button
+                  className="w-full"
+                  onClick={() => setAttachmentSync(null)}
+                  data-testid="button-close-sync-dialog"
+                >
+                  {t('close') || 'Schließen'}
+                </Button>
+              )}
+            </CardContent>
+          </Card>
+        </div>
       )}
 
       <ConfirmDialog

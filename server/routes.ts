@@ -398,6 +398,7 @@ function getDefaultSettings(): ProjectSettings {
     export: {
       formats: ['json'],
       includeEmbeddings: false,
+      includeAssets: true,
       incrementalUpdates: true,
     },
   };
@@ -3519,13 +3520,73 @@ export async function registerRoutes(
         },
       };
       
+      // Download and embed PDFs
       const spLinkedPdfs = (singlePage.scrapedData as any)?.linkedPdfs;
+      const spAssetEntries: Array<{ asset_id: string; doc_id: string; url: string; title?: string; link_text?: string; filename: string; path: string; size_bytes: number; mime_type: string; downloaded: boolean; error?: string }> = [];
+      const spAssetPathMap = new Map<string, string>();
+
       if (spLinkedPdfs && spLinkedPdfs.length > 0) {
-        documentObj.linked_pdfs = spLinkedPdfs.map((pdf: any) => ({
-          url: pdf.url,
-          title: pdf.title || pdf.linkText || undefined,
-          link_text: pdf.linkText || undefined,
-        }));
+        const assetsFolder = zip.folder('assets');
+        const seenUrls = new Set<string>();
+        let idx = 0;
+
+        for (const pdf of spLinkedPdfs) {
+          if (!pdf.url || seenUrls.has(pdf.url)) continue;
+          seenUrls.add(pdf.url);
+
+          const urlPath = pdf.url.split('/').pop()?.split('?')[0] || `document_${idx}`;
+          const safeName = urlPath.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 100);
+          const urlHash = sha256(pdf.url).slice(0, 8);
+          const baseName = safeName.endsWith('.pdf') ? safeName.slice(0, -4) : safeName;
+          const fname = `${baseName}_${urlHash}.pdf`;
+          const assetPath = `assets/${fname}`;
+
+          try {
+            const response = await fetch(pdf.url, {
+              headers: { 'User-Agent': 'MapScraperPro/1.0' },
+              signal: AbortSignal.timeout(30000),
+            });
+            if (response.ok) {
+              const buffer = Buffer.from(await response.arrayBuffer());
+              assetsFolder?.file(fname, buffer);
+              spAssetPathMap.set(pdf.url, assetPath);
+              spAssetEntries.push({
+                asset_id: `asset_${sha256(pdf.url).slice(0, 12)}`,
+                doc_id: docId, url: pdf.url, title: pdf.title, link_text: pdf.linkText,
+                filename: fname, path: assetPath, size_bytes: buffer.length,
+                mime_type: response.headers.get('content-type') || 'application/pdf', downloaded: true,
+              });
+            } else {
+              spAssetEntries.push({
+                asset_id: `asset_${sha256(pdf.url).slice(0, 12)}`,
+                doc_id: docId, url: pdf.url, title: pdf.title, link_text: pdf.linkText,
+                filename: '', path: '', size_bytes: 0, mime_type: 'application/pdf',
+                downloaded: false, error: `HTTP ${response.status}`,
+              });
+            }
+          } catch (err) {
+            spAssetEntries.push({
+              asset_id: `asset_${sha256(pdf.url).slice(0, 12)}`,
+              doc_id: docId, url: pdf.url, title: pdf.title, link_text: pdf.linkText,
+              filename: '', path: '', size_bytes: 0, mime_type: 'application/pdf',
+              downloaded: false, error: (err as Error).message,
+            });
+          }
+          idx++;
+        }
+
+        documentObj.linked_pdfs = spLinkedPdfs.map((pdf: any) => {
+          const entry: any = {
+            url: pdf.url,
+            title: pdf.title || pdf.linkText || undefined,
+            link_text: pdf.linkText || undefined,
+          };
+          const localPath = spAssetPathMap.get(pdf.url);
+          if (localPath) {
+            entry.local_path = localPath;
+          }
+          return entry;
+        });
       }
 
       const documentsJsonl = JSON.stringify(documentObj);
@@ -3534,7 +3595,12 @@ export async function registerRoutes(
         return JSON.stringify(chunkWithoutEmbedding);
       }).join('\n');
 
-      const manifest = {
+      let spAssetsJsonl = '';
+      if (spAssetEntries.length > 0) {
+        spAssetsJsonl = spAssetEntries.map(a => JSON.stringify(a)).join('\n');
+      }
+
+      const manifest: any = {
         version: '1.0',
         created_at: now,
         source: {
@@ -3545,6 +3611,7 @@ export async function registerRoutes(
         counts: {
           documents: 1,
           chunks: chunks.length,
+          assets: spAssetEntries.filter(a => a.downloaded).length,
         },
         checksums: {
           documents_sha256: sha256(documentsJsonl),
@@ -3552,9 +3619,16 @@ export async function registerRoutes(
         },
       };
 
+      if (spAssetsJsonl) {
+        manifest.checksums.assets_sha256 = sha256(spAssetsJsonl);
+      }
+
       zip.file('manifest.json', JSON.stringify(manifest, null, 2));
       zip.file('documents.jsonl', documentsJsonl);
       zip.file('chunks.jsonl', chunksJsonl);
+      if (spAssetsJsonl) {
+        zip.file('assets.jsonl', spAssetsJsonl);
+      }
 
       const schemaFolder = zip.folder('schema');
       schemaFolder?.file('manifest.schema.json', JSON.stringify({
@@ -4553,11 +4627,129 @@ export async function registerRoutes(
 
       const settings = project.projectSettings || getDefaultSettings();
       const includeEmbeddings = settings.export?.includeEmbeddings ?? false;
+      const includeAssets = settings.export?.includeAssets ?? true;
       const exportFormats = settings.export?.formats || ['json'];
 
       const scrapedResults = (project.results || []).filter(r => r.scrapedData);
       const zip = new JSZip();
       const now = new Date().toISOString();
+
+      // Collect all linked PDFs across all documents
+      const allAssets: Array<{ url: string; title?: string; linkText?: string; docId: string; docUrl: string }> = [];
+      for (const entry of scrapedResults) {
+        const docId = `doc_${sha256(entry.loc).slice(0, 12)}`;
+        const linkedPdfs = (entry.scrapedData as any)?.linkedPdfs;
+        if (linkedPdfs && Array.isArray(linkedPdfs)) {
+          for (const pdf of linkedPdfs) {
+            if (pdf.url) {
+              allAssets.push({ url: pdf.url, title: pdf.title, linkText: pdf.linkText, docId, docUrl: entry.loc });
+            }
+          }
+        }
+      }
+
+      // Download and embed PDFs if includeAssets is enabled
+      const assetEntries: Array<{ asset_id: string; doc_id: string; doc_url: string; url: string; title?: string; link_text?: string; filename: string; path: string; size_bytes: number; mime_type: string; downloaded: boolean; error?: string }> = [];
+      const assetPathMap = new Map<string, string>();
+
+      if (includeAssets && allAssets.length > 0) {
+        const assetsFolder = zip.folder('assets');
+        const seenUrls = new Set<string>();
+        let assetIndex = 0;
+
+        for (const asset of allAssets) {
+          if (seenUrls.has(asset.url)) {
+            const existingPath = assetPathMap.get(asset.url);
+            if (existingPath) {
+              assetEntries.push({
+                asset_id: `asset_${sha256(asset.url).slice(0, 12)}`,
+                doc_id: asset.docId,
+                doc_url: asset.docUrl,
+                url: asset.url,
+                title: asset.title,
+                link_text: asset.linkText,
+                filename: existingPath.split('/').pop() || '',
+                path: existingPath,
+                size_bytes: 0,
+                mime_type: 'application/pdf',
+                downloaded: true,
+              });
+            }
+            continue;
+          }
+          seenUrls.add(asset.url);
+
+          const urlPath = asset.url.split('/').pop()?.split('?')[0] || `document_${assetIndex}`;
+          const safeName = urlPath.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 100);
+          const urlHash = sha256(asset.url).slice(0, 8);
+          const baseName = safeName.endsWith('.pdf') ? safeName.slice(0, -4) : safeName;
+          const filename = `${baseName}_${urlHash}.pdf`;
+          const assetPath = `assets/${filename}`;
+
+          try {
+            console.log(`[RAG Pack] Downloading asset ${assetIndex + 1}/${seenUrls.size}: ${asset.url.slice(0, 80)}`);
+            const response = await fetch(asset.url, {
+              headers: { 'User-Agent': 'MapScraperPro/1.0' },
+              signal: AbortSignal.timeout(30000),
+            });
+
+            if (response.ok) {
+              const buffer = Buffer.from(await response.arrayBuffer());
+              assetsFolder?.file(filename, buffer);
+              assetPathMap.set(asset.url, assetPath);
+
+              assetEntries.push({
+                asset_id: `asset_${sha256(asset.url).slice(0, 12)}`,
+                doc_id: asset.docId,
+                doc_url: asset.docUrl,
+                url: asset.url,
+                title: asset.title,
+                link_text: asset.linkText,
+                filename,
+                path: assetPath,
+                size_bytes: buffer.length,
+                mime_type: response.headers.get('content-type') || 'application/pdf',
+                downloaded: true,
+              });
+            } else {
+              console.warn(`[RAG Pack] Failed to download ${asset.url}: HTTP ${response.status}`);
+              assetEntries.push({
+                asset_id: `asset_${sha256(asset.url).slice(0, 12)}`,
+                doc_id: asset.docId,
+                doc_url: asset.docUrl,
+                url: asset.url,
+                title: asset.title,
+                link_text: asset.linkText,
+                filename: '',
+                path: '',
+                size_bytes: 0,
+                mime_type: 'application/pdf',
+                downloaded: false,
+                error: `HTTP ${response.status}`,
+              });
+            }
+          } catch (err) {
+            console.warn(`[RAG Pack] Error downloading ${asset.url}:`, (err as Error).message);
+            assetEntries.push({
+              asset_id: `asset_${sha256(asset.url).slice(0, 12)}`,
+              doc_id: asset.docId,
+              doc_url: asset.docUrl,
+              url: asset.url,
+              title: asset.title,
+              link_text: asset.linkText,
+              filename: '',
+              path: '',
+              size_bytes: 0,
+              mime_type: 'application/pdf',
+              downloaded: false,
+              error: (err as Error).message,
+            });
+          }
+          assetIndex++;
+        }
+
+        console.log(`[RAG Pack] Downloaded ${assetEntries.filter(a => a.downloaded).length}/${seenUrls.size} unique assets`);
+      }
 
       // Create documents.jsonl
       const documentsJsonl = scrapedResults.map(entry => {
@@ -4582,11 +4774,20 @@ export async function registerRoutes(
         
         const linkedPdfs = (entry.scrapedData as any)?.linkedPdfs;
         if (linkedPdfs && linkedPdfs.length > 0) {
-          doc.linked_pdfs = linkedPdfs.map((pdf: any) => ({
-            url: pdf.url,
-            title: pdf.title || pdf.linkText || undefined,
-            link_text: pdf.linkText || undefined,
-          }));
+          doc.linked_pdfs = linkedPdfs.map((pdf: any) => {
+            const entry: any = {
+              url: pdf.url,
+              title: pdf.title || pdf.linkText || undefined,
+              link_text: pdf.linkText || undefined,
+            };
+            if (includeAssets) {
+              const localPath = assetPathMap.get(pdf.url);
+              if (localPath) {
+                entry.local_path = localPath;
+              }
+            }
+            return entry;
+          });
         }
         
         return JSON.stringify(doc);
@@ -4628,16 +4829,26 @@ export async function registerRoutes(
         export: {
           formats: exportFormats,
           include_embeddings: includeEmbeddings,
+          include_assets: includeAssets,
         },
         counts: {
           documents: scrapedResults.length,
           chunks: chunks.length,
+          assets: includeAssets ? assetEntries.filter(a => a.downloaded).length : 0,
+          assets_total: includeAssets ? allAssets.length : 0,
         },
         checksums: {
           'documents.jsonl': `sha256:${sha256(documentsJsonl)}`,
           'chunks.jsonl': `sha256:${sha256(chunksJsonl)}`,
-        },
+        } as Record<string, string>,
       };
+
+      // Create assets.jsonl if assets were collected
+      let assetsJsonl = '';
+      if (includeAssets && assetEntries.length > 0) {
+        assetsJsonl = assetEntries.map(a => JSON.stringify(a)).join('\n');
+        (manifest.checksums as Record<string, string>)['assets.jsonl'] = `sha256:${sha256(assetsJsonl)}`;
+      }
 
       // Schema files
       const documentsSchema = {
@@ -4660,7 +4871,8 @@ export async function registerRoutes(
               "properties": {
                 "url": { "type": "string" },
                 "title": { "type": "string" },
-                "link_text": { "type": "string" }
+                "link_text": { "type": "string" },
+                "local_path": { "type": "string", "description": "Path to the downloaded asset within the RAG Pack ZIP" }
               },
               "required": ["url"]
             }
@@ -4695,13 +4907,40 @@ export async function registerRoutes(
         "required": ["rag_pack_version", "created_at", "generator", "source", "chunking", "counts", "checksums"],
       };
 
+      const assetsSchema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "assets.jsonl schema",
+        "type": "object",
+        "required": ["asset_id", "doc_id", "url", "filename", "path", "downloaded"],
+        "properties": {
+          "asset_id": { "type": "string" },
+          "doc_id": { "type": "string" },
+          "doc_url": { "type": "string" },
+          "url": { "type": "string" },
+          "title": { "type": "string" },
+          "link_text": { "type": "string" },
+          "filename": { "type": "string" },
+          "path": { "type": "string", "description": "Local path within the RAG Pack ZIP" },
+          "size_bytes": { "type": "integer" },
+          "mime_type": { "type": "string" },
+          "downloaded": { "type": "boolean" },
+          "error": { "type": "string" },
+        },
+      };
+
       // Add files to ZIP
       zip.file('documents.jsonl', documentsJsonl);
       zip.file('chunks.jsonl', chunksJsonl);
+      if (assetsJsonl) {
+        zip.file('assets.jsonl', assetsJsonl);
+      }
       zip.file('manifest.json', JSON.stringify(manifest, null, 2));
       zip.folder('schema')?.file('documents.schema.json', JSON.stringify(documentsSchema, null, 2));
       zip.folder('schema')?.file('chunks.schema.json', JSON.stringify(chunksSchema, null, 2));
       zip.folder('schema')?.file('manifest.schema.json', JSON.stringify(manifestSchema, null, 2));
+      if (assetsJsonl) {
+        zip.folder('schema')?.file('assets.schema.json', JSON.stringify(assetsSchema, null, 2));
+      }
 
       // Generate ZIP buffer
       const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });

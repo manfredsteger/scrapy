@@ -239,6 +239,7 @@ export const projectSettingsSchema = z.object({
   export: z.object({
     formats: z.array(z.enum(['json', 'csv', 'parquet', 'markdown'])).default(['json']),
     includeEmbeddings: z.boolean().default(false),
+    includeAssets: z.boolean().default(true),
     incrementalUpdates: z.boolean().default(true),
   }).default({}),
 }).default({});

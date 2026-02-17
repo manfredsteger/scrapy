@@ -88,6 +88,7 @@ const defaultSettings: ProjectSettingsType = {
   export: {
     formats: ['json'],
     includeEmbeddings: false,
+    includeAssets: true,
     incrementalUpdates: true,
   },
 };
@@ -1077,6 +1078,19 @@ export default function ProjectSettings({ settings, onSave, onClose, t }: Projec
                       checked={localSettings.export?.includeEmbeddings ?? false}
                       onCheckedChange={(v) => updateExport('includeEmbeddings', v)}
                       data-testid="switch-include-embeddings"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between py-2">
+                    <div className="space-y-0.5">
+                      <Label htmlFor="includeAssets">{t('includeAssets')}</Label>
+                      <p className="text-xs text-muted-foreground">{t('includeAssetsInfo')}</p>
+                    </div>
+                    <Switch
+                      id="includeAssets"
+                      checked={localSettings.export?.includeAssets ?? true}
+                      onCheckedChange={(v) => updateExport('includeAssets', v)}
+                      data-testid="switch-include-assets"
                     />
                   </div>
 

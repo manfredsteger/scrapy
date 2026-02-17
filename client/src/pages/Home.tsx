@@ -76,7 +76,7 @@ export default function Home() {
   });
   const [selectedSinglePages, setSelectedSinglePages] = useState<Set<number>>(new Set());
   const [selectionMode, setSelectionMode] = useState(false);
-  const [convertDialog, setConvertDialog] = useState<{ open: boolean; projectName: string }>({ open: false, projectName: '' });
+  const [convertDialog, setConvertDialog] = useState<{ open: boolean; projectName: string; deleteSinglePages: boolean }>({ open: false, projectName: '', deleteSinglePages: false });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const processingRef = useRef(false);
   const abortedProjectsRef = useRef<Set<number>>(new Set());
@@ -136,15 +136,16 @@ export default function Home() {
   });
 
   const convertToProjectMutation = useMutation({
-    mutationFn: async ({ name, singlePageIds }: { name: string; singlePageIds: number[] }) => {
-      const res = await apiRequest('POST', '/api/projects/from-single-pages', { name, singlePageIds });
+    mutationFn: async ({ name, singlePageIds, deleteSinglePages }: { name: string; singlePageIds: number[]; deleteSinglePages: boolean }) => {
+      const res = await apiRequest('POST', '/api/projects/from-single-pages', { name, singlePageIds, deleteSinglePages });
       return res.json();
     },
     onSuccess: (project: Project) => {
       queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/single-pages'] });
       setSelectedSinglePages(new Set());
       setSelectionMode(false);
-      setConvertDialog({ open: false, projectName: '' });
+      setConvertDialog({ open: false, projectName: '', deleteSinglePages: false });
       setActiveProjectId(project.id);
       toast({ title: t('success'), description: t('convertToProjectSuccess') });
     },
@@ -1956,7 +1957,7 @@ export default function Home() {
       )}
 
       {convertDialog.open && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setConvertDialog({ open: false, projectName: '' })}>
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setConvertDialog({ open: false, projectName: '', deleteSinglePages: false })}>
           <div className="bg-card border border-border rounded-lg p-6 w-full max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-lg font-semibold mb-2 flex items-center gap-2">
               <FolderPlus className="w-5 h-5" />
@@ -1969,7 +1970,7 @@ export default function Home() {
               value={convertDialog.projectName}
               onChange={(e) => setConvertDialog(prev => ({ ...prev, projectName: e.target.value }))}
               placeholder={t('projectName')}
-              className="mb-4"
+              className="mb-3"
               data-testid="convert-project-name-input"
               autoFocus
               onKeyDown={(e) => {
@@ -1977,12 +1978,22 @@ export default function Home() {
                   convertToProjectMutation.mutate({
                     name: convertDialog.projectName.trim(),
                     singlePageIds: Array.from(selectedSinglePages),
+                    deleteSinglePages: convertDialog.deleteSinglePages,
                   });
                 }
               }}
             />
+            <label className="flex items-center gap-2 mb-4 cursor-pointer select-none" data-testid="checkbox-delete-single-pages">
+              <input
+                type="checkbox"
+                checked={convertDialog.deleteSinglePages}
+                onChange={(e) => setConvertDialog(prev => ({ ...prev, deleteSinglePages: e.target.checked }))}
+                className="h-4 w-4 rounded border-border accent-primary"
+              />
+              <span className="text-sm text-muted-foreground">{t('deleteSinglePagesAfterConvert')}</span>
+            </label>
             <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setConvertDialog({ open: false, projectName: '' })} data-testid="cancel-convert-button">
+              <Button variant="outline" onClick={() => setConvertDialog({ open: false, projectName: '', deleteSinglePages: false })} data-testid="cancel-convert-button">
                 {t('cancel')}
               </Button>
               <Button
@@ -1991,6 +2002,7 @@ export default function Home() {
                     convertToProjectMutation.mutate({
                       name: convertDialog.projectName.trim(),
                       singlePageIds: Array.from(selectedSinglePages),
+                      deleteSinglePages: convertDialog.deleteSinglePages,
                     });
                   }
                 }}

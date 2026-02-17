@@ -3390,7 +3390,7 @@ export async function registerRoutes(
 
   app.post("/api/projects/from-single-pages", async (req, res) => {
     try {
-      const { name, singlePageIds } = req.body;
+      const { name, singlePageIds, deleteSinglePages } = req.body;
       if (!name || typeof name !== 'string' || name.trim().length === 0) {
         return res.status(400).json({ message: 'Project name is required' });
       }
@@ -3447,6 +3447,13 @@ export async function registerRoutes(
         chunks: [],
         exportedChunkHashes: {},
       });
+
+      if (deleteSinglePages) {
+        for (const page of pages) {
+          await storage.deleteSinglePage(page.id);
+        }
+        console.log(`[FromSinglePages] Deleted ${pages.length} single pages after conversion`);
+      }
 
       console.log(`[FromSinglePages] Created project "${name}" (id=${project.id}) from ${pages.length} single pages`);
       res.status(201).json(project);

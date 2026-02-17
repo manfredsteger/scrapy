@@ -458,7 +458,7 @@ function calculateChunkQuality(
     warnOnNoContent: boolean;
   }
 ): ChunkQuality {
-  const tokenCount = estimateTokens(text, true);
+  const tokenCount = estimateTokensFast(text);
   const words = text.trim().split(/\s+/).filter(w => w.length > 0);
   const wordCount = words.length;
   
@@ -1620,7 +1620,7 @@ function generateChunksForProject(
 
     chunkedSections.forEach((chunk, index) => {
       const chunkId = `${docId}::c${String(index).padStart(4, '0')}`;
-      const tokens = estimateTokens(chunk.text, useMultiLang);
+      const tokens = estimateTokensFast(chunk.text);
       
       let pathname = '/';
       try {
@@ -3249,7 +3249,7 @@ export async function registerRoutes(
 
         let allChunks: RagChunk[] = chunkedSections.map((chunk, index) => {
           const chunkId = `${docId}::c${String(index).padStart(4, '0')}`;
-          const tokens = estimateTokens(chunk.text, useMultiLang);
+          const tokens = estimateTokensFast(chunk.text);
 
           let pathname = '/';
           try {
@@ -4188,7 +4188,7 @@ export async function registerRoutes(
 
         chunkedSections.forEach((chunk, index) => {
           const chunkId = `${docId}::c${String(allChunks.length).padStart(4, '0')}`;
-          const tokens = estimateTokens(chunk.text, useMultiLang);
+          const tokens = estimateTokensFast(chunk.text);
           
           let pathname = '/';
           try {

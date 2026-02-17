@@ -1,0 +1,394 @@
+Alles klar. Hier ist die vollständig technische, datei- und feldgenaue Beschreibung, was in meinem Prozess passiert, wenn du mir ein RAG-Pack (bei dir „Rack Pack“) lieferst – inklusive Chunks, PDFs/Assets, Schemas, Manifest, Checksums, QA. Das ist absichtlich „trocken“ und implementierungsnah.
+
+⸻
+
+0) Begriffe und Grundprinzip
+
+Ein RAG-Pack ist bei uns ein deterministisches, offline importierbares Bundle aus:
+	•	Index/Metadaten (documents.jsonl)
+	•	Textcontent in Chunks (chunks.jsonl)
+	•	Assets (Binärdateien, z.B. PDFs) (assets/…) plus Asset-Index (assets.jsonl)
+	•	Schema-Definitionen (schema/*.schema.json)
+	•	Manifest/Receipt (manifest.json)
+	•	optional: QA Report (qa_report.json)
+
+Wichtig:
+PDFs werden niemals als Text gechunkt, außer du hast sie bereits als Text in chunks.jsonl geliefert.
+PDFs sind in diesem Format Assets, kein Text-Input.
+
+⸻
+
+1) Eingang: Was ich aus deinem Upload lese
+
+Wenn du mir ein Pack als ZIP gibst, mache ich:
+
+1.1 ZIP entpacken
+	•	entpacke nach temp dir (z.B. _tmp_pack/)
+	•	erwarte mindestens:
+	•	documents.jsonl
+	•	chunks.jsonl
+	•	manifest.json
+	•	wenn vorhanden zusätzlich:
+	•	assets.jsonl
+	•	assets/
+	•	schema/
+	•	qa_report.json
+
+1.2 Strukturprüfung (ohne “Neuscraping”)
+	•	ich lade keine URLs nach, kein HTTP.
+	•	ich arbeite ausschließlich mit dem, was im ZIP drin ist.
+
+1.3 JSONL Validierung
+	•	documents.jsonl: jede Zeile muss ein gültiges JSON-Objekt sein
+	•	chunks.jsonl: jede Zeile muss ein gültiges JSON-Objekt sein
+
+Wenn chunks.jsonl nicht valid JSONL ist (z.B. ein JSON-Objekt über mehrere Zeilen):
+	•	ich repariere das, indem ich Zeilen so lange zusammenfüge, bis ein Objekt parsebar ist
+	•	ich schreibe danach chunks.jsonl wieder als strict JSONL (1 Objekt = 1 Zeile)
+
+Das ist extrem wichtig, weil sonst viele Importer beim ersten kaputten Record abbrechen.
+
+⸻
+
+2) Assets/PDFs: Wie ich damit exakt umgehe
+
+2.1 Assets-Index (assets.jsonl)
+
+Wenn assets.jsonl vorhanden ist, lese ich ihn komplett. Erwartete Felder typischerweise:
+	•	asset_id (string, eindeutig)
+	•	doc_id (string, referenziert documents.doc_id)
+	•	url (string, Quell-URL, kann .pdf sein)
+	•	downloaded (bool)
+	•	path (string, relativer Pfad im ZIP, z.B. assets/abc.pdf)
+	•	filename (string)
+	•	ggf. title, link_text, size_bytes, etc.
+
+2.2 Existenzprüfung der Datei
+
+Für jeden Asset-Eintrag mit downloaded=true:
+	•	prüfe ob path existiert im entpackten Ordner
+	•	wenn nicht: setze im QA assets_missing_file += 1
+
+2.3 PDF-Validierung (Signatur-Check)
+
+Für jeden Asset, dessen path auf .pdf endet:
+	•	öffne Datei
+	•	lese erste 5 bytes
+	•	wenn nicht %PDF- → kein echtes PDF
+	•	setze valid_pdf=false
+	•	zähle pdf_invalid += 1
+	•	wenn %PDF- → valid_pdf=true
+	•	zähle pdf_valid += 1
+
+2.4 SHA256 Hash pro Asset
+
+Für jeden vorhandenen Asset:
+	•	berechne sha256 der Datei (voller Inhalt)
+	•	schreibe sha256 ins assets.jsonl (damit du später integrity prüfen kannst)
+
+2.5 Umbenennen der Asset-Dateien (saubere Dateinamen)
+
+Wenn du möchtest (Pro-Pass / Standardisierung):
+	•	ich generiere aus assets.jsonl.title oder link_text einen slug:
+	•	lowercase
+	•	ä→ae, ö→oe, ü→ue, ß→ss
+	•	nur [a-z0-9_]
+	•	max. Länge (z.B. 120)
+	•	ich hänge einen stabilen Suffix an (z.B. aus asset_id) zur Kollisionsvermeidung
+	•	ich rename die Datei physisch in assets/
+	•	ich aktualisiere im Asset-Record:
+	•	filename
+	•	path
+	•	size_bytes
+
+Wichtig: Das ist rein Dateimanagement. Kein Text-Extrakt.
+
+2.6 Verlinken zu Dokumenten
+
+Ich baue eine Lookup-Tabelle:
+	•	Key: (doc_id, url) → assets.path
+
+Damit kann ich später documents.linked_pdfs[*].local_path füllen oder source.asset_path setzen, wenn euer Schema das vorsieht.
+
+⸻
+
+3) Documents: Was genau ich an documents.jsonl tue
+
+Für jede Zeile / jedes Dokumentobjekt d:
+
+3.1 doc_id Pflicht
+	•	doc_id muss existieren
+	•	wird als Primary Key genutzt
+
+3.2 Titelbereinigung
+
+Wenn title existiert:
+	•	entferne typische Suffixe, z.B. " | IFP Familienhandbuch"
+	•	normalisiere Ligaturen (ﬂ→fl etc.)
+	•	trim/whitespace
+
+Wenn title URL-artig ist und Dokument eine PDF ist:
+	•	optional: ich kann aus PDF-Cover (Seite 1) einen Titel extrahieren
+	•	mit PDF-Textlayer (PyPDF2)
+	•	wenn Textlayer leer: Titel bleibt fallback (Dateiname)
+
+3.3 Dual Tagging (Standard v1.1)
+
+Ich schreibe/ersetze folgende Felder:
+	•	tags: Array<string> (max 12)
+	•	technical_tags: Array<string> (genau 15)
+	•	everyday_tags: Array<string> (genau 25)
+	•	dual_tagging_enabled: true
+
+Die Tag-Generierung nutzt i.d.R.:
+	•	title
+	•	url
+	•	ggf. Abschnitt/Heading-Hints (wenn vorhanden)
+	•	und ein kontrolliertes Vokabular + Topic-Heuristiken
+
+3.4 file_name deterministisch (keine kryptischen Namen)
+	•	aus bereinigtem Titel slugified
+	•	Extension:
+	•	.pdf wenn url.endswith(".pdf")
+	•	sonst .html
+	•	Kollisionsauflösung:
+	•	wenn gleicher file_name mehrfach vorkommt, hänge _<doc_id_suffix> an
+
+3.5 source normalisieren
+
+Ich setze/normalisiere:
+	•	source.source_url = d.url (konkrete Seite/PDF)
+	•	nie nur die Domain
+
+Optional:
+	•	Wenn das Dokument selbst ein PDF ist und lokales Asset existiert:
+	•	kann source.asset_path gesetzt werden (abhängig von eurem Schema)
+
+3.6 linked_pdfs anreichern (wenn vorhanden)
+
+Wenn d.linked_pdfs existiert (Liste von {url, title, ...}):
+	•	suche zu jedem linked_pdf.url ein lokales Asset via (doc_id,url)
+	•	wenn gefunden:
+	•	setze local_path
+	•	kopiere Asset-Metadaten rein:
+	•	asset_id
+	•	size_bytes
+	•	sha256
+	•	valid_pdf
+
+3.7 hashes.source_fingerprint
+
+Ich schreibe:
+	•	hashes.source_fingerprint = sha256(url + "|" + title)
+
+Ziel: stabile ID zum Vergleich zwischen Runs.
+
+3.8 stats (nur für QA/Importer)
+
+Ich ergänze:
+	•	stats.chunks_count
+	•	stats.meaningful_chunks_count
+	•	stats.has_meaningful_content
+
+Diese Stats werden später aus chunks.jsonl aggregiert.
+
+Am Ende schreibe ich documents.jsonl neu als JSONL (1 Objekt / Zeile).
+
+⸻
+
+4) Chunks: Was ich genau an chunks.jsonl tue
+
+Für jede Chunk-Zeile / jedes Chunkobjekt c:
+
+4.1 Zuordnung zu doc
+	•	doc_id muss existieren
+	•	wenn doc nicht existiert → Chunk bleibt unverändert (oder wird in QA markiert)
+
+4.2 Text-Cleaning (Junk / Layout)
+
+Ich manipuliere nur c.text (String). Typische Schritte:
+	•	Breadcrumb entfernen (Regex auf Zeilenanfang)
+	•	„Sie befinden sich hier: …“
+	•	Navigationseinträge löschen (reine Menüzeilen)
+	•	„Startseite“, „Kontakt“, „Impressum“, „Datenschutz“ …
+	•	Punkt-/Leader-Ketten raus (........, •••••)
+	•	Trennungsfehler reparieren
+	•	(\w)-\s+(\w) → zusammenziehen
+	•	Pfeilsymbole » entfernen
+	•	Whitespace normalisieren
+
+Ich lösche keine Chunks in diesem Prozess standardmäßig.
+Ich bereinige Text und markiere.
+
+4.3 quality_flags
+
+Ich erweitere c.quality_flags um neue Flags, z.B.:
+	•	breadcrumb_removed
+	•	nav_line_removed
+	•	leader_dots_removed
+	•	hyphenation_fixed
+	•	whitespace_normalized
+	•	wenn Text kurz: very_short
+
+4.4 Citation String
+
+Ich setze c.citation neu:
+	•	Basis: documents.title
+	•	plus URL: (documents.url)
+	•	plus Section hint:
+	•	c.structure.section_path (wenn vorhanden)
+	•	oder c.location.heading_path[-1]
+
+4.5 Hash
+
+Ich setze:
+	•	c.hashes.text_sha256 = sha256(c.text)
+	•	häufig zusätzlich c.content_hash gleiches
+
+4.6 Aggregation für documents.stats
+
+Während des Chunk-Durchlaufs zähle ich pro doc:
+	•	chunks_count
+	•	meaningful_chunks_count (heuristisch, z.B. Text > 250 chars, nicht nur Navigation)
+
+Am Ende schreibe ich chunks.jsonl neu als sauberes JSONL.
+
+⸻
+
+5) Schema: Was ich in schema/ mache
+
+Wenn schema/ existiert, passe ich es an, damit es die neuen Felder akzeptiert:
+
+5.1 schema/documents.schema.json
+
+Ergänze properties und required:
+	•	file_name
+	•	tags
+	•	technical_tags
+	•	everyday_tags
+	•	dual_tagging_enabled
+	•	stats (nicht zwingend required)
+
+5.2 schema/assets.schema.json
+
+Ergänze:
+	•	valid_pdf (boolean|null)
+	•	sha256 (string)
+
+Ich ändere Schemas so, dass dein Importer nicht an Validierung scheitert.
+
+⸻
+
+6) Manifest: Was ich in manifest.json mache
+
+6.1 Version / Generator / Notes
+
+Ich setze bzw. normalisiere:
+	•	rag_pack_version = "1.1"
+	•	generator = {name, version}
+	•	notes[] → appended mit „was ich gemacht habe“
+
+6.2 tagging
+
+Ich setze:
+
+"tagging": {
+  "dual_tagging_enabled": true,
+  "technical_tags_target": 15,
+  "everyday_tags_target": 25,
+  "tags_target_max": 12
+}
+
+6.3 chunking
+
+Wenn vorhanden, lasse ich das Profil drin und ergänze defaults, z.B.:
+	•	profile
+	•	tokenizer
+	•	chunk_size_tokens
+	•	chunk_overlap_tokens
+	•	min_chunk_tokens
+	•	split_strategy
+	•	short_chunk_policy
+	•	dedup
+
+Wichtig: Das ist nur Metadaten, ich re-chunke hier nicht automatisch, wenn du nicht explizit sagst „rechunke neu“.
+
+6.4 counts
+
+Ich schreibe objektive Counts rein:
+	•	documents
+	•	chunks
+	•	chunks_repairs (wenn JSONL repariert wurde)
+	•	chunks_cleaned
+	•	assets_total
+	•	assets_downloaded
+	•	pdf_valid
+	•	pdf_invalid
+	•	assets_renamed
+	•	assets_missing_file
+
+6.5 checksums
+
+Ich berechne SHA256 für jede Datei im Pack:
+	•	jede Datei bekommt checksums[rel_path] = "sha256:..."
+
+Das ist der Integrity-Anker.
+
+⸻
+
+7) QA Report: was ist das?
+
+Wenn qa_report.json im Pack existiert oder ich ihn neu anlege:
+	•	summary: identisch zu den wichtigen manifest counts
+	•	optional: top quality flags
+	•	optional: doc coverage stats
+
+Ziel: du kannst beim Import sofort prüfen, ob Content fehlt oder Filter zuschlagen.
+
+⸻
+
+8) ZIP-Export: was passiert beim Packen?
+
+Am Ende packe ich das Verzeichnis wieder zu ZIP:
+	•	bei großen Assets nehme ich meist ZIP_STORED (kein recompress), damit es schnell und stabil bleibt
+	•	Struktur bleibt exakt:
+	•	documents.jsonl
+	•	chunks.jsonl
+	•	manifest.json
+	•	assets.jsonl
+	•	assets/…
+	•	schema/…
+	•	optional qa_report.json
+
+⸻
+
+9) Was ich NICHT mache (wichtig fürs Debugging)
+
+Ich mache nicht:
+	•	URLs neu crawlen
+	•	HTML/PDF neu herunterladen
+	•	PDFs als Text in chunks.jsonl schreiben (außer du lieferst es bereits so)
+	•	OCR
+	•	“Magisch” Content generieren, der nicht im Pack ist
+
+Wenn du beim Import binären Müll als Chunk-Text siehst, dann gibt es genau zwei Möglichkeiten:
+	1.	Dein Importer crawlt URLs neu und chunked selbst
+→ PDF Bytes → Müll
+	2.	Du hast im Pack selbst PDF Bytes in chunks.jsonl.text drin
+→ dann wäre chunks.jsonl beim Öffnen ebenfalls Müll (das kann ich sofort prüfen)
+
+⸻
+
+10) Der ultimative Check (damit du es wasserdicht beweisen kannst)
+
+Wenn du mir genau die betroffene doc_id gibst (aus deinem Screenshot), dann kann ich dir 100% deterministisch sagen:
+	•	steht im Pack in chunks.jsonl sauberer Text?
+	•	oder steht dort schon Binary-Müll?
+	•	ist es eine .pdf-URL und dein Importer hat neu geladen?
+
+Das ist ein 30-Sekunden-Beweis, keine Meinung.
+
+⸻
+
+Wenn du willst, definieren wir daraus direkt euren Import-Contract (gültig für alle zukünftigen Packs):
+„Importer darf niemals neu scrapen; PDFs sind Assets; text kommt nur aus chunks.jsonl; PDFs nur mit Parser/OCR“.

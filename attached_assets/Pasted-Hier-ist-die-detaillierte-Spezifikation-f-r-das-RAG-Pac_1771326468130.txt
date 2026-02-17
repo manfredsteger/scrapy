@@ -1,0 +1,215 @@
+Hier ist die detaillierte Spezifikation für das RAG-Pack-Format und den Import-Ablauf, die du an die andere Replit-Anwendung (den RAG-Pack-Generator) weitergeben kannst:
+
+RAG-Pack Spezifikation v2.0 – Vollständige Import-Anforderungen
+1. Dateistruktur (ZIP-Archiv)
+rag-pack.zip
+├── manifest.json
+├── folders.jsonl
+├── documents.jsonl
+├── chunks.jsonl
+└── assets/
+    ├── dokument1.pdf
+    ├── dokument2.pdf
+    └── ...
+2. manifest.json (Pflichtdatei)
+{
+  "version": "2.0",
+  "rag_pack_version": "2.0",
+  "created_at": "2025-06-15T10:30:00Z",
+  "source": "Beschreibung der Quelle, z.B. 'familienhandbuch.de Scraper'",
+  "chunking": {
+    "method": "recursive_text_splitter",
+    "chunk_size_tokens": 500,
+    "chunk_overlap_tokens": 50,
+    "min_chunk_tokens": 30,
+    "tokenizer": "cl100k_base",
+    "separator": ["\n\n", "\n", ". ", " "]
+  },
+  "stats": {
+    "total_documents": 150,
+    "total_chunks": 2400,
+    "total_folders": 5,
+    "total_assets": 12,
+    "skipped_documents": 3,
+    "skipped_reasons": {
+      "image_pdf_no_text": 2,
+      "empty_content": 1
+    }
+  },
+  "quality_report": {
+    "documents_with_text_layer": 148,
+    "documents_without_text_layer": 2,
+    "skipped_binary_pdfs": ["infografik_digitale_medien.pdf", "poster_xyz.pdf"],
+    "avg_tokens_per_chunk": 350,
+    "min_tokens_in_chunk": 31,
+    "max_tokens_in_chunk": 520
+  }
+}
+Wichtige Felder:
+
+chunking – Exakte Chunking-Parameter, damit der Importer Plausibilitätsprüfungen machen kann
+stats.skipped_documents – Anzahl der Dokumente, die NICHT importiert wurden (z.B. Bild-PDFs)
+quality_report.skipped_binary_pdfs – Liste der Dateinamen, die übersprungen wurden (zur Nachverfolgung)
+3. folders.jsonl (optional, eine JSON-Zeile pro Ordner)
+{"folder_id": "fam_erziehung", "name": "Erziehung", "parent_folder_id": null, "description": "Erziehungsthemen", "icon": "book", "priority": 1, "min_relevance": 0.05}
+{"folder_id": "fam_medien", "name": "Medien", "parent_folder_id": null, "description": "Medienthemen", "icon": "monitor", "priority": 2, "min_relevance": 0.05}
+{"folder_id": "fam_medien_digital", "name": "Digitale Medien", "parent_folder_id": "fam_medien", "description": "Digitale Medien für Kinder", "icon": "tablet", "priority": 0, "min_relevance": 0.05}
+Felder:
+
+Feld	Pflicht	Typ	Beschreibung
+folder_id	Ja	string	Eindeutige ID, wird in documents.jsonl referenziert
+name	Ja	string	Anzeigename des Ordners
+parent_folder_id	Nein	string/null	ID des Elternordners (null = Root-Ebene)
+description	Nein	string	Kurzbeschreibung
+icon	Nein	string	Icon-Name (z.B. "book", "monitor")
+priority	Nein	number	Sortierpriorität (0 = Standard)
+min_relevance	Nein	number	Minimale Relevanz-Schwelle für Suche (Standard: 0.01)
+Wichtig: Ordner ohne parent_folder_id (Root-Ordner) werden zuerst verarbeitet, dann Unterordner. Reihenfolge in der Datei ist egal.
+
+4. documents.jsonl (Pflichtdatei, eine JSON-Zeile pro Dokument)
+{"doc_id": "doc_abc123", "title": "Sprachförderung im Kindergarten", "description": "Methoden zur Sprachentwicklung bei Kindern im Alter von 3-6 Jahren", "category": "Sprache", "folder_id": "fam_erziehung", "file_type": "html", "file_name": null, "source_url": "https://www.familienhandbuch.de/sprachfoerderung.php", "source": {"source_url": "https://www.familienhandbuch.de/sprachfoerderung.php", "asset_path": null}, "total_pages": null, "tags": ["Sprache", "Kindergarten", "Förderung"], "technical_tags": ["Sprachentwicklung", "Linguistik", "Phonologie"], "everyday_tags": ["Sprechen lernen", "Sprachspiele", "Vorlesen"], "dual_tagging_enabled": true, "pdf_has_text_layer": true}
+{"doc_id": "doc_pdf456", "title": "Leitfaden Medienerziehung", "description": "Praktischer Leitfaden für Erzieher", "category": "Medien", "folder_id": "fam_medien", "file_type": "pdf", "file_name": "leitfaden_medienerziehung.pdf", "source_url": "https://example.de/leitfaden.pdf", "source": {"source_url": "https://example.de/leitfaden.pdf", "asset_path": "assets/leitfaden_medienerziehung.pdf"}, "total_pages": 12, "tags": ["Medien", "Erziehung"], "technical_tags": ["Medienpädagogik", "Digitalkompetenz"], "everyday_tags": ["Mediennutzung", "Bildschirmzeit"], "dual_tagging_enabled": true, "pdf_has_text_layer": true}
+Felder:
+
+Feld	Pflicht	Typ	Beschreibung
+doc_id	Ja	string	Eindeutige Dokument-ID, wird in chunks.jsonl referenziert
+title	Ja	string	Titel des Dokuments (kein auto-generierter Hash!)
+description	Nein	string	Kurze Inhaltsbeschreibung (1-2 Sätze)
+category	Nein	string	Kategorie (Standard: "Allgemein")
+folder_id	Nein	string	Verweis auf folder_id aus folders.jsonl
+file_type	Ja	string	"html", "pdf", "text", "url"
+file_name	Nein	string	Originaler Dateiname (bei PDFs)
+source_url	Ja	string	Quell-URL des Dokuments
+source.source_url	Nein	string	Alternative Quell-URL
+source.asset_path	Nein	string	Pfad zur PDF im assets/-Ordner
+total_pages	Nein	number	Seitenzahl (bei PDFs)
+tags	Nein	string[]	Primäre Tags (kommasepariert gespeichert)
+technical_tags	Nein	string[]	Fachsprachliche Tags
+everyday_tags	Nein	string[]	Alltagssprachliche Tags
+dual_tagging_enabled	Nein	boolean	Aktiviert Dual-Tagging-System
+pdf_has_text_layer	Nein	boolean	NEU: Gibt an, ob PDF echten Textlayer hat
+KRITISCH – Titel-Feld:
+
+Der Titel MUSS ein lesbarer, menschenfreundlicher Titel sein
+NIEMALS auto-generierte Hashes wie infografikdigitalemedien_79ecb5a8 verwenden
+Falls kein Titel extrahiert werden kann, den Dateinamen bereinigt verwenden (z.B. infografik_digitale_medien.pdf wird zu Infografik Digitale Medien)
+5. chunks.jsonl (Pflichtdatei, eine JSON-Zeile pro Chunk)
+{"chunk_id": "chunk_abc123_0", "doc_id": "doc_abc123", "chunk_index": 0, "text": "Sprachförderung im Kindergarten ist ein zentrales Thema der frühkindlichen Bildung. Kinder entwickeln ihre sprachlichen Fähigkeiten in den ersten Lebensjahren besonders intensiv...", "tokens_estimate": 347, "language": "de", "location": {"page_start": 1, "page_end": 1, "url": "https://www.familienhandbuch.de/sprachfoerderung.php"}, "structure": {"heading": "Einleitung", "section_path": "Sprachförderung > Einleitung"}, "source": {"source_url": "https://www.familienhandbuch.de/sprachfoerderung.php"}, "hashes": {"text_sha256": "a1b2c3d4..."}, "citation": "Familienhandbuch: Sprachförderung im Kindergarten", "embedding": null}
+Felder:
+
+Feld	Pflicht	Typ	Beschreibung
+chunk_id	Ja	string	Eindeutige Chunk-ID
+doc_id	Ja	string	Verweis auf doc_id aus documents.jsonl
+chunk_index	Ja	number	Position des Chunks im Dokument (0-basiert)
+text	Ja	string	Der extrahierte Textinhalt (siehe Qualitätsregeln!)
+tokens_estimate	Ja	number	Geschätzte Token-Anzahl
+language	Nein	string	Sprachcode, z.B. "de"
+location.page_start	Nein	number	Startseite (bei PDFs)
+location.page_end	Nein	number	Endseite (bei PDFs)
+location.url	Nein	string	Direkte URL zum Inhalt
+structure.heading	Nein	string	Überschrift des Abschnitts
+structure.section_path	Nein	string	Hierarchischer Abschnittspfad
+source.source_url	Nein	string	Quell-URL
+hashes.text_sha256	Nein	string	SHA256-Hash des Textes (für Deduplizierung)
+citation	Nein	string	Zitierhinweis
+embedding	Nein	number[]/null	Vorberechneter Embedding-Vektor (null = wird beim Import generiert)
+6. PDF-Verarbeitung – KRITISCHE REGELN
+Das ist der wichtigste Teil. Hier passieren die meisten Fehler.
+
+Schritt-für-Schritt bei jeder PDF-Datei:
+
+1. PDF-Datei öffnen (NICHT als Text-Datei lesen!)
+2. PDF-Parser verwenden (PyPDF2, pdfminer, pymupdf/fitz)
+3. Text extrahieren mit extract_text() oder ähnlicher Methode
+4. QUALITÄTSPRÜFUNG durchführen:
+   a) Ist der extrahierte Text kürzer als 50 Zeichen?
+      → Bild-PDF erkannt → ÜBERSPRINGEN
+      
+   b) Enthält der Text mehr als 20% Nicht-Druckbare-Zeichen?
+      (Unicode-Replacement-Zeichen &#xFFFD;, Steuerzeichen \x00-\x1F, etc.)
+      → Binär-Müll erkannt → ÜBERSPRINGEN
+      
+   c) Enthält der Text KEINE erkennbaren deutschen/englischen Wörter?
+      (mindestens 3 echte Wörter mit >2 Buchstaben pro 100 Zeichen)
+      → Kein echter Text → ÜBERSPRINGEN
+      
+   d) Beginnt der Text mit "%PDF-" ?
+      → Raw PDF-Bytes gelesen statt Text extrahiert → FEHLER → ÜBERSPRINGEN
+5. Wenn alle Prüfungen bestanden:
+   → Text chunken → Chunks in chunks.jsonl schreiben
+   → pdf_has_text_layer: true in documents.jsonl
+6. Wenn Prüfung fehlschlägt:
+   → Dokument TROTZDEM in documents.jsonl aufnehmen
+   → pdf_has_text_layer: false setzen
+   → KEINE Chunks erzeugen
+   → In manifest.json quality_report.skipped_binary_pdfs aufnehmen
+   → In manifest.json stats.skipped_documents hochzählen
+Python-Pseudocode für die PDF-Prüfung:
+
+import re
+def is_valid_text_content(text: str) -> tuple[bool, str]:
+    """Prüft ob extrahierter Text valide ist. Returns (is_valid, reason)."""
+    
+    if not text or len(text.strip()) < 50:
+        return False, "too_short"
+    
+    # PDF-Signatur im Text = Binary wurde als Text gelesen
+    if text.strip().startswith("%PDF-"):
+        return False, "pdf_binary_signature"
+    
+    # Anteil nicht-druckbarer Zeichen prüfen
+    non_printable = sum(1 for c in text if ord(c) < 32 and c not in '\n\r\t')
+    replacement_chars = text.count('\ufffd')  # Unicode Replacement Character
+    garbage_ratio = (non_printable + replacement_chars) / max(len(text), 1)
+    
+    if garbage_ratio > 0.05:  # Mehr als 5% Müll
+        return False, "high_garbage_ratio"
+    
+    # Echte Wörter prüfen (mindestens 3+ Buchstaben)
+    words = re.findall(r'[a-zA-ZäöüÄÖÜß]{3,}', text[:500])
+    if len(words) < 5:
+        return False, "no_real_words"
+    
+    return True, "ok"
+7. assets/-Ordner (PDF-Originaldateien)
+Jede PDF, die erfolgreich Text geliefert hat, wird als Originaldatei in assets/ abgelegt
+Der Pfad in assets/ muss mit source.asset_path im Dokument übereinstimmen
+PDFs OHNE Textlayer werden NICHT in assets/ aufgenommen (spart Platz)
+Dateinamen: Originalname beibehalten, z.B. assets/leitfaden_medienerziehung.pdf
+8. Qualitätscheckliste vor Export
+Bevor das RAG-Pack als ZIP exportiert wird, folgende Prüfungen durchlaufen:
+
+ Jede doc_id in chunks.jsonl hat ein passendes Dokument in documents.jsonl
+ Kein Chunk hat leeren oder nur aus Whitespace bestehenden Text
+ Kein Chunk enthält mehr als 5% Nicht-Druckbare-Zeichen
+ Kein Chunk-Text beginnt mit %PDF-
+ Jeder Chunk hat ein tokens_estimate > 0
+ Durchschnittliche Token-Zahl pro Chunk liegt zwischen 100 und 1000
+ Kein einzelner Chunk hat mehr als 5000 Tokens (Warnung ab 2000)
+ Alle Titel in documents.jsonl sind lesbare Texte (keine Hashes, keine Dateinamen mit Unterstrichen)
+ manifest.json enthält quality_report mit Infos über übersprungene PDFs
+ Folder-Hierarchie ist konsistent (kein parent_folder_id verweist auf nicht-existierenden Ordner)
+9. Was der Importer auf KITA-HUB-Seite macht (zum Verständnis)
+Der Import läuft in diesen Phasen:
+
+ZIP entpacken – manifest.json, folders/documents/chunks.jsonl und assets/ lesen
+Validierung – Manifest-Sanity-Checks, Stichprobe von Chunks auf Binär-Müll prüfen
+Ordner importieren – Erst Root-Ordner, dann Unterordner (parent-Referenzen auflösen)
+Assets hochladen – PDF-Dateien aus assets/ in Object Storage speichern
+Dokumente importieren – Jedes Dokument aus documents.jsonl in DB schreiben, Asset-URLs zuordnen
+Chunks speichern – Alle Chunks OHNE Embedding in DB schreiben (schnell). NEU: Chunks mit Binär-Müll werden übersprungen und geloggt
+Embeddings generieren – Separat über "Ausstehende Einträge verarbeiten" (weil langsam/teuer)
+Der Importer speichert folgende Metadaten aus dem Manifest:
+
+Chunking-Profile (method, chunk_size, overlap, min_tokens, tokenizer, separator)
+Pack-Version
+Quality-Report (wenn vorhanden)
+10. Häufige Fehlerquellen und Vermeidung
+Problem	Ursache	Lösung
+Binär-Müll in Chunks	PDF als Textdatei gelesen	PDF-Parser verwenden, Qualitätsprüfung
+Unlesbarer Titel	Auto-generiert aus Dateiname+Hash	Titel aus HTML-Title oder PDF-Metadata extrahieren
+Chunks ohne Dokument-Match	doc_id in chunks.jsonl stimmt nicht mit documents.jsonl überein	IDs konsistent halten
+Extrem hohe Token-Counts (>5000)	Keine/falsche Chunking-Trennung	Chunking-Parameter prüfen
+Leere Chunks	Whitespace-only nach Extraktion	Min-Token-Filter anwenden
+Doppelte Einträge	Gleiche URL mehrfach gescrapt	Deduplizierung über source_url oder text_sha256
+Das

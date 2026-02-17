@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { X, Image as ImageIcon, Video, FileText, Hash, Copy, Check, ChevronDown, Layers, Tag, Sparkles, FileDown, ExternalLink } from 'lucide-react';
+import { X, Image as ImageIcon, Video, FileText, Hash, Copy, Check, ChevronDown, Layers, Tag, Sparkles, FileDown, ExternalLink, Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -489,8 +489,26 @@ export default function ContentPreview({ entry, onClose, t, chunks = [] }: Conte
             </p>
           </div>
           {(data?.linkedPdfs?.length || 0) > 0 && (
-            <div className="bg-secondary rounded-lg p-3 text-center">
-              <FileDown className="w-4 h-4 mx-auto mb-1 text-red-500" />
+            <div 
+              className="bg-secondary rounded-lg p-3 text-center cursor-pointer hover-elevate"
+              onClick={() => {
+                if (data?.linkedPdfs) {
+                  data.linkedPdfs.forEach((pdf) => {
+                    const a = document.createElement('a');
+                    a.href = pdf.url;
+                    a.download = pdf.url.split('/').pop() || 'document.pdf';
+                    a.target = '_blank';
+                    a.rel = 'noopener noreferrer';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                  });
+                }
+              }}
+              data-testid="button-download-all-pdfs"
+              title={data?.linkedPdfs?.length === 1 ? 'PDF herunterladen' : `Alle ${data?.linkedPdfs?.length} PDFs herunterladen`}
+            >
+              <Download className="w-4 h-4 mx-auto mb-1 text-red-500" />
               <p className="text-xs text-muted-foreground">PDFs</p>
               <p className="text-lg font-bold text-foreground">{data?.linkedPdfs?.length}</p>
             </div>
@@ -555,17 +573,29 @@ export default function ContentPreview({ entry, onClose, t, chunks = [] }: Conte
                         </p>
                         <p className="text-xs text-muted-foreground truncate">{pdf.url}</p>
                       </div>
-                      <a 
-                        href={pdf.url} 
-                        target="_blank" 
-                        rel="noopener noreferrer"
-                        className="shrink-0"
-                        data-testid={`link-pdf-open-${i}`}
-                      >
-                        <Button variant="ghost" size="icon">
-                          <ExternalLink className="w-4 h-4" />
-                        </Button>
-                      </a>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <a
+                          href={pdf.url}
+                          download={pdf.url.split('/').pop() || 'document.pdf'}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          data-testid={`button-download-pdf-${i}`}
+                        >
+                          <Button variant="ghost" size="icon">
+                            <Download className="w-4 h-4" />
+                          </Button>
+                        </a>
+                        <a 
+                          href={pdf.url} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          data-testid={`link-pdf-open-${i}`}
+                        >
+                          <Button variant="ghost" size="icon">
+                            <ExternalLink className="w-4 h-4" />
+                          </Button>
+                        </a>
+                      </div>
                     </div>
                   ))}
                 </div>

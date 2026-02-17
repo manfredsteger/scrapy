@@ -410,8 +410,7 @@ const CJK_REGEX = /[\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\u3400-\u4dbf\u4e00-\
 // Chunking utility functions
 function estimateTokensFast(text: string): number {
   if (!text) return 0;
-  const words = text.split(/\s+/).length;
-  return Math.ceil(words * 1.3);
+  return Math.ceil(text.length / 4);
 }
 
 function estimateTokens(text: string, useMultiLanguage: boolean = true): number {

@@ -1,0 +1,68 @@
+Die Parameter sind insgesamt sinnvoll – aber nur, wenn du dir bewusst bist, welche Schraube welchen Trade-off erzeugt. Kurz: 512/100/80 ist ein gutes “Retrieval-First” Profil, vor allem für lange, erklärende Texte wie Familienhandbuch. Ich würde es so übernehmen und im Manifest als Standardprofil festschreiben.
+
+1) Chunk-Größe 512 Tokens (statt 350)
+
+Pro: Mehr Kontext pro Treffer → weniger “Antwort hängt in der Luft”, weniger Nachladen. Besonders gut bei Ratgebern/Handbüchern, wo ein Gedanke oft über mehrere Absätze geht.
+Contra: Wenn du viele Treffer gleichzeitig in den Prompt packst, frisst jeder Chunk mehr Budget. Dafür brauchst du später gute Re-Ranking/Top-K-Logik.
+Mein Urteil: ✅ Ja, passt sehr gut für dieses Korpus.
+
+2) Overlap 100 Tokens (statt 55)
+
+Pro: Satz- und Absatzübergänge werden weniger zerschnitten, Zitate wirken konsistenter, und “Definition → Erklärung → Beispiel” bleibt öfter zusammenhängend.
+Contra: Mehr Redundanz im Index (mehr Embeddings-Kosten, mehr Duplicate-Treffer). Das kann man mit text_sha256/near-dup Filter und Retrieval-Diversifizierung abfangen.
+Mein Urteil: ✅ Ja. 100 ist für 512 ein guter Wert (~20% Overlap).
+
+3) Mindestgröße 80 Tokens (statt 50)
+
+Pro: Filtert Navigationsreste, Bildunterschriften, Mini-Snippets besser weg.
+Contra: Manchmal gehen sehr kurze, aber wertvolle Definitionen verloren (“Feinfühligkeit bedeutet …”). Lösung: kurze Definitionen als merged chunk behandeln statt wegwerfen.
+Mein Urteil: ✅ Ja, aber mit Regel: Short chunks werden bevorzugt gemerged, nicht gedroppt, wenn sie inhaltlich sind.
+
+4) Erwartete Chunk-Anzahl 15k–20k (statt 36k)
+
+Das ist plausibel und sogar wünschenswert. 36k ist oft ein Zeichen von:
+	•	zu kleiner Chunkgröße,
+	•	zu vielen Navigations-/Boilerplate-Resten,
+	•	oder zu aggressivem “Split nach Layout”.
+
+Mit 512/100/80 landest du bei einem großen Web-Korpus realistisch im Bereich 15–25k, je nachdem wie viel echter Content vs. Boilerplate drin ist.
+Mein Urteil: ✅ Klingt realistisch.
+
+⸻
+
+Empfehlung: Als “Standardprofil” ins Manifest
+
+Damit dein Importer und spätere Runs deterministisch bleiben, würde ich das im manifest.json als klaren Block festschreiben (zusätzlich zu den bisherigen Notizen).
+
+So etwas in der Art:
+
+"chunking": {
+  "profile": "retrieval_v1_1",
+  "tokenizer": "cl100k_base",
+  "chunk_size_tokens": 512,
+  "chunk_overlap_tokens": 100,
+  "min_chunk_tokens": 80,
+  "split_strategy": "semantic_paragraph_then_token",
+  "short_chunk_policy": "merge_if_possible_else_drop",
+  "dedup": {
+    "enabled": true,
+    "method": "text_sha256"
+  }
+}
+
+Wichtig: tokenizer benennen. Sonst sind “512 Tokens” in einem anderen Tokenizer plötzlich keine 512.
+
+⸻
+
+Was ich ab jetzt in deinem RAG-Pack Standard übernehmen würde
+	•	chunk_size_tokens = 512
+	•	chunk_overlap_tokens = 100
+	•	min_chunk_tokens = 80
+	•	short_chunk_policy = merge_if_possible_else_drop
+	•	Manifest bekommt einen festen chunking.profile Namen
+
+Damit hast du später: “Ich importiere Zip → ich weiß exakt, wie die Chunks entstanden sind.”
+
+⸻
+
+Wenn du mir das nächste PDF/Bundle gibst, wende ich dieses Profil direkt an und schreibe es als Standard in manifest.json rein (inkl. Profilname + Tokenizer).

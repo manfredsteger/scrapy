@@ -4,7 +4,8 @@ import { useQuery, useMutation } from '@tanstack/react-query';
 import { 
   Play, Square, Loader2, Download, Settings, 
   Trash2, ScanText, Globe, ArrowLeft, Plus, RefreshCw, Pause, X,
-  Layers, Package, Cog, FileText, AlertTriangle, Pencil, Paperclip
+  Layers, Package, Cog, FileText, AlertTriangle, Pencil, Paperclip,
+  CheckSquare, FolderPlus
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -28,6 +29,8 @@ import ChunkingProgress from '@/components/ChunkingProgress';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import { Progress } from '@/components/ui/progress';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { useLanguage } from '@/hooks/use-language';
 import { useToast } from '@/hooks/use-toast';
 import { apiRequest, queryClient } from '@/lib/queryClient';
@@ -71,6 +74,9 @@ export default function Home() {
     currentTitle: '',
     newTitle: '',
   });
+  const [selectedSinglePages, setSelectedSinglePages] = useState<Set<number>>(new Set());
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [convertDialog, setConvertDialog] = useState<{ open: boolean; projectName: string }>({ open: false, projectName: '' });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const processingRef = useRef(false);
   const abortedProjectsRef = useRef<Set<number>>(new Set());
@@ -126,6 +132,24 @@ export default function Home() {
       queryClient.invalidateQueries({ queryKey: ['/api/single-pages'] });
       setRenameSinglePage({ open: false, pageId: null, currentTitle: '', newTitle: '' });
       toast({ title: t('success'), description: t('pageRenamed') || 'Seite umbenannt' });
+    },
+  });
+
+  const convertToProjectMutation = useMutation({
+    mutationFn: async ({ name, singlePageIds }: { name: string; singlePageIds: number[] }) => {
+      const res = await apiRequest('POST', '/api/projects/from-single-pages', { name, singlePageIds });
+      return res.json();
+    },
+    onSuccess: (project: Project) => {
+      queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
+      setSelectedSinglePages(new Set());
+      setSelectionMode(false);
+      setConvertDialog({ open: false, projectName: '' });
+      setActiveProjectId(project.id);
+      toast({ title: t('success'), description: t('convertToProjectSuccess') });
+    },
+    onError: () => {
+      toast({ title: t('error'), variant: 'destructive' });
     },
   });
 
@@ -1177,7 +1201,38 @@ export default function Home() {
               </div>
 
               <div className="mt-6">
-                <h2 className="text-xl font-semibold text-foreground mb-4">{t('singlePages')}</h2>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-xl font-semibold text-foreground">{t('singlePages')}</h2>
+                  {singlePages.length > 0 && (
+                    <div className="flex items-center gap-2">
+                      {selectionMode && selectedSinglePages.size > 0 && (
+                        <Button
+                          variant="default"
+                          size="sm"
+                          className="gap-2"
+                          onClick={() => setConvertDialog({ open: true, projectName: '' })}
+                          data-testid="button-convert-to-project"
+                        >
+                          <FolderPlus className="w-4 h-4" />
+                          {t('convertToProject')} ({selectedSinglePages.size})
+                        </Button>
+                      )}
+                      <Button
+                        variant={selectionMode ? 'secondary' : 'outline'}
+                        size="sm"
+                        className="gap-2"
+                        onClick={() => {
+                          setSelectionMode(!selectionMode);
+                          if (selectionMode) setSelectedSinglePages(new Set());
+                        }}
+                        data-testid="button-toggle-selection"
+                      >
+                        <CheckSquare className="w-4 h-4" />
+                        {selectionMode ? t('cancelSelection') : t('selectPages')}
+                      </Button>
+                    </div>
+                  )}
+                </div>
                 {singlePagesLoading ? (
                   <div className="flex items-center justify-center py-8">
                     <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
@@ -1188,86 +1243,151 @@ export default function Home() {
                     <p className="text-muted-foreground text-sm">{t('noSinglePages')}</p>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                    {singlePages.map(page => (
-                      <div 
-                        key={page.id} 
-                        className="bg-card border border-border rounded-lg p-4 hover-elevate cursor-pointer"
-                        data-testid={`single-page-card-${page.id}`}
-                        onClick={() => navigate(`/single-page/${page.id}`)}
-                      >
-                        <div className="flex items-start gap-3">
-                          <div className="shrink-0 mt-0.5">
-                            <FileText className="w-4 h-4 text-muted-foreground" />
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <h4 className="text-sm font-medium text-foreground truncate">
-                              {page.title || page.url}
-                            </h4>
-                            <p className="text-xs text-muted-foreground truncate mt-0.5">{page.domain}</p>
-                            <div className="flex items-center gap-2 mt-2 flex-wrap">
-                              <Badge 
-                                variant={
-                                  page.status === 'completed' ? 'default' : 
-                                  page.status === 'error' ? 'destructive' : 
-                                  'secondary'
-                                }
-                                className="text-[10px]"
-                              >
-                                {page.status === 'scraping' && <Loader2 className="w-3 h-3 animate-spin mr-1" />}
-                                {page.status === 'completed' ? t('sequentialDataReady') : 
-                                 page.status === 'error' ? t('error') : 
-                                 page.status === 'scraping' ? t('scraping') : t('pending')}
-                              </Badge>
-                              {page.wordCount && page.wordCount > 0 && (
-                                <span className="text-[10px] text-muted-foreground">{page.wordCount} {t('totalWords')}</span>
+                  <>
+                    {selectionMode && singlePages.filter(p => p.status === 'completed').length > 1 && (
+                      <div className="flex items-center gap-3 mb-3">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            const completedIds = singlePages.filter(p => p.status === 'completed').map(p => p.id);
+                            setSelectedSinglePages(new Set(completedIds));
+                          }}
+                          data-testid="button-select-all"
+                        >
+                          {t('selectAll')}
+                        </Button>
+                        {selectedSinglePages.size > 0 && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setSelectedSinglePages(new Set())}
+                            data-testid="button-deselect-all"
+                          >
+                            {t('deselectAll')}
+                          </Button>
+                        )}
+                        <span className="text-xs text-muted-foreground">
+                          {selectedSinglePages.size} {t('selected')}
+                        </span>
+                      </div>
+                    )}
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                      {singlePages.map(page => {
+                        const isSelected = selectedSinglePages.has(page.id);
+                        const isCompleted = page.status === 'completed';
+                        return (
+                          <div 
+                            key={page.id} 
+                            className={`bg-card border rounded-lg p-4 hover-elevate cursor-pointer ${isSelected ? 'border-primary ring-1 ring-primary/30' : 'border-border'}`}
+                            data-testid={`single-page-card-${page.id}`}
+                            onClick={() => {
+                              if (selectionMode && isCompleted) {
+                                setSelectedSinglePages(prev => {
+                                  const next = new Set(prev);
+                                  if (next.has(page.id)) next.delete(page.id);
+                                  else next.add(page.id);
+                                  return next;
+                                });
+                              } else {
+                                navigate(`/single-page/${page.id}`);
+                              }
+                            }}
+                          >
+                            <div className="flex items-start gap-3">
+                              {selectionMode ? (
+                                <div className="shrink-0 mt-0.5">
+                                  <Checkbox
+                                    checked={isSelected}
+                                    disabled={!isCompleted}
+                                    onCheckedChange={() => {
+                                      if (!isCompleted) return;
+                                      setSelectedSinglePages(prev => {
+                                        const next = new Set(prev);
+                                        if (next.has(page.id)) next.delete(page.id);
+                                        else next.add(page.id);
+                                        return next;
+                                      });
+                                    }}
+                                    onClick={(e) => e.stopPropagation()}
+                                    data-testid={`checkbox-single-page-${page.id}`}
+                                  />
+                                </div>
+                              ) : (
+                                <div className="shrink-0 mt-0.5">
+                                  <FileText className="w-4 h-4 text-muted-foreground" />
+                                </div>
+                              )}
+                              <div className="flex-1 min-w-0">
+                                <h4 className="text-sm font-medium text-foreground truncate">
+                                  {page.title || page.url}
+                                </h4>
+                                <p className="text-xs text-muted-foreground truncate mt-0.5">{page.domain}</p>
+                                <div className="flex items-center gap-2 mt-2 flex-wrap">
+                                  <Badge 
+                                    variant={
+                                      page.status === 'completed' ? 'default' : 
+                                      page.status === 'error' ? 'destructive' : 
+                                      'secondary'
+                                    }
+                                    className="text-[10px]"
+                                  >
+                                    {page.status === 'scraping' && <Loader2 className="w-3 h-3 animate-spin mr-1" />}
+                                    {page.status === 'completed' ? t('sequentialDataReady') : 
+                                     page.status === 'error' ? t('error') : 
+                                     page.status === 'scraping' ? t('scraping') : t('pending')}
+                                  </Badge>
+                                  {page.wordCount && page.wordCount > 0 && (
+                                    <span className="text-[10px] text-muted-foreground">{page.wordCount} {t('totalWords')}</span>
+                                  )}
+                                </div>
+                                {page.createdAt && (
+                                  <p className="text-[10px] text-muted-foreground mt-1.5">
+                                    {new Date(page.createdAt).toLocaleDateString(language === 'de' ? 'de-DE' : 'en-US')}
+                                  </p>
+                                )}
+                              </div>
+                              {!selectionMode && (
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <Button
+                                    size="icon"
+                                    variant="ghost"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setRenameSinglePage({
+                                        open: true,
+                                        pageId: page.id,
+                                        currentTitle: page.title || page.url,
+                                        newTitle: page.title || '',
+                                      });
+                                    }}
+                                    data-testid={`rename-single-page-${page.id}`}
+                                  >
+                                    <Pencil className="w-3.5 h-3.5 text-muted-foreground" />
+                                  </Button>
+                                  <Button
+                                    size="icon"
+                                    variant="ghost"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setDeleteSinglePageConfirm({
+                                        open: true,
+                                        pageId: page.id,
+                                        pageName: page.title || page.url,
+                                      });
+                                    }}
+                                    data-testid={`delete-single-page-${page.id}`}
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5 text-muted-foreground" />
+                                  </Button>
+                                </div>
                               )}
                             </div>
-                            {page.createdAt && (
-                              <p className="text-[10px] text-muted-foreground mt-1.5">
-                                {new Date(page.createdAt).toLocaleDateString(language === 'de' ? 'de-DE' : 'en-US')}
-                              </p>
-                            )}
                           </div>
-                          <div className="flex items-center gap-1 shrink-0">
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="h-7 w-7"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setRenameSinglePage({
-                                  open: true,
-                                  pageId: page.id,
-                                  currentTitle: page.title || page.url,
-                                  newTitle: page.title || '',
-                                });
-                              }}
-                              data-testid={`rename-single-page-${page.id}`}
-                            >
-                              <Pencil className="w-3.5 h-3.5 text-muted-foreground" />
-                            </Button>
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="h-7 w-7"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setDeleteSinglePageConfirm({
-                                  open: true,
-                                  pageId: page.id,
-                                  pageName: page.title || page.url,
-                                });
-                              }}
-                              data-testid={`delete-single-page-${page.id}`}
-                            >
-                              <Trash2 className="w-3.5 h-3.5 text-muted-foreground" />
-                            </Button>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                        );
+                      })}
+                    </div>
+                  </>
                 )}
               </div>
             </div>
@@ -1829,6 +1949,57 @@ export default function Home() {
                 data-testid="confirm-rename-button"
               >
                 {renameSinglePageMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : (t('save') || 'Speichern')}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {convertDialog.open && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setConvertDialog({ open: false, projectName: '' })}>
+          <div className="bg-card border border-border rounded-lg p-6 w-full max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold mb-2 flex items-center gap-2">
+              <FolderPlus className="w-5 h-5" />
+              {t('convertToProject')}
+            </h3>
+            <p className="text-sm text-muted-foreground mb-4">
+              {t('convertToProjectDescription').replace('{count}', String(selectedSinglePages.size))}
+            </p>
+            <Input
+              value={convertDialog.projectName}
+              onChange={(e) => setConvertDialog(prev => ({ ...prev, projectName: e.target.value }))}
+              placeholder={t('projectName')}
+              className="mb-4"
+              data-testid="convert-project-name-input"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && convertDialog.projectName.trim()) {
+                  convertToProjectMutation.mutate({
+                    name: convertDialog.projectName.trim(),
+                    singlePageIds: Array.from(selectedSinglePages),
+                  });
+                }
+              }}
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setConvertDialog({ open: false, projectName: '' })} data-testid="cancel-convert-button">
+                {t('cancel')}
+              </Button>
+              <Button
+                onClick={() => {
+                  if (convertDialog.projectName.trim()) {
+                    convertToProjectMutation.mutate({
+                      name: convertDialog.projectName.trim(),
+                      singlePageIds: Array.from(selectedSinglePages),
+                    });
+                  }
+                }}
+                disabled={!convertDialog.projectName.trim() || convertToProjectMutation.isPending}
+                className="gap-2"
+                data-testid="confirm-convert-button"
+              >
+                {convertToProjectMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <FolderPlus className="w-4 h-4" />}
+                {t('createProject')}
               </Button>
             </div>
           </div>

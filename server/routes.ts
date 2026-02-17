@@ -3388,6 +3388,74 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/projects/from-single-pages", async (req, res) => {
+    try {
+      const { name, singlePageIds } = req.body;
+      if (!name || typeof name !== 'string' || name.trim().length === 0) {
+        return res.status(400).json({ message: 'Project name is required' });
+      }
+      if (!Array.isArray(singlePageIds) || singlePageIds.length === 0) {
+        return res.status(400).json({ message: 'At least one single page must be selected' });
+      }
+
+      const pages: any[] = [];
+      for (const id of singlePageIds) {
+        const page = await storage.getSinglePage(Number(id));
+        if (page && page.scrapedData) {
+          pages.push(page);
+        }
+      }
+
+      if (pages.length === 0) {
+        return res.status(400).json({ message: 'No scraped single pages found for the given IDs' });
+      }
+
+      const domains = new Set(pages.map(p => p.domain));
+      const primaryDomain = [...domains][0];
+
+      const results = pages.map(page => ({
+        loc: page.url,
+        lastmod: page.createdAt ? new Date(page.createdAt).toISOString() : undefined,
+        images: (page.scrapedData?.orderedElements || [])
+          .filter((e: any) => e.type === 'media' && e.mediaType === 'image')
+          .map((e: any) => ({ src: e.src, alt: e.alt || '' })),
+        videos: (page.scrapedData?.orderedElements || [])
+          .filter((e: any) => e.type === 'media' && e.mediaType === 'video')
+          .map((e: any) => ({ src: e.src, title: e.alt || '' })),
+        scrapedData: page.scrapedData,
+        hasScrapedData: true,
+      }));
+
+      const project = await storage.createProject({
+        domain: primaryDomain,
+        displayName: name.trim(),
+        status: 'idle',
+        queue: [],
+        processed: results.map(r => r.loc),
+        results,
+        errors: [],
+        stats: {
+          totalSitemaps: 0,
+          processedSitemaps: 0,
+          totalUrls: results.length,
+          totalImages: results.reduce((sum, r) => sum + r.images.length, 0),
+          totalVideos: results.reduce((sum, r) => sum + r.videos.length, 0),
+          startTime: Date.now(),
+          endTime: Date.now(),
+          scrapedPages: results.length,
+        },
+        chunks: [],
+        exportedChunkHashes: {},
+      });
+
+      console.log(`[FromSinglePages] Created project "${name}" (id=${project.id}) from ${pages.length} single pages`);
+      res.status(201).json(project);
+    } catch (error) {
+      console.error('Error creating project from single pages:', error);
+      res.status(500).json({ message: 'Failed to create project from single pages' });
+    }
+  });
+
   app.delete("/api/single-pages/:id", async (req, res) => {
     const id = Number(req.params.id);
     if (isNaN(id)) {

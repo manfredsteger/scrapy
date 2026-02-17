@@ -36,7 +36,7 @@ interface ProgressData {
   chunksGenerated: number;
   currentUrl?: string;
   error?: string;
-  phase?: 'chunking' | 'deduplication' | 'embeddings' | 'enrichment';
+  phase?: 'chunking' | 'deduplication' | 'embeddings' | 'enrichment' | 'saving';
   embeddingsProgress?: EmbeddingsProgress;
   enrichmentProgress?: EnrichmentProgress;
   warningMessage?: string;
@@ -212,6 +212,9 @@ export default function ChunkingProgress({
         if (progress.phase === 'deduplication') {
           return 'Dedupliziere Chunks...';
         }
+        if (progress.phase === 'saving') {
+          return 'Speichere Chunks in Datenbank...';
+        }
         return `Verarbeite Seite ${progress.current} von ${progress.total}`;
       case 'completed':
         return `Fertig! ${progress.chunksGenerated} Chunks generiert`;
@@ -249,7 +252,7 @@ export default function ChunkingProgress({
             </div>
           </div>
 
-          {progress.currentUrl && progress.status === 'processing' && (
+          {progress.currentUrl && progress.status === 'processing' && progress.phase !== 'deduplication' && progress.phase !== 'saving' && (
             <div className="text-xs text-muted-foreground bg-secondary p-2 rounded overflow-hidden">
               <span className="font-medium">Aktuelle URL: </span>
               <span className="block truncate max-w-[340px]">{progress.currentUrl}</span>

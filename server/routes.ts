@@ -355,11 +355,11 @@ function getDefaultSettings(): ProjectSettings {
       extractStructuredData: true,
     },
     chunking: {
-      targetTokens: 350,
-      overlapTokens: 55,
+      targetTokens: 512,
+      overlapTokens: 100,
       boundaryRules: ['paragraph', 'heading'],
       preserveHeadingHierarchy: true,
-      minChunkTokens: 50,
+      minChunkTokens: 80,
       preserveTables: true,
       preserveCodeBlocks: true,
       multiLanguageTokenization: true,
@@ -371,7 +371,7 @@ function getDefaultSettings(): ProjectSettings {
       },
       deduplication: {
         enabled: true,
-        similarityThreshold: 0.95,
+        similarityThreshold: 0.90,
       },
     },
     ai: {
@@ -584,7 +584,7 @@ function jaccardSimilarity(setA: Set<string>, setB: Set<string>): number {
 // Deduplicate chunks by exact hash and near-duplicate similarity
 function deduplicateChunks(
   chunks: RagChunk[],
-  threshold: number = 0.95
+  threshold: number = 0.90
 ): { chunks: RagChunk[]; stats: DeduplicationStats } {
   const stats: DeduplicationStats = {
     totalChunks: chunks.length,
@@ -597,15 +597,14 @@ function deduplicateChunks(
     return { chunks: [], stats };
   }
 
-  // First pass: Mark exact duplicates by content_hash
-  const hashToOriginal = new Map<string, string>(); // content_hash -> chunk_id
+  // First pass: Global exact duplicate detection by content hash
+  const hashToOriginal = new Map<string, string>();
   const processedChunks: RagChunk[] = [];
 
   for (const chunk of chunks) {
     const hash = chunk.content_hash || sha256(chunk.text);
-    
+
     if (hashToOriginal.has(hash)) {
-      // Exact duplicate found
       stats.exactDuplicates++;
       processedChunks.push({
         ...chunk,
@@ -614,7 +613,6 @@ function deduplicateChunks(
         duplicate_of: hashToOriginal.get(hash)!,
       });
     } else {
-      // First occurrence
       hashToOriginal.set(hash, chunk.chunk_id);
       processedChunks.push({
         ...chunk,
@@ -624,55 +622,74 @@ function deduplicateChunks(
     }
   }
 
-  // Second pass: Near-duplicate detection using Jaccard similarity
-  // Only compare non-duplicates against each other
+  // Second pass: Near-duplicate detection per document (not global O(n²))
+  // Group non-duplicate chunks by doc_id for efficient comparison
   const nonDuplicates = processedChunks.filter(c => !c.is_duplicate);
-  
-  // Pre-compute word sets for efficiency
-  const wordSets = new Map<string, Set<string>>();
+  const docGroups = new Map<string, RagChunk[]>();
   for (const chunk of nonDuplicates) {
-    wordSets.set(chunk.chunk_id, getWordSet(chunk.text));
+    const docId = chunk.doc_id || 'unknown';
+    if (!docGroups.has(docId)) {
+      docGroups.set(docId, []);
+    }
+    docGroups.get(docId)!.push(chunk);
   }
 
-  // Track which chunks are marked as near-duplicates
   const nearDuplicateIds = new Set<string>();
   const nearDuplicateOf = new Map<string, string>();
 
-  // Compare each pair (optimize by only comparing against earlier chunks)
-  for (let i = 1; i < nonDuplicates.length; i++) {
-    const chunkB = nonDuplicates[i];
-    const setB = wordSets.get(chunkB.chunk_id)!;
-    
-    // Skip if already marked as near-duplicate
-    if (nearDuplicateIds.has(chunkB.chunk_id)) continue;
-    
-    for (let j = 0; j < i; j++) {
-      const chunkA = nonDuplicates[j];
-      
-      // Skip if chunkA is already a near-duplicate (only compare against originals)
-      if (nearDuplicateIds.has(chunkA.chunk_id)) continue;
-      
-      const setA = wordSets.get(chunkA.chunk_id)!;
-      
-      // Quick size check: if size difference is too large, similarity can't be high
-      const sizeDiff = Math.abs(setA.size - setB.size);
-      const maxSize = Math.max(setA.size, setB.size);
-      if (maxSize > 0 && sizeDiff / maxSize > (1 - threshold)) {
-        continue;
-      }
-      
-      const similarity = jaccardSimilarity(setA, setB);
-      
-      if (similarity >= threshold) {
-        nearDuplicateIds.add(chunkB.chunk_id);
-        nearDuplicateOf.set(chunkB.chunk_id, chunkA.chunk_id);
-        stats.nearDuplicates++;
-        break;
+  // Compare chunks only within the same document — O(k²) per doc, much faster
+  const docGroupKeys = Array.from(docGroups.keys());
+  for (const docKey of docGroupKeys) {
+    const docChunks = docGroups.get(docKey)!;
+    if (docChunks.length < 2) continue;
+
+    const wordSets = new Map<string, Set<string>>();
+    for (const chunk of docChunks) {
+      wordSets.set(chunk.chunk_id, getWordSet(chunk.text));
+    }
+
+    for (let i = 1; i < docChunks.length; i++) {
+      const chunkB = docChunks[i];
+      if (nearDuplicateIds.has(chunkB.chunk_id)) continue;
+      const setB = wordSets.get(chunkB.chunk_id)!;
+
+      for (let j = 0; j < i; j++) {
+        const chunkA = docChunks[j];
+        if (nearDuplicateIds.has(chunkA.chunk_id)) continue;
+        const setA = wordSets.get(chunkA.chunk_id)!;
+
+        const sizeDiff = Math.abs(setA.size - setB.size);
+        const maxSize = Math.max(setA.size, setB.size);
+        if (maxSize > 0 && sizeDiff / maxSize > (1 - threshold)) {
+          continue;
+        }
+
+        const similarity = jaccardSimilarity(setA, setB);
+        if (similarity >= threshold) {
+          nearDuplicateIds.add(chunkB.chunk_id);
+          nearDuplicateOf.set(chunkB.chunk_id, chunkA.chunk_id);
+          stats.nearDuplicates++;
+          break;
+        }
       }
     }
   }
 
-  // Apply near-duplicate markers
+  // Also do a lightweight cross-document exact-text dedup for common boilerplate
+  // Use a hash of normalized text (lowercased, trimmed) to catch boilerplate across pages
+  const normalizedHashToId = new Map<string, string>();
+  for (const chunk of nonDuplicates) {
+    if (nearDuplicateIds.has(chunk.chunk_id)) continue;
+    const normalizedHash = sha256(chunk.text.toLowerCase().trim().replace(/\s+/g, ' '));
+    if (normalizedHashToId.has(normalizedHash)) {
+      nearDuplicateIds.add(chunk.chunk_id);
+      nearDuplicateOf.set(chunk.chunk_id, normalizedHashToId.get(normalizedHash)!);
+      stats.nearDuplicates++;
+    } else {
+      normalizedHashToId.set(normalizedHash, chunk.chunk_id);
+    }
+  }
+
   const finalChunks = processedChunks.map(chunk => {
     if (nearDuplicateIds.has(chunk.chunk_id)) {
       return {
@@ -4077,9 +4094,9 @@ export async function registerRoutes(
       const settings: ProjectSettings = project.projectSettings || getDefaultSettings();
 
       const chunkingSettings = settings.chunking || {
-        targetTokens: 350,
-        overlapTokens: 55,
-        minChunkTokens: 50,
+        targetTokens: 512,
+        overlapTokens: 100,
+        minChunkTokens: 80,
         boundaryRules: ['paragraph', 'heading'],
         preserveHeadingHierarchy: true,
         preserveTables: true,
@@ -4093,7 +4110,7 @@ export async function registerRoutes(
         },
         deduplication: {
           enabled: true,
-          similarityThreshold: 0.95,
+          similarityThreshold: 0.90,
         },
       };
 
@@ -4210,7 +4227,7 @@ export async function registerRoutes(
           phase: 'deduplication',
         });
 
-        const threshold = chunkingSettings.deduplication?.similarityThreshold ?? 0.95;
+        const threshold = chunkingSettings.deduplication?.similarityThreshold ?? 0.90;
         const result = deduplicateChunks(allChunks, threshold);
         finalChunks = result.chunks;
         deduplicationStats = result.stats;
@@ -4348,6 +4365,14 @@ export async function registerRoutes(
       }
 
       // Save chunks to database
+      sendEvent({
+        type: 'progress',
+        current: total,
+        total,
+        chunksGenerated: finalChunks.length,
+        currentUrl: 'Speichere Chunks in Datenbank...',
+        phase: 'saving',
+      });
       await storage.updateProject(projectId, { chunks: finalChunks });
 
       // Send completion event

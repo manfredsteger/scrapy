@@ -1574,9 +1574,9 @@ function generateChunksForProject(
 ): { chunks: RagChunk[]; deduplicationStats?: DeduplicationStats } {
   const allChunks: RagChunk[] = [];
   const chunkingSettings = settings.chunking || {
-    targetTokens: 350,
-    overlapTokens: 55,
-    minChunkTokens: 50,
+    targetTokens: 512,
+    overlapTokens: 100,
+    minChunkTokens: 80,
     boundaryRules: ['paragraph', 'heading'],
     preserveHeadingHierarchy: true,
     preserveTables: true,
@@ -1590,7 +1590,7 @@ function generateChunksForProject(
     },
     deduplication: {
       enabled: true,
-      similarityThreshold: 0.95,
+      similarityThreshold: 0.90,
     },
   };
 

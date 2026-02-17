@@ -413,6 +413,122 @@ function estimateTokensFast(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
+async function extractPdfText(buffer: Buffer): Promise<{ text: string; metadata: any; numPages: number } | null> {
+  try {
+    const pdfParse = (await import('pdf-parse')).default;
+    const data = await pdfParse(buffer);
+    return {
+      text: data.text || '',
+      metadata: data.info || {},
+      numPages: data.numpages || 0,
+    };
+  } catch (err) {
+    console.warn('[PDF] Parse error:', (err as Error).message);
+    return null;
+  }
+}
+
+function isValidPdfText(text: string): { valid: boolean; reason: string } {
+  if (!text || text.trim().length < 50) {
+    return { valid: false, reason: 'too_short' };
+  }
+  if (text.trim().startsWith('%PDF-')) {
+    return { valid: false, reason: 'pdf_binary_signature' };
+  }
+  let nonPrintable = 0;
+  let replacementChars = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code < 32 && code !== 10 && code !== 13 && code !== 9) nonPrintable++;
+    if (code === 0xFFFD) replacementChars++;
+  }
+  const garbageRatio = (nonPrintable + replacementChars) / Math.max(text.length, 1);
+  if (garbageRatio > 0.05) {
+    return { valid: false, reason: 'high_garbage_ratio' };
+  }
+  const sample = text.slice(0, 500);
+  const words = sample.match(/[a-zA-ZäöüÄÖÜß]{3,}/g) || [];
+  if (words.length < 5) {
+    return { valid: false, reason: 'no_real_words' };
+  }
+  return { valid: true, reason: 'ok' };
+}
+
+function cleanPdfTitle(rawTitle: string, url: string): string {
+  if (!rawTitle || rawTitle.includes('://') || rawTitle.endsWith('.pdf') || rawTitle.includes('/')) {
+    const urlPath = url.split('/').pop()?.split('?')[0] || '';
+    const baseName = urlPath.replace(/\.pdf$/i, '');
+    if (baseName) {
+      return baseName
+        .replace(/[_-]/g, ' ')
+        .replace(/\b\w/g, c => c.toUpperCase())
+        .trim();
+    }
+    return 'Untitled PDF';
+  }
+  return rawTitle
+    .replace(/\s*\|\s*(IFP\s+)?Familienhandbuch.*$/i, '')
+    .replace(/\s*[-–]\s*(IFP\s+)?Familienhandbuch.*$/i, '')
+    .trim() || 'Untitled';
+}
+
+function cleanHtmlTitle(rawTitle: string, url: string): string {
+  if (!rawTitle) {
+    try {
+      const pathname = new URL(url).pathname;
+      const lastSegment = pathname.split('/').filter(Boolean).pop() || '';
+      const baseName = lastSegment.replace(/\.(php|html|htm|asp|aspx)$/i, '');
+      if (baseName) {
+        return baseName
+          .replace(/[_-]/g, ' ')
+          .replace(/\b\w/g, c => c.toUpperCase())
+          .trim();
+      }
+    } catch {}
+    return 'Untitled';
+  }
+  return rawTitle
+    .replace(/\s*\|\s*(IFP\s+)?Familienhandbuch.*$/i, '')
+    .replace(/\s*[-–]\s*(IFP\s+)?Familienhandbuch.*$/i, '')
+    .replace(/\s*\|\s*Startseite.*$/i, '')
+    .trim() || rawTitle;
+}
+
+function generateDescription(text: string, maxLength: number = 200): string {
+  if (!text) return '';
+  const lines = text.split(/\n+/).filter(l => l.trim().length > 30);
+  const firstParagraph = lines[0] || text.slice(0, maxLength);
+  const truncated = firstParagraph.slice(0, maxLength);
+  const lastSentenceEnd = truncated.lastIndexOf('. ');
+  if (lastSentenceEnd > maxLength * 0.5) {
+    return truncated.slice(0, lastSentenceEnd + 1).trim();
+  }
+  return truncated.trim() + (firstParagraph.length > maxLength ? '...' : '');
+}
+
+function getCategoryFromUrl(url: string): string {
+  try {
+    const pathname = new URL(url).pathname;
+    const segments = pathname.split('/').filter(Boolean);
+    if (segments.length >= 2) {
+      const category = segments[0]
+        .replace(/[_-]/g, ' ')
+        .replace(/\b\w/g, c => c.toUpperCase());
+      return category;
+    }
+  } catch {}
+  return 'Allgemein';
+}
+
+function slugifyFilename(title: string, extension: string = '.html'): string {
+  return title
+    .toLowerCase()
+    .replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 120) + extension;
+}
+
 function estimateTokens(text: string, useMultiLanguage: boolean = true): number {
   try {
     // Use gpt-tokenizer for accurate token counting
@@ -1293,6 +1409,60 @@ interface ExtractedSection {
   type: 'text' | 'table' | 'code';
   tableData?: TableChunk;
   codeBlock?: CodeBlock;
+}
+
+function extractSectionsFromPlainText(text: string): ExtractedSection[] {
+  const sections: ExtractedSection[] = [];
+  const lines = text.split('\n');
+  let currentText = '';
+  let currentHeading: string | null = null;
+  let currentHeadingPath: string[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      if (currentText) currentText += '\n';
+      continue;
+    }
+    const isHeadingLike = trimmed.length < 100 && trimmed.length > 2 &&
+      !trimmed.endsWith('.') && !trimmed.endsWith(',') && !trimmed.endsWith(';') &&
+      /^[A-ZÄÖÜ\d]/.test(trimmed) &&
+      (trimmed === trimmed.toUpperCase() || /^[\d.]+\s/.test(trimmed) || trimmed.split(' ').length <= 8);
+
+    if (isHeadingLike && currentText.trim().length > 50) {
+      sections.push({
+        text: currentText.trim(),
+        heading: currentHeading,
+        headingPath: [...currentHeadingPath],
+        type: 'text',
+      });
+      currentText = trimmed + '\n\n';
+      currentHeading = trimmed;
+      currentHeadingPath = [trimmed];
+    } else {
+      currentText += trimmed + '\n';
+    }
+  }
+
+  if (currentText.trim()) {
+    sections.push({
+      text: currentText.trim(),
+      heading: currentHeading,
+      headingPath: [...currentHeadingPath],
+      type: 'text',
+    });
+  }
+
+  if (sections.length === 0 && text.trim()) {
+    sections.push({
+      text: text.trim(),
+      heading: null,
+      headingPath: [],
+      type: 'text',
+    });
+  }
+
+  return sections;
 }
 
 function extractTextFromElements(
@@ -3524,17 +3694,27 @@ export async function registerRoutes(
       const zip = new JSZip();
       const now = new Date().toISOString();
       const docId = `doc_${sha256(singlePage.url).slice(0, 12)}`;
+      const rawTitle = singlePage.title || '';
+      const cleanedTitle = cleanHtmlTitle(rawTitle, singlePage.url);
+      const textContent = (singlePage.scrapedData?.orderedElements || [])
+        .filter((el: any) => el.type === 'text' || el.type === 'heading' || el.type === 'paragraph')
+        .map((el: any) => el.content || '')
+        .join(' ');
 
       const documentObj: any = {
         doc_id: docId,
-        title: singlePage.title || '',
+        title: cleanedTitle,
         url: singlePage.url,
         domain: singlePage.domain,
         language: 'de',
+        file_type: 'html',
+        file_name: slugifyFilename(cleanedTitle, '.html'),
         source: {
           source_type: 'single_page',
           source_url: singlePage.url,
         },
+        description: generateDescription(textContent),
+        category: getCategoryFromUrl(singlePage.url),
         dates: {
           scraped: singlePage.createdAt || now,
           ingested: now,
@@ -3547,13 +3727,18 @@ export async function registerRoutes(
         },
         hashes: {
           content_sha256: sha256(JSON.stringify(singlePage.scrapedData?.orderedElements || [])),
+          source_fingerprint: sha256(singlePage.url + '|' + cleanedTitle),
         },
       };
-      
-      // Download and embed PDFs
+
       const spLinkedPdfs = (singlePage.scrapedData as any)?.linkedPdfs;
       const spAssetEntries: Array<{ asset_id: string; doc_id: string; url: string; title?: string; link_text?: string; filename: string; path: string; size_bytes: number; mime_type: string; downloaded: boolean; error?: string }> = [];
       const spAssetPathMap = new Map<string, string>();
+      const spPdfDocuments: any[] = [];
+      const spPdfChunks: any[] = [];
+      const spSkippedBinaryPdfs: string[] = [];
+      let spPdfValidCount = 0;
+      let spPdfInvalidCount = 0;
 
       if (spLinkedPdfs && spLinkedPdfs.length > 0) {
         const assetsFolder = zip.folder('assets');
@@ -3606,24 +3791,147 @@ export async function registerRoutes(
         }
 
         documentObj.linked_pdfs = spLinkedPdfs.map((pdf: any) => {
-          const entry: any = {
+          const pdfEntry: any = {
             url: pdf.url,
             title: pdf.title || pdf.linkText || undefined,
             link_text: pdf.linkText || undefined,
           };
           const localPath = spAssetPathMap.get(pdf.url);
-          if (localPath) {
-            entry.local_path = localPath;
-          }
-          return entry;
+          if (localPath) pdfEntry.local_path = localPath;
+          return pdfEntry;
         });
       }
 
-      const documentsJsonl = JSON.stringify(documentObj);
-      const chunksJsonl = chunks.map(chunk => {
-        const { embedding, ...chunkWithoutEmbedding } = chunk;
-        return JSON.stringify(chunkWithoutEmbedding);
-      }).join('\n');
+      const uniqueDownloadedSpAssets = spAssetEntries.filter(a => a.downloaded && a.path);
+      const seenSpAssetPaths = new Set<string>();
+
+      for (const asset of uniqueDownloadedSpAssets) {
+        if (seenSpAssetPaths.has(asset.path)) continue;
+        seenSpAssetPaths.add(asset.path);
+
+        try {
+          const pdfFile = zip.file(asset.path);
+          if (!pdfFile) continue;
+
+          const buffer = Buffer.from(await pdfFile.async('nodebuffer'));
+
+          if (buffer.length < 5 || buffer.toString('ascii', 0, 5) !== '%PDF-') {
+            spPdfInvalidCount++;
+            spSkippedBinaryPdfs.push(asset.filename);
+            continue;
+          }
+
+          const pdfResult = await extractPdfText(buffer);
+          if (!pdfResult) {
+            spPdfInvalidCount++;
+            spSkippedBinaryPdfs.push(asset.filename);
+            continue;
+          }
+
+          const validation = isValidPdfText(pdfResult.text);
+          if (!validation.valid) {
+            spPdfInvalidCount++;
+            spSkippedBinaryPdfs.push(asset.filename);
+            console.log(`[RAG Pack SP] Skipping PDF ${asset.filename}: ${validation.reason}`);
+            continue;
+          }
+
+          spPdfValidCount++;
+
+          const pdfDocId = `doc_${sha256(asset.url).slice(0, 12)}`;
+          const pdfTitle = cleanPdfTitle(
+            pdfResult.metadata?.Title || asset.title || asset.link_text || '',
+            asset.url
+          );
+
+          const pdfDoc: any = {
+            doc_id: pdfDocId,
+            title: pdfTitle,
+            url: asset.url,
+            language: 'de',
+            file_type: 'pdf',
+            file_name: slugifyFilename(pdfTitle, '.pdf'),
+            pdf_has_text_layer: true,
+            source: {
+              source_type: 'pdf',
+              source_url: asset.url,
+              asset_path: asset.path,
+            },
+            description: generateDescription(pdfResult.text),
+            category: getCategoryFromUrl(singlePage.url),
+            total_pages: pdfResult.numPages,
+            dates: {
+              scraped: now,
+              ingested: now,
+            },
+            hashes: {
+              content_sha256: sha256(pdfResult.text),
+              source_fingerprint: sha256(asset.url + '|' + pdfTitle),
+            },
+          };
+          spPdfDocuments.push(pdfDoc);
+
+          const pdfSections = extractSectionsFromPlainText(pdfResult.text);
+          const pdfChunkedSections = chunkText(pdfSections, 512, 100, 80);
+
+          pdfChunkedSections.forEach((chunk, index) => {
+            const chunkId = `${pdfDocId}::c${String(index).padStart(4, '0')}`;
+            const tokens = estimateTokensFast(chunk.text);
+
+            const ragChunk: any = {
+              chunk_id: chunkId,
+              doc_id: pdfDocId,
+              chunk_index: index,
+              text: chunk.text,
+              tokens_estimate: tokens,
+              language: 'de',
+              location: {
+                url: asset.url,
+                heading_path: chunk.headingPath?.filter(Boolean) || [],
+              },
+              structure: {
+                section_path: chunk.headingPath?.filter(Boolean).join(' > ') || null,
+                heading: chunk.heading,
+              },
+              source: {
+                source_url: asset.url,
+              },
+              hashes: {
+                text_sha256: sha256(chunk.text),
+              },
+              citation: `${pdfTitle}${chunk.heading ? ', ' + chunk.heading : ''} (${asset.url})`,
+              chunk_type: chunk.type || 'text',
+            };
+            spPdfChunks.push(ragChunk);
+          });
+
+          console.log(`[RAG Pack SP] PDF ${asset.filename}: ${pdfChunkedSections.length} chunks from ${pdfResult.numPages} pages`);
+        } catch (err) {
+          console.warn(`[RAG Pack SP] Error processing PDF ${asset.filename}:`, (err as Error).message);
+          spPdfInvalidCount++;
+          spSkippedBinaryPdfs.push(asset.filename);
+        }
+      }
+
+      if (spPdfValidCount > 0 || spPdfInvalidCount > 0) {
+        console.log(`[RAG Pack SP] PDF processing: ${spPdfValidCount} valid, ${spPdfInvalidCount} invalid/skipped`);
+      }
+
+      const documentsJsonl = [
+        JSON.stringify(documentObj),
+        ...spPdfDocuments.map(doc => JSON.stringify(doc)),
+      ].join('\n');
+
+      const processedChunks = chunks.map((chunk: any) => {
+        const processed = { ...chunk };
+        delete processed.embedding;
+        if (!processed.citation) {
+          processed.citation = `${processed.doc_id}, Chunk ${processed.chunk_index}`;
+        }
+        return processed;
+      });
+      const allSpExportChunks = [...processedChunks, ...spPdfChunks];
+      const chunksJsonl = allSpExportChunks.map(chunk => JSON.stringify(chunk)).join('\n');
 
       let spAssetsJsonl = '';
       if (spAssetEntries.length > 0) {
@@ -3631,11 +3939,11 @@ export async function registerRoutes(
       }
 
       const manifest: any = {
-        version: '1.0',
+        rag_pack_version: '2.0',
         created_at: now,
         generator: {
           name: 'MapScraper Pro',
-          version: '1.0',
+          version: '2.0',
         },
         source: {
           url: singlePage.url,
@@ -3657,9 +3965,25 @@ export async function registerRoutes(
           },
         },
         counts: {
-          documents: 1,
-          chunks: chunks.length,
+          documents: 1 + spPdfDocuments.length,
+          chunks: allSpExportChunks.length,
           assets: spAssetEntries.filter(a => a.downloaded).length,
+          pdf_valid: spPdfValidCount,
+          pdf_invalid: spPdfInvalidCount,
+        },
+        quality_report: {
+          documents_with_text_layer: spPdfValidCount,
+          documents_without_text_layer: spPdfInvalidCount,
+          skipped_binary_pdfs: spSkippedBinaryPdfs,
+          avg_tokens_per_chunk: allSpExportChunks.length > 0
+            ? Math.round(allSpExportChunks.reduce((sum: number, c: any) => sum + (c.tokens_estimate || 0), 0) / allSpExportChunks.length)
+            : 0,
+          min_tokens_in_chunk: allSpExportChunks.length > 0
+            ? Math.min(...allSpExportChunks.map((c: any) => c.tokens_estimate || 0))
+            : 0,
+          max_tokens_in_chunk: allSpExportChunks.length > 0
+            ? Math.max(...allSpExportChunks.map((c: any) => c.tokens_estimate || 0))
+            : 0,
         },
         checksums: {
           documents_sha256: sha256(documentsJsonl),
@@ -3683,7 +4007,7 @@ export async function registerRoutes(
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
         "properties": {
-          "version": { "type": "string" },
+          "rag_pack_version": { "type": "string" },
           "created_at": { "type": "string", "format": "date-time" },
         }
       }, null, 2));
@@ -4707,6 +5031,11 @@ export async function registerRoutes(
       // Download and embed PDFs if includeAssets is enabled
       const assetEntries: Array<{ asset_id: string; doc_id: string; doc_url: string; url: string; title?: string; link_text?: string; filename: string; path: string; size_bytes: number; mime_type: string; downloaded: boolean; error?: string }> = [];
       const assetPathMap = new Map<string, string>();
+      const pdfDocuments: any[] = [];
+      const pdfChunks: any[] = [];
+      const skippedBinaryPdfs: string[] = [];
+      let pdfValidCount = 0;
+      let pdfInvalidCount = 0;
 
       if (includeAssets && allAssets.length > 0) {
         const assetsFolder = zip.folder('assets');
@@ -4807,59 +5136,193 @@ export async function registerRoutes(
         console.log(`[RAG Pack] Downloaded ${assetEntries.filter(a => a.downloaded).length}/${seenUrls.size} unique assets`);
       }
 
-      // Create documents.jsonl
-      const documentsJsonl = scrapedResults.map(entry => {
-        const docId = `doc_${sha256(entry.loc).slice(0, 12)}`;
-        const doc: any = {
-          doc_id: docId,
-          title: entry.scrapedData?.title || '',
-          url: entry.loc,
-          language: 'de',
-          source: {
-            source_type: 'website',
-            source_url: `https://${project.domain}`,
-          },
-          dates: {
-            scraped: entry.scrapedData?.timestamp || now,
-            ingested: now,
-          },
-          hashes: {
-            content_sha256: sha256(JSON.stringify(entry.scrapedData?.orderedElements || [])),
-          },
-        };
-        
-        const linkedPdfs = (entry.scrapedData as any)?.linkedPdfs;
-        if (linkedPdfs && linkedPdfs.length > 0) {
-          doc.linked_pdfs = linkedPdfs.map((pdf: any) => {
-            const entry: any = {
-              url: pdf.url,
-              title: pdf.title || pdf.linkText || undefined,
-              link_text: pdf.linkText || undefined,
-            };
-            if (includeAssets) {
-              const localPath = assetPathMap.get(pdf.url);
-              if (localPath) {
-                entry.local_path = localPath;
-              }
+      if (includeAssets) {
+        const uniqueDownloadedAssets = assetEntries.filter(a => a.downloaded && a.path);
+        const seenAssetPaths = new Set<string>();
+
+        for (const asset of uniqueDownloadedAssets) {
+          if (seenAssetPaths.has(asset.path)) continue;
+          seenAssetPaths.add(asset.path);
+
+          try {
+            const pdfFile = zip.file(asset.path);
+            if (!pdfFile) continue;
+
+            const buffer = Buffer.from(await pdfFile.async('nodebuffer'));
+
+            if (buffer.length < 5 || buffer.toString('ascii', 0, 5) !== '%PDF-') {
+              pdfInvalidCount++;
+              skippedBinaryPdfs.push(asset.filename);
+              continue;
             }
-            return entry;
-          });
-        }
-        
-        return JSON.stringify(doc);
-      }).join('\n');
 
-      // Create chunks.jsonl - respect includeEmbeddings setting
-      const processedChunks = chunks.map(chunk => {
-        if (!includeEmbeddings) {
-          const { embedding, ...chunkWithoutEmbedding } = chunk;
-          return chunkWithoutEmbedding;
+            const pdfResult = await extractPdfText(buffer);
+            if (!pdfResult) {
+              pdfInvalidCount++;
+              skippedBinaryPdfs.push(asset.filename);
+              continue;
+            }
+
+            const validation = isValidPdfText(pdfResult.text);
+            if (!validation.valid) {
+              pdfInvalidCount++;
+              skippedBinaryPdfs.push(asset.filename);
+              console.log(`[RAG Pack] Skipping PDF ${asset.filename}: ${validation.reason}`);
+              continue;
+            }
+
+            pdfValidCount++;
+
+            const pdfDocId = `doc_${sha256(asset.url).slice(0, 12)}`;
+            const pdfTitle = cleanPdfTitle(
+              pdfResult.metadata?.Title || asset.title || asset.link_text || '',
+              asset.url
+            );
+
+            const pdfDoc: any = {
+              doc_id: pdfDocId,
+              title: pdfTitle,
+              url: asset.url,
+              language: 'de',
+              file_type: 'pdf',
+              file_name: slugifyFilename(pdfTitle, '.pdf'),
+              pdf_has_text_layer: true,
+              source: {
+                source_type: 'pdf',
+                source_url: asset.url,
+                asset_path: asset.path,
+              },
+              description: generateDescription(pdfResult.text),
+              category: getCategoryFromUrl(asset.doc_url || asset.url),
+              total_pages: pdfResult.numPages,
+              dates: {
+                scraped: now,
+                ingested: now,
+              },
+              hashes: {
+                content_sha256: sha256(pdfResult.text),
+                source_fingerprint: sha256(asset.url + '|' + pdfTitle),
+              },
+            };
+            pdfDocuments.push(pdfDoc);
+
+            const pdfSections = extractSectionsFromPlainText(pdfResult.text);
+
+            const chunkingSettings2 = settings.chunking || { targetTokens: 512, overlapTokens: 100, minChunkTokens: 80 };
+            const pdfChunkedSections = chunkText(
+              pdfSections,
+              chunkingSettings2.targetTokens || 512,
+              chunkingSettings2.overlapTokens || 100,
+              chunkingSettings2.minChunkTokens || 80
+            );
+
+            pdfChunkedSections.forEach((chunk, index) => {
+              const chunkId = `${pdfDocId}::c${String(index).padStart(4, '0')}`;
+              const tokens = estimateTokensFast(chunk.text);
+
+              const ragChunk: any = {
+                chunk_id: chunkId,
+                doc_id: pdfDocId,
+                chunk_index: index,
+                text: chunk.text,
+                tokens_estimate: tokens,
+                language: 'de',
+                location: {
+                  url: asset.url,
+                  heading_path: chunk.headingPath?.filter(Boolean) || [],
+                },
+                structure: {
+                  section_path: chunk.headingPath?.filter(Boolean).join(' > ') || null,
+                  heading: chunk.heading,
+                },
+                source: {
+                  source_url: asset.url,
+                },
+                hashes: {
+                  text_sha256: sha256(chunk.text),
+                },
+                citation: `${pdfTitle}${chunk.heading ? ', ' + chunk.heading : ''} (${asset.url})`,
+                chunk_type: chunk.type || 'text',
+              };
+              pdfChunks.push(ragChunk);
+            });
+
+            console.log(`[RAG Pack] PDF ${asset.filename}: ${pdfChunkedSections.length} chunks from ${pdfResult.numPages} pages`);
+          } catch (err) {
+            console.warn(`[RAG Pack] Error processing PDF ${asset.filename}:`, (err as Error).message);
+            pdfInvalidCount++;
+            skippedBinaryPdfs.push(asset.filename);
+          }
         }
-        return chunk;
+
+        console.log(`[RAG Pack] PDF processing: ${pdfValidCount} valid, ${pdfInvalidCount} invalid/skipped`);
+      }
+
+      const documentsJsonl = [
+        ...scrapedResults.map(entry => {
+          const docId = `doc_${sha256(entry.loc).slice(0, 12)}`;
+          const rawTitle = entry.scrapedData?.title || '';
+          const cleanedTitle = cleanHtmlTitle(rawTitle, entry.loc);
+          const textContent = (entry.scrapedData?.orderedElements || [])
+            .filter((el: any) => el.type === 'text' || el.type === 'heading' || el.type === 'paragraph')
+            .map((el: any) => el.content || '')
+            .join(' ');
+
+          const doc: any = {
+            doc_id: docId,
+            title: cleanedTitle,
+            url: entry.loc,
+            language: 'de',
+            file_type: 'html',
+            file_name: slugifyFilename(cleanedTitle, '.html'),
+            source: {
+              source_type: 'website',
+              source_url: entry.loc,
+            },
+            description: generateDescription(textContent),
+            category: getCategoryFromUrl(entry.loc),
+            dates: {
+              scraped: entry.scrapedData?.timestamp || now,
+              ingested: now,
+            },
+            hashes: {
+              content_sha256: sha256(JSON.stringify(entry.scrapedData?.orderedElements || [])),
+              source_fingerprint: sha256(entry.loc + '|' + cleanedTitle),
+            },
+          };
+
+          const linkedPdfs = (entry.scrapedData as any)?.linkedPdfs;
+          if (linkedPdfs && linkedPdfs.length > 0) {
+            doc.linked_pdfs = linkedPdfs.map((pdf: any) => {
+              const pdfEntry: any = {
+                url: pdf.url,
+                title: pdf.title || pdf.linkText || undefined,
+                link_text: pdf.linkText || undefined,
+              };
+              if (includeAssets) {
+                const localPath = assetPathMap.get(pdf.url);
+                if (localPath) pdfEntry.local_path = localPath;
+              }
+              return pdfEntry;
+            });
+          }
+
+          return JSON.stringify(doc);
+        }),
+        ...pdfDocuments.map(doc => JSON.stringify(doc)),
+      ].join('\n');
+
+      const processedChunks = chunks.map((chunk: any) => {
+        const processed = { ...chunk };
+        if (!includeEmbeddings) delete processed.embedding;
+        if (!processed.citation) {
+          processed.citation = `${processed.doc_id}, Chunk ${processed.chunk_index}`;
+        }
+        return processed;
       });
-      const chunksJsonl = processedChunks.map(chunk => JSON.stringify(chunk)).join('\n');
+      const allExportChunks = [...processedChunks, ...pdfChunks];
+      const chunksJsonl = allExportChunks.map(chunk => JSON.stringify(chunk)).join('\n');
 
-      // Create manifest.json
       const chunkingSettings = project.projectSettings?.chunking || {
         targetTokens: 512,
         overlapTokens: 100,
@@ -4869,11 +5332,11 @@ export async function registerRoutes(
       };
 
       const manifest = {
-        rag_pack_version: '1.0',
+        rag_pack_version: '2.0',
         created_at: now,
         generator: {
           name: 'MapScraper Pro',
-          version: '1.0',
+          version: '2.0',
         },
         source: {
           domain: project.domain,
@@ -4900,10 +5363,27 @@ export async function registerRoutes(
           include_assets: includeAssets,
         },
         counts: {
-          documents: scrapedResults.length,
-          chunks: chunks.length,
+          documents: scrapedResults.length + pdfDocuments.length,
+          chunks: allExportChunks.length,
           assets: includeAssets ? assetEntries.filter(a => a.downloaded).length : 0,
           assets_total: includeAssets ? allAssets.length : 0,
+          pdf_valid: pdfValidCount,
+          pdf_invalid: pdfInvalidCount,
+          skipped_documents: pdfInvalidCount,
+        },
+        quality_report: {
+          documents_with_text_layer: pdfValidCount,
+          documents_without_text_layer: pdfInvalidCount,
+          skipped_binary_pdfs: skippedBinaryPdfs,
+          avg_tokens_per_chunk: allExportChunks.length > 0
+            ? Math.round(allExportChunks.reduce((sum: number, c: any) => sum + (c.tokens_estimate || 0), 0) / allExportChunks.length)
+            : 0,
+          min_tokens_in_chunk: allExportChunks.length > 0
+            ? Math.min(...allExportChunks.map((c: any) => c.tokens_estimate || 0))
+            : 0,
+          max_tokens_in_chunk: allExportChunks.length > 0
+            ? Math.max(...allExportChunks.map((c: any) => c.tokens_estimate || 0))
+            : 0,
         },
         checksums: {
           'documents.jsonl': `sha256:${sha256(documentsJsonl)}`,
@@ -4911,14 +5391,12 @@ export async function registerRoutes(
         } as Record<string, string>,
       };
 
-      // Create assets.jsonl if assets were collected
       let assetsJsonl = '';
       if (includeAssets && assetEntries.length > 0) {
         assetsJsonl = assetEntries.map(a => JSON.stringify(a)).join('\n');
         (manifest.checksums as Record<string, string>)['assets.jsonl'] = `sha256:${sha256(assetsJsonl)}`;
       }
 
-      // Schema files
       const documentsSchema = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "documents.jsonl schema",
@@ -4929,7 +5407,13 @@ export async function registerRoutes(
           "title": { "type": "string" },
           "url": { "type": "string" },
           "language": { "type": "string" },
-          "source": { "type": "object" },
+          "file_type": { "type": "string", "enum": ["html", "pdf"] },
+          "file_name": { "type": "string" },
+          "pdf_has_text_layer": { "type": "boolean" },
+          "description": { "type": "string" },
+          "category": { "type": "string" },
+          "total_pages": { "type": "integer" },
+          "source": { "type": "object", "properties": { "source_type": { "type": "string" }, "source_url": { "type": "string" }, "asset_path": { "type": "string" } } },
           "dates": { "type": "object" },
           "hashes": { "type": "object" },
           "linked_pdfs": {
@@ -4965,6 +5449,8 @@ export async function registerRoutes(
           "hashes": { "type": "object" },
           "tokens_estimate": { "type": "integer" },
           "citation": { "type": "string" },
+          "chunk_type": { "type": "string", "enum": ["text", "table", "code", "mixed"] },
+          "quality_flags": { "type": "object" },
         },
       };
 
@@ -4993,6 +5479,8 @@ export async function registerRoutes(
           "mime_type": { "type": "string" },
           "downloaded": { "type": "boolean" },
           "error": { "type": "string" },
+          "sha256": { "type": "string" },
+          "valid_pdf": { "type": "boolean" },
         },
       };
 

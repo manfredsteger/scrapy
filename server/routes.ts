@@ -408,6 +408,12 @@ function getDefaultSettings(): ProjectSettings {
 const CJK_REGEX = /[\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\ufe30-\ufe4f\u20000-\u2a6df\u2a700-\u2b73f\u2b740-\u2b81f\u2b820-\u2ceaf\u2ceb0-\u2ebef\u30000-\u3134f\uac00-\ud7af\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\ud7b0-\ud7ff]/g;
 
 // Chunking utility functions
+function estimateTokensFast(text: string): number {
+  if (!text) return 0;
+  const words = text.split(/\s+/).length;
+  return Math.ceil(words * 1.3);
+}
+
 function estimateTokens(text: string, useMultiLanguage: boolean = true): number {
   try {
     // Use gpt-tokenizer for accurate token counting
@@ -1419,7 +1425,7 @@ function getOverlapText(text: string, overlapTokens: number): string {
   
   // Work backwards from end to get overlap
   for (let i = sentences.length - 1; i >= 0 && currentTokens < overlapTokens; i--) {
-    const sentenceTokens = estimateTokens(sentences[i]);
+    const sentenceTokens = estimateTokensFast(sentences[i]);
     if (currentTokens + sentenceTokens <= overlapTokens * 1.5) {
       overlap = sentences[i] + (overlap ? ' ' + overlap : '');
       currentTokens += sentenceTokens;
@@ -1449,7 +1455,7 @@ function chunkText(
 
   function saveTextChunk(): boolean {
     if (!currentChunk || !currentChunk.trim()) return false;
-    const tokens = estimateTokens(currentChunk);
+    const tokens = estimateTokensFast(currentChunk);
     if (tokens >= minChunkTokens) {
       chunks.push({ 
         text: currentChunk.trim(), 
@@ -1490,8 +1496,8 @@ function chunkText(
     }
 
     // Handle text sections with normal chunking logic
-    const sectionTokens = estimateTokens(section.text);
-    const currentTokens = estimateTokens(currentChunk);
+    const sectionTokens = estimateTokensFast(section.text);
+    const currentTokens = estimateTokensFast(currentChunk);
 
     // If section fits in current chunk
     if (currentTokens + sectionTokens <= targetTokens) {
@@ -1512,8 +1518,8 @@ function chunkText(
       
       const paragraphs = section.text.split(/\n\n+/);
       for (const para of paragraphs) {
-        const paraTokens = estimateTokens(para);
-        const chunkTokens = estimateTokens(currentChunk);
+        const paraTokens = estimateTokensFast(para);
+        const chunkTokens = estimateTokensFast(currentChunk);
         
         if (chunkTokens + paraTokens > targetTokens) {
           if (saveTextChunk()) {
@@ -1542,7 +1548,7 @@ function chunkText(
 
   // Don't forget the last text chunk
   if (currentChunk) {
-    const tokens = estimateTokens(currentChunk);
+    const tokens = estimateTokensFast(currentChunk);
     if (tokens >= minChunkTokens) {
       chunks.push({ 
         text: currentChunk.trim(), 

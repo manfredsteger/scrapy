@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { X, Settings, Sliders, Brain, Cpu, Info, Plus, Trash2, Download } from 'lucide-react';
+import { X, Settings, Sliders, Brain, Cpu, Info, Plus, Trash2, Download, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -43,11 +43,11 @@ const defaultSettings: ProjectSettingsType = {
     extractStructuredData: true,
   },
   chunking: {
-    targetTokens: 350,
-    overlapTokens: 55,
+    targetTokens: 512,
+    overlapTokens: 100,
     boundaryRules: ['paragraph', 'heading'],
     preserveHeadingHierarchy: true,
-    minChunkTokens: 50,
+    minChunkTokens: 80,
     preserveTables: true,
     preserveCodeBlocks: true,
     multiLanguageTokenization: true,
@@ -59,7 +59,7 @@ const defaultSettings: ProjectSettingsType = {
     },
     deduplication: {
       enabled: true,
-      similarityThreshold: 0.95,
+      similarityThreshold: 0.90,
     },
   },
   ai: {
@@ -529,8 +529,26 @@ export default function ProjectSettings({ settings, onSave, onClose, t }: Projec
             <TabsContent value="chunking" className="space-y-4">
               <Card>
                 <CardHeader className="pb-3">
-                  <CardTitle className="text-base">{t('chunkingSettings')}</CardTitle>
-                  <CardDescription>{t('chunkingSettingsDesc')}</CardDescription>
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div>
+                      <CardTitle className="text-base">{t('chunkingSettings')}</CardTitle>
+                      <CardDescription>{t('chunkingSettingsDesc')}</CardDescription>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setLocalSettings(prev => ({
+                          ...prev,
+                          chunking: { ...defaultSettings.chunking },
+                        }));
+                      }}
+                      data-testid="button-reset-chunking-defaults"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5 mr-1.5" />
+                      {t('resetToDefaults')}
+                    </Button>
+                  </div>
                 </CardHeader>
                 <CardContent className="space-y-6">
                   <div className="space-y-3">

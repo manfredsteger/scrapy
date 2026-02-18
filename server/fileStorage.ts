@@ -163,6 +163,19 @@ export async function readPdf(filePath: string): Promise<Buffer | null> {
   }
 }
 
+export async function findPdfByUrl(pageDir: string, pdfUrl: string): Promise<Buffer | null> {
+  const urlFilename = pdfUrl.split('/').pop()?.split('?')[0] || '';
+  if (!urlFilename) return null;
+  const expectedName = sanitizeDirName(urlFilename.replace(/\.pdf$/i, '')) + '.pdf';
+  const pdfDir = path.join(pageDir, 'pdfs');
+  try {
+    const filePath = path.join(pdfDir, expectedName);
+    return await fs.readFile(filePath);
+  } catch {
+    return null;
+  }
+}
+
 export async function countProjectAttachments(projectId: number, domain: string): Promise<number> {
   const projectDir = getProjectDir(projectId, domain);
   const pageDirs = await listPageDirs(projectDir);

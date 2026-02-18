@@ -4022,28 +4022,24 @@ export async function registerRoutes(
 
           try {
             let buffer: Buffer | null = null;
+            const spDir = fileStorage.getSinglePageDir(singlePage.id, singlePage.domain);
 
-            // Try filesystem first
-            try {
-              const spDir = fileStorage.getSinglePageDir(singlePage.id, singlePage.domain);
-              const localPdfs = await fileStorage.listPdfs(spDir);
-              const urlFilename = pdf.url.split('/').pop()?.split('?')[0] || '';
-              for (const p of localPdfs) {
-                const pdfName = p.split('/').pop() || '';
-                if (urlFilename && pdfName === urlFilename) {
-                  buffer = await fileStorage.readPdf(p);
-                  if (buffer) break;
-                }
-              }
-            } catch { /* filesystem not available */ }
+            buffer = await fileStorage.findPdfByUrl(spDir, pdf.url);
 
-            if (!buffer) {
+            if (buffer) {
+              idx++;
+              sendEvent('progress', { phase: 'downloading', current: idx, total: seenUrls.size, currentUrl: pdf.url.slice(0, 80), message: `PDF ${idx}/${seenUrls.size} aus Cache geladen` });
+            } else {
               const response = await fetch(pdf.url, {
                 headers: { 'User-Agent': 'MapScraperPro/1.0' },
                 signal: AbortSignal.timeout(30000),
               });
               if (response.ok) {
                 buffer = Buffer.from(await response.arrayBuffer());
+                try {
+                  const urlFilename = pdf.url.split('/').pop()?.split('?')[0] || 'document.pdf';
+                  await fileStorage.savePdf(spDir, urlFilename, buffer);
+                } catch {}
               } else {
                 spAssetEntries.push({
                   asset_id: `asset_${sha256(pdf.url).slice(0, 12)}`,
@@ -5525,32 +5521,22 @@ export async function registerRoutes(
           const filename = `${baseName}_${urlHash}.pdf`;
           const assetPath = `assets/${filename}`;
 
-          let assetFromFs = false;
           try {
             let buffer: Buffer | null = null;
             const urlFilename = asset.url.split('/').pop()?.split('?')[0] || '';
             const docPageDir = fileStorage.getProjectPageDir(projectId, project.domain, asset.docUrl);
 
-            const searchDirs = [docPageDir];
-            if (asset.url !== asset.docUrl) {
-              searchDirs.push(fileStorage.getProjectPageDir(projectId, project.domain, asset.url));
-            }
-            for (const dir of searchDirs) {
-              if (buffer) break;
-              try {
-                const localPdfs = await fileStorage.listPdfs(dir);
-                for (const p of localPdfs) {
-                  const pdfName = p.split('/').pop() || '';
-                  if (pdfName.includes(baseName) || (urlFilename && pdfName === urlFilename)) {
-                    buffer = await fileStorage.readPdf(p);
-                    if (buffer) { assetFromFs = true; break; }
-                  }
-                }
-              } catch {}
-            }
+            buffer = await fileStorage.findPdfByUrl(docPageDir, asset.url);
 
-            if (!buffer) {
-              console.log(`[RAG Pack] Downloading asset ${assetIndex + 1}/${seenUrls.size}: ${asset.url.slice(0, 80)}`);
+            if (buffer) {
+              sendEvent('progress', {
+                phase: 'downloading',
+                current: assetIndex,
+                total: seenUrls.size,
+                currentUrl: asset.url,
+                message: `PDF ${assetIndex + 1}/${seenUrls.size} aus Cache geladen`,
+              });
+            } else {
               sendEvent('progress', {
                 phase: 'downloading',
                 current: assetIndex,
@@ -5580,8 +5566,6 @@ export async function registerRoutes(
                 if (clientDisconnected) break;
                 continue;
               }
-            } else {
-              console.log(`[RAG Pack] Loaded asset from filesystem: ${asset.url.slice(0, 80)}`);
             }
 
             assetsFolder?.file(filename, buffer);

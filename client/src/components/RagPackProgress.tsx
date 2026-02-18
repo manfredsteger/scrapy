@@ -251,7 +251,7 @@ export default function RagPackProgress({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-md w-[420px] max-h-[90vh] overflow-hidden" data-testid="ragpack-progress-modal">
+      <DialogContent className="sm:max-w-lg w-[480px] max-h-[90vh] overflow-y-auto" data-testid="ragpack-progress-modal">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Package className="w-5 h-5" />
@@ -290,7 +290,7 @@ export default function RagPackProgress({
           {progress.currentUrl && progress.phase !== 'complete' && progress.phase !== 'error' && (
             <div className="text-xs text-muted-foreground bg-secondary p-2 rounded overflow-hidden">
               <span className="font-medium">Aktuell: </span>
-              <span className="block truncate max-w-[340px]">{progress.currentUrl}</span>
+              <span className="block truncate">{progress.currentUrl}</span>
             </div>
           )}
 
@@ -337,8 +337,14 @@ export default function RagPackProgress({
                 className="w-full gap-2"
                 data-testid="button-download-ragpack"
               >
-                <Download className="w-4 h-4" />
-                {progress.filename || 'RAG Pack herunterladen'}
+                <Download className="w-4 h-4 shrink-0" />
+                <span className="truncate">
+                  {progress.filename
+                    ? (progress.filename.length > 40 
+                        ? progress.filename.slice(0, 37) + '...zip' 
+                        : progress.filename)
+                    : 'RAG Pack herunterladen'}
+                </span>
               </Button>
             </>
           )}

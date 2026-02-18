@@ -37,9 +37,14 @@ MapScraper Pro utilizes a monorepo structure, hosting both the React TypeScript 
 - **Modular Scraper System**: Features a `BaseScraper` class, a scraper registry for dynamic instantiation, and a website detector to identify CMS types (e.g., Wiki.js, WordPress, Moodle, Generic) and apply specialized scraping logic.
 
 ### Data Storage
-- **Database**: PostgreSQL, managed with Drizzle ORM.
+- **Dual Storage Architecture**: Filesystem-first with PostgreSQL fallback during migration.
+- **Filesystem Storage** (`server/fileStorage.ts`): Primary storage for scraped content. Each page saved as `content.md` (Markdown) + `meta.json` (metadata with orderedElements, structuredData, linkedPdfs). PDFs and media downloaded during scraping into page-level `pdfs/` and `media/` folders. Storage root: `./scraped-data/projects/{id}_{domain}/` and `./scraped-data/single-pages/{id}_{domain}/`.
+- **Markdown Conversion** (`server/markdownConverter.ts`): Converts `orderedElements` array to/from Markdown format, preserving headings, lists, tables, code blocks, blockquotes, and media references.
+- **Database**: PostgreSQL, managed with Drizzle ORM. Still stores `scrapedData` (JSONB) and `chunks` for backward compatibility. API endpoints try filesystem first, fall back to DB.
 - **Schema Management**: Drizzle ORM defines database schemas in `shared/schema.ts`, with migrations handled by Drizzle Kit.
 - **Access Pattern**: Repository pattern implemented in `server/storage.ts` for data access.
+- **Migration**: `POST /api/projects/:id/migrate-to-filesystem` SSE endpoint exports existing DB data to filesystem (skips already migrated pages).
+- **Storage Stats**: `GET /api/storage/stats` returns filesystem usage (total files, size).
 
 ### RAG Pack Generation (v2.0)
 - **Chunking System**: Fast character-based token estimation (`text.length / 4`), configurable target/overlap tokens, sentence-based overlap, preservation of heading hierarchy, tables, and code blocks. Includes SHA256 hashing for integrity and quality checks.

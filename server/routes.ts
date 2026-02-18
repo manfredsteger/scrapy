@@ -10,6 +10,8 @@ import JSZip from "jszip";
 import { ProxyAgent, fetch as undiciFetch } from "undici";
 import type { RagChunk, ProjectSettings, ScrapedElement, SitemapUrlEntry, StructuredData, ChunkQuality, TableChunk, CodeBlock, RateLimitState, ProxyConfig, ChunkStats } from "@shared/schema";
 import { MoodleScraper } from "./scrapers/moodle-scraper";
+import * as fileStorage from './fileStorage';
+import { orderedElementsToMarkdown } from './markdownConverter';
 
 const CONCURRENCY = 10;
 
@@ -435,20 +437,31 @@ function isValidPdfText(text: string): { valid: boolean; reason: string } {
   if (text.trim().startsWith('%PDF-')) {
     return { valid: false, reason: 'pdf_binary_signature' };
   }
+  const sampleSize = Math.min(text.length, 5000);
+  const sample = text.slice(0, sampleSize);
   let nonPrintable = 0;
   let replacementChars = 0;
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
+  for (let i = 0; i < sample.length; i++) {
+    const code = sample.charCodeAt(i);
     if (code < 32 && code !== 10 && code !== 13 && code !== 9) nonPrintable++;
     if (code === 0xFFFD) replacementChars++;
   }
-  const garbageRatio = (nonPrintable + replacementChars) / Math.max(text.length, 1);
-  if (garbageRatio > 0.05) {
+  const garbageRatio = (nonPrintable + replacementChars) / Math.max(sample.length, 1);
+  if (garbageRatio > 0.15) {
     return { valid: false, reason: 'high_garbage_ratio' };
   }
-  const sample = text.slice(0, 500);
-  const words = sample.match(/[a-zA-ZäöüÄÖÜß]{3,}/g) || [];
-  if (words.length < 5) {
+
+  const chunks = [
+    text.slice(0, 2000),
+    text.slice(Math.floor(text.length * 0.25), Math.floor(text.length * 0.25) + 2000),
+    text.slice(Math.floor(text.length * 0.5), Math.floor(text.length * 0.5) + 2000),
+  ];
+  let totalWords = 0;
+  for (const chunk of chunks) {
+    const words = chunk.match(/[a-zA-ZäöüÄÖÜßàáâãèéêëìíîïòóôõùúûüñçÀÁÂÃÈÉÊËÌÍÎÏÒÓÔÕÙÚÛÜÑÇ]{3,}/g) || [];
+    totalWords += words.length;
+  }
+  if (totalWords < 5) {
     return { valid: false, reason: 'no_real_words' };
   }
   return { valid: true, reason: 'ok' };
@@ -2870,17 +2883,17 @@ export async function registerRoutes(
 
   function getRagPackStorageSize(): number {
     let total = 0;
-    for (const entry of ragPackDownloads.values()) {
+    Array.from(ragPackDownloads.values()).forEach(entry => {
       total += entry.buffer.length;
-    }
+    });
     return total;
   }
 
   function storeRagPackDownload(id: string, buffer: Buffer, filename: string): boolean {
     const currentSize = getRagPackStorageSize();
     if (currentSize + buffer.length > MAX_RAG_PACK_STORAGE_BYTES) {
-      const entries = [...ragPackDownloads.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt);
-      for (const [key, entry] of entries) {
+      const entries = Array.from(ragPackDownloads.entries()).sort((a, b) => a[1].createdAt - b[1].createdAt);
+      for (const [key] of entries) {
         ragPackDownloads.delete(key);
         if (getRagPackStorageSize() + buffer.length <= MAX_RAG_PACK_STORAGE_BYTES) break;
       }
@@ -2894,11 +2907,11 @@ export async function registerRoutes(
 
   setInterval(() => {
     const now = Date.now();
-    for (const [key, value] of ragPackDownloads.entries()) {
+    Array.from(ragPackDownloads.entries()).forEach(([key, value]) => {
       if (now - value.createdAt > 10 * 60 * 1000) {
         ragPackDownloads.delete(key);
       }
-    }
+    });
   }, 5 * 60 * 1000);
 
   app.get(api.projects.list.path, async (req, res) => {
@@ -2956,13 +2969,46 @@ export async function registerRoutes(
       if (!urlLoc) {
         return res.status(400).json({ message: 'Missing loc query parameter' });
       }
+
+      // Try filesystem first
+      try {
+        const project = await storage.getProject(projectId);
+        if (project) {
+          const pageDir = fileStorage.getProjectPageDir(projectId, project.domain, urlLoc);
+          const [markdownContent, meta] = await Promise.all([
+            fileStorage.readPageContent(pageDir),
+            fileStorage.readPageMeta(pageDir),
+          ]);
+          if (markdownContent && meta) {
+            const pdfs = await fileStorage.listPdfs(pageDir);
+            const media = await fileStorage.listMedia(pageDir);
+            return res.json({
+              loc: urlLoc,
+              scrapedData: {
+                title: meta.title,
+                timestamp: meta.timestamp,
+                wordCount: meta.wordCount,
+                structuredData: meta.structuredData,
+                linkedPdfs: meta.linkedPdfs,
+                orderedElements: meta.orderedElements || [],
+              },
+              markdownContent,
+              filePdfs: pdfs,
+              fileMedia: media,
+              source: 'filesystem',
+            });
+          }
+        }
+      } catch (fsErr) {
+        // Filesystem read failed, fall back to DB
+      }
       
       const urlEntry = await storage.getProjectUrlScrapedData(projectId, urlLoc);
       if (!urlEntry) {
         return res.status(404).json({ message: 'URL not found in project' });
       }
       
-      res.json(urlEntry);
+      res.json({ ...urlEntry, source: 'database' });
     } catch (error) {
       console.error('Error fetching URL content:', error);
       res.status(500).json({ message: 'Failed to fetch URL content' });
@@ -3036,6 +3082,19 @@ export async function registerRoutes(
       const project = await storage.getProject(id);
       if (!project) {
         return res.status(404).json({ message: 'Project not found' });
+      }
+
+      try {
+        const projDir = fileStorage.getProjectDir(id, project.domain);
+        await fileStorage.saveProjectMeta(projDir, {
+          id: project.id,
+          domain: project.domain,
+          displayName: project.displayName,
+          createdAt: project.createdAt,
+          projectSettings: project.projectSettings,
+        });
+      } catch (fsErr) {
+        console.error('[FileStorage] Error saving project meta:', (fsErr as Error).message);
       }
 
       // Reset errorStatus for all results and calculate URLs that need extraction
@@ -3414,6 +3473,43 @@ export async function registerRoutes(
 
         const html = await response.text();
         const scrapedResult = scrapePageContent(html, parsedUrl.href, true);
+
+        // Save to filesystem
+        try {
+          const spDir = fileStorage.getSinglePageDir(singlePage.id, domain);
+          const markdown = orderedElementsToMarkdown(scrapedResult.orderedElements || []);
+          await fileStorage.savePageContent(spDir, markdown);
+          await fileStorage.savePageMeta(spDir, {
+            url: parsedUrl.href,
+            title: scrapedResult.title,
+            timestamp: scrapedResult.timestamp,
+            wordCount: scrapedResult.wordCount,
+            structuredData: scrapedResult.structuredData,
+            linkedPdfs: scrapedResult.linkedPdfs,
+            orderedElements: scrapedResult.orderedElements,
+          });
+          
+          // Download linked PDFs
+          if (scrapedResult.linkedPdfs && scrapedResult.linkedPdfs.length > 0) {
+            for (const pdf of scrapedResult.linkedPdfs) {
+              try {
+                const pdfResponse = await fetch(pdf.url, {
+                  headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SitemapScraper/1.0)' },
+                  signal: AbortSignal.timeout(30000),
+                });
+                if (pdfResponse.ok) {
+                  const pdfBuffer = Buffer.from(await pdfResponse.arrayBuffer());
+                  const pdfFilename = pdf.url.split('/').pop()?.split('?')[0] || 'document.pdf';
+                  await fileStorage.savePdf(spDir, pdfFilename, pdfBuffer);
+                }
+              } catch (pdfErr) {
+                console.log(`[FileStorage] Failed to download PDF ${pdf.url}: ${(pdfErr as Error).message}`);
+              }
+            }
+          }
+        } catch (fsErr) {
+          console.error(`[FileStorage] Error saving single page:`, (fsErr as Error).message);
+        }
 
         // Count images and videos from scraped data
         const imageCount = scrapedResult.orderedElements?.filter((el: any) => el.type === 'media' && el.tag === 'img').length || 0;
@@ -3819,28 +3915,51 @@ export async function registerRoutes(
           const assetPath = `assets/${fname}`;
 
           try {
-            const response = await fetch(pdf.url, {
-              headers: { 'User-Agent': 'MapScraperPro/1.0' },
-              signal: AbortSignal.timeout(30000),
-            });
-            if (response.ok) {
-              const buffer = Buffer.from(await response.arrayBuffer());
-              assetsFolder?.file(fname, buffer);
-              spAssetPathMap.set(pdf.url, assetPath);
-              spAssetEntries.push({
-                asset_id: `asset_${sha256(pdf.url).slice(0, 12)}`,
-                doc_id: docId, url: pdf.url, title: pdf.title, link_text: pdf.linkText,
-                filename: fname, path: assetPath, size_bytes: buffer.length,
-                mime_type: response.headers.get('content-type') || 'application/pdf', downloaded: true,
+            let buffer: Buffer | null = null;
+
+            // Try filesystem first
+            try {
+              const spDir = fileStorage.getSinglePageDir(singlePage.id, singlePage.domain);
+              const localPdfs = await fileStorage.listPdfs(spDir);
+              const urlFilename = pdf.url.split('/').pop()?.split('?')[0] || '';
+              for (const p of localPdfs) {
+                const pdfName = p.split('/').pop() || '';
+                if (urlFilename && pdfName === urlFilename) {
+                  buffer = await fileStorage.readPdf(p);
+                  if (buffer) break;
+                }
+              }
+            } catch { /* filesystem not available */ }
+
+            if (!buffer) {
+              const response = await fetch(pdf.url, {
+                headers: { 'User-Agent': 'MapScraperPro/1.0' },
+                signal: AbortSignal.timeout(30000),
               });
-            } else {
-              spAssetEntries.push({
-                asset_id: `asset_${sha256(pdf.url).slice(0, 12)}`,
-                doc_id: docId, url: pdf.url, title: pdf.title, link_text: pdf.linkText,
-                filename: '', path: '', size_bytes: 0, mime_type: 'application/pdf',
-                downloaded: false, error: `HTTP ${response.status}`,
-              });
+              if (response.ok) {
+                buffer = Buffer.from(await response.arrayBuffer());
+              } else {
+                spAssetEntries.push({
+                  asset_id: `asset_${sha256(pdf.url).slice(0, 12)}`,
+                  doc_id: docId, url: pdf.url, title: pdf.title, link_text: pdf.linkText,
+                  filename: '', path: '', size_bytes: 0, mime_type: 'application/pdf',
+                  downloaded: false, error: `HTTP ${response.status}`,
+                });
+                idx++;
+                sendEvent('progress', { phase: 'downloading', current: idx, total: seenUrls.size, currentUrl: pdf.url.slice(0, 80), message: `Lade PDF ${idx}/${seenUrls.size} herunter...` });
+                if (clientDisconnected) break;
+                continue;
+              }
             }
+
+            assetsFolder?.file(fname, buffer);
+            spAssetPathMap.set(pdf.url, assetPath);
+            spAssetEntries.push({
+              asset_id: `asset_${sha256(pdf.url).slice(0, 12)}`,
+              doc_id: docId, url: pdf.url, title: pdf.title, link_text: pdf.linkText,
+              filename: fname, path: assetPath, size_bytes: buffer.length,
+              mime_type: 'application/pdf', downloaded: true,
+            });
           } catch (err) {
             spAssetEntries.push({
               asset_id: `asset_${sha256(pdf.url).slice(0, 12)}`,
@@ -4286,6 +4405,70 @@ export async function registerRoutes(
           // Store update in memory - will be applied in batch
           if (data) {
             urlUpdates.set(url, { scrapedData: data, errorStatus: undefined, errorMessage: undefined });
+            
+            // Save to filesystem
+            try {
+              const pageDir = fileStorage.getProjectPageDir(projectId, project.domain, url);
+              const markdown = orderedElementsToMarkdown(data.orderedElements || []);
+              await fileStorage.savePageContent(pageDir, markdown);
+              await fileStorage.savePageMeta(pageDir, {
+                url,
+                title: data.title,
+                timestamp: data.timestamp,
+                wordCount: data.wordCount,
+                structuredData: data.structuredData,
+                linkedPdfs: data.linkedPdfs,
+                orderedElements: data.orderedElements,
+              });
+              
+              // Download linked PDFs (max 50MB each, max 10 per page)
+              if (data.linkedPdfs && data.linkedPdfs.length > 0) {
+                for (const pdf of data.linkedPdfs.slice(0, 10)) {
+                  try {
+                    const pdfResponse = await fetch(pdf.url, {
+                      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SitemapScraper/1.0)' },
+                      signal: AbortSignal.timeout(30000),
+                    });
+                    if (pdfResponse.ok) {
+                      const contentLength = parseInt(pdfResponse.headers.get('content-length') || '0');
+                      if (contentLength > 50 * 1024 * 1024) {
+                        console.log(`[FileStorage] Skipping large PDF (${(contentLength / 1024 / 1024).toFixed(1)}MB): ${pdf.url}`);
+                        continue;
+                      }
+                      const pdfBuffer = Buffer.from(await pdfResponse.arrayBuffer());
+                      if (pdfBuffer.length > 50 * 1024 * 1024) continue;
+                      const pdfFilename = pdf.url.split('/').pop()?.split('?')[0] || 'document.pdf';
+                      await fileStorage.savePdf(pageDir, pdfFilename, pdfBuffer);
+                    }
+                  } catch (pdfErr) {
+                    console.log(`[FileStorage] Failed to download PDF ${pdf.url}: ${(pdfErr as Error).message}`);
+                  }
+                }
+              }
+              
+              // Download media (images, max 10MB each, max 50 per page)
+              const mediaElements = (data.orderedElements || []).filter((el: any) => el.type === 'media' && el.src);
+              for (const media of mediaElements.slice(0, 50)) {
+                try {
+                  const mediaUrl = media.src;
+                  if (!mediaUrl || mediaUrl.startsWith('data:')) continue;
+                  const mediaResponse = await fetch(mediaUrl, {
+                    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SitemapScraper/1.0)' },
+                    signal: AbortSignal.timeout(15000),
+                  });
+                  if (mediaResponse.ok) {
+                    const mediaBuffer = Buffer.from(await mediaResponse.arrayBuffer());
+                    if (mediaBuffer.length > 10 * 1024 * 1024) continue;
+                    const mediaFilename = mediaUrl.split('/').pop()?.split('?')[0] || 'image.jpg';
+                    await fileStorage.saveMedia(pageDir, mediaFilename, mediaBuffer);
+                  }
+                } catch {
+                  // Silently skip failed media downloads
+                }
+              }
+            } catch (fsErr) {
+              console.error(`[FileStorage] Error saving page ${url}:`, (fsErr as Error).message);
+            }
           }
           
           // Return lightweight response without full scrapedData
@@ -5231,62 +5414,75 @@ export async function registerRoutes(
           const assetPath = `assets/${filename}`;
 
           try {
-            console.log(`[RAG Pack] Downloading asset ${assetIndex + 1}/${seenUrls.size}: ${asset.url.slice(0, 80)}`);
-            const response = await fetch(asset.url, {
-              headers: { 'User-Agent': 'MapScraperPro/1.0' },
-              signal: AbortSignal.timeout(30000),
-            });
+            let buffer: Buffer | null = null;
+            let fromFs = false;
 
-            if (response.ok) {
-              const buffer = Buffer.from(await response.arrayBuffer());
-              assetsFolder?.file(filename, buffer);
-              assetPathMap.set(asset.url, assetPath);
+            // Try filesystem first — PDFs downloaded during scraping
+            try {
+              const pageDir = fileStorage.getProjectPageDir(projectId, project.domain, asset.docUrl);
+              const localPdfs = await fileStorage.listPdfs(pageDir);
+              const match = localPdfs.find(p => p.includes(safeName) || p.includes(baseName));
+              if (match) {
+                buffer = await fileStorage.readPdf(match);
+                if (buffer) fromFs = true;
+              }
+              if (!buffer) {
+                // Try any PDF in the page's pdfs directory
+                for (const p of localPdfs) {
+                  const pdfName = p.split('/').pop() || '';
+                  const urlFilename = asset.url.split('/').pop()?.split('?')[0] || '';
+                  if (urlFilename && pdfName === urlFilename) {
+                    buffer = await fileStorage.readPdf(p);
+                    if (buffer) { fromFs = true; break; }
+                  }
+                }
+              }
+            } catch { /* filesystem not available */ }
 
-              assetEntries.push({
-                asset_id: `asset_${sha256(asset.url).slice(0, 12)}`,
-                doc_id: asset.docId,
-                doc_url: asset.docUrl,
-                url: asset.url,
-                title: asset.title,
-                link_text: asset.linkText,
-                filename,
-                path: assetPath,
-                size_bytes: buffer.length,
-                mime_type: response.headers.get('content-type') || 'application/pdf',
-                downloaded: true,
+            // Fall back to downloading
+            if (!buffer) {
+              console.log(`[RAG Pack] Downloading asset ${assetIndex + 1}/${seenUrls.size}: ${asset.url.slice(0, 80)}`);
+              const response = await fetch(asset.url, {
+                headers: { 'User-Agent': 'MapScraperPro/1.0' },
+                signal: AbortSignal.timeout(30000),
               });
+              if (response.ok) {
+                buffer = Buffer.from(await response.arrayBuffer());
+              } else {
+                console.warn(`[RAG Pack] Failed to download ${asset.url}: HTTP ${response.status}`);
+                assetEntries.push({
+                  asset_id: `asset_${sha256(asset.url).slice(0, 12)}`,
+                  doc_id: asset.docId, doc_url: asset.docUrl, url: asset.url,
+                  title: asset.title, link_text: asset.linkText,
+                  filename: '', path: '', size_bytes: 0, mime_type: 'application/pdf',
+                  downloaded: false, error: `HTTP ${response.status}`,
+                });
+                assetIndex++;
+                sendEvent('progress', { phase: 'downloading', current: assetIndex, total: seenUrls.size, currentUrl: asset.url.slice(0, 80), message: `Lade PDF ${assetIndex}/${seenUrls.size} herunter...` });
+                if (clientDisconnected) break;
+                continue;
+              }
             } else {
-              console.warn(`[RAG Pack] Failed to download ${asset.url}: HTTP ${response.status}`);
-              assetEntries.push({
-                asset_id: `asset_${sha256(asset.url).slice(0, 12)}`,
-                doc_id: asset.docId,
-                doc_url: asset.docUrl,
-                url: asset.url,
-                title: asset.title,
-                link_text: asset.linkText,
-                filename: '',
-                path: '',
-                size_bytes: 0,
-                mime_type: 'application/pdf',
-                downloaded: false,
-                error: `HTTP ${response.status}`,
-              });
+              console.log(`[RAG Pack] Loaded asset from filesystem: ${asset.url.slice(0, 80)}`);
             }
+
+            assetsFolder?.file(filename, buffer);
+            assetPathMap.set(asset.url, assetPath);
+            assetEntries.push({
+              asset_id: `asset_${sha256(asset.url).slice(0, 12)}`,
+              doc_id: asset.docId, doc_url: asset.docUrl, url: asset.url,
+              title: asset.title, link_text: asset.linkText,
+              filename, path: assetPath, size_bytes: buffer.length,
+              mime_type: 'application/pdf', downloaded: true,
+            });
           } catch (err) {
             console.warn(`[RAG Pack] Error downloading ${asset.url}:`, (err as Error).message);
             assetEntries.push({
               asset_id: `asset_${sha256(asset.url).slice(0, 12)}`,
-              doc_id: asset.docId,
-              doc_url: asset.docUrl,
-              url: asset.url,
-              title: asset.title,
-              link_text: asset.linkText,
-              filename: '',
-              path: '',
-              size_bytes: 0,
-              mime_type: 'application/pdf',
-              downloaded: false,
-              error: (err as Error).message,
+              doc_id: asset.docId, doc_url: asset.docUrl, url: asset.url,
+              title: asset.title, link_text: asset.linkText,
+              filename: '', path: '', size_bytes: 0, mime_type: 'application/pdf',
+              downloaded: false, error: (err as Error).message,
             });
           }
           assetIndex++;
@@ -5733,6 +5929,106 @@ export async function registerRoutes(
     res.status(400).json({
       message: 'Use /api/projects/:id/rag-pack/stream for SSE progress, then download from /api/rag-pack/download/:id'
     });
+  });
+
+  // Migration endpoint: export existing DB data to filesystem
+  app.post('/api/projects/:id/migrate-to-filesystem', async (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+
+    const sendEvent = (type: string, data: any) => {
+      if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+      }
+    };
+
+    let clientDisconnected = false;
+    req.on('close', () => { clientDisconnected = true; });
+
+    try {
+      const projectId = Number(req.params.id);
+      const project = await storage.getProject(projectId);
+      if (!project) {
+        sendEvent('error', { message: 'Project not found' });
+        res.end();
+        return;
+      }
+
+      const results = (project.results || []).filter((r: any) => r.scrapedData);
+      sendEvent('init', { totalPages: results.length });
+
+      // Save project meta
+      try {
+        const projDir = fileStorage.getProjectDir(projectId, project.domain);
+        await fileStorage.saveProjectMeta(projDir, {
+          id: project.id,
+          domain: project.domain,
+          displayName: project.displayName,
+          createdAt: project.createdAt,
+          projectSettings: project.projectSettings,
+        });
+      } catch (e) {
+        console.error('[Migration] Error saving project meta:', (e as Error).message);
+      }
+
+      let migrated = 0;
+      let skipped = 0;
+
+      for (const result of results) {
+        if (clientDisconnected) break;
+        const url = result.loc;
+        const data = result.scrapedData;
+
+        try {
+          const pageDir = fileStorage.getProjectPageDir(projectId, project.domain, url);
+          
+          // Check if already migrated
+          const existing = await fileStorage.readPageContent(pageDir);
+          if (existing) {
+            skipped++;
+            migrated++;
+            sendEvent('progress', { current: migrated, total: results.length, skipped, url: url.slice(0, 80), message: `Übersprungen (existiert): ${url.slice(0, 60)}` });
+            continue;
+          }
+
+          const markdown = orderedElementsToMarkdown(data.orderedElements || []);
+          await fileStorage.savePageContent(pageDir, markdown);
+          await fileStorage.savePageMeta(pageDir, {
+            url,
+            title: data.title,
+            timestamp: data.timestamp,
+            wordCount: data.wordCount,
+            structuredData: data.structuredData,
+            linkedPdfs: data.linkedPdfs,
+            orderedElements: data.orderedElements,
+          });
+
+          migrated++;
+          sendEvent('progress', { current: migrated, total: results.length, skipped, url: url.slice(0, 80), message: `Migriert: ${url.slice(0, 60)}` });
+        } catch (err) {
+          migrated++;
+          sendEvent('progress', { current: migrated, total: results.length, skipped, url: url.slice(0, 80), message: `Fehler: ${(err as Error).message}` });
+        }
+      }
+
+      sendEvent('complete', { migrated: migrated - skipped, skipped, total: results.length });
+      res.end();
+    } catch (err) {
+      sendEvent('error', { message: (err as Error).message });
+      res.end();
+    }
+  });
+
+  // Storage stats endpoint
+  app.get('/api/storage/stats', async (_req, res) => {
+    try {
+      const stats = await fileStorage.getStorageStats();
+      res.json(stats);
+    } catch (err) {
+      res.status(500).json({ message: (err as Error).message });
+    }
   });
 
   return httpServer;

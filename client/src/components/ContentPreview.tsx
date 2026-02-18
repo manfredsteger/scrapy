@@ -320,6 +320,7 @@ export default function ContentPreview({ entry, onClose, t, chunks = [] }: Conte
   const [copiedChunk, setCopiedChunk] = useState<number | null>(null);
   const [selectedChunk, setSelectedChunk] = useState<number | null>(null);
   const data = entry.scrapedData;
+  const markdownContent = (entry as any).markdownContent as string | undefined;
   
   // Filter chunks for this URL
   const urlChunks = useMemo(() => {
@@ -378,8 +379,7 @@ export default function ContentPreview({ entry, onClose, t, chunks = [] }: Conte
   // Copy content only
   const copyContentOnly = async () => {
     if (!data) return;
-    let content = `# ${data.title}\n\n`;
-    content += data.orderedElements.map(elementToMarkdown).join('');
+    let content = markdownContent || (`# ${data.title}\n\n` + data.orderedElements.map(elementToMarkdown).join(''));
     const success = await copyToClipboard(content);
     if (success) {
       setCopied('content');
@@ -393,8 +393,7 @@ export default function ContentPreview({ entry, onClose, t, chunks = [] }: Conte
     let content = '';
     
     if (format === 'markdown') {
-      content = `# ${data.title}\n\n`;
-      content += data.orderedElements.map(elementToMarkdown).join('');
+      content = markdownContent || (`# ${data.title}\n\n` + data.orderedElements.map(elementToMarkdown).join(''));
     } else if (format === 'json') {
       content = JSON.stringify({
         url: entry.loc,

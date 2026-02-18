@@ -275,10 +275,8 @@ export default function RagPackProgress({
               <Progress value={progressPercent} className="h-3" data-testid="progress-bar" />
               <div className="flex justify-between gap-2 text-xs text-muted-foreground">
                 <span>
-                  {progress.phase === 'downloading' && progress.total > 0
+                  {(progress.phase === 'downloading' || progress.phase === 'extracting') && progress.total > 0
                     ? `PDF ${progress.current}/${progress.total}`
-                    : progress.phase === 'extracting' && progress.total > 0
-                    ? `${progress.current}/${progress.total} PDFs`
                     : getPhaseLabel()
                   }
                 </span>

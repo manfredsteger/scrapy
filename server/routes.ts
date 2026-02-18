@@ -465,12 +465,23 @@ function estimateTokensFast(text: string): number {
 
 async function extractPdfText(buffer: Buffer): Promise<{ text: string; metadata: any; numPages: number } | null> {
   try {
-    const pdfParse = (await import('pdf-parse')).default;
-    const data = await pdfParse(buffer);
+    const { PDFParse } = await import('pdf-parse');
+    const uint8 = new Uint8Array(buffer);
+    const parser = new PDFParse(uint8);
+    await parser.load();
+    const textResult = await parser.getText();
+    const info = await parser.getInfo();
+    const numPages = parser.doc?.numPages || 0;
+
+    let fullText = '';
+    if (textResult && textResult.pages && Array.isArray(textResult.pages)) {
+      fullText = textResult.pages.map((p: any) => p.text || '').join('\n\n');
+    }
+
     return {
-      text: data.text || '',
-      metadata: data.info || {},
-      numPages: data.numpages || 0,
+      text: fullText,
+      metadata: info || {},
+      numPages,
     };
   } catch (err) {
     console.warn('[PDF] Parse error:', (err as Error).message);
@@ -5530,7 +5541,7 @@ export async function registerRoutes(
             if (buffer) {
               sendEvent('progress', {
                 phase: 'downloading',
-                current: assetIndex,
+                current: assetIndex + 1,
                 total: seenUrls.size,
                 currentUrl: asset.url,
                 message: `PDF ${assetIndex + 1}/${seenUrls.size} aus Cache geladen`,
@@ -5538,7 +5549,7 @@ export async function registerRoutes(
             } else {
               sendEvent('progress', {
                 phase: 'downloading',
-                current: assetIndex,
+                current: assetIndex + 1,
                 total: seenUrls.size,
                 currentUrl: asset.url,
                 message: `Lade PDF ${assetIndex + 1}/${seenUrls.size} herunter...`,

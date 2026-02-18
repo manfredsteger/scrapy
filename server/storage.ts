@@ -49,10 +49,12 @@ export class DatabaseStorage implements IStorage {
         project_settings, last_scraped, created_at,
         jsonb_array_length(COALESCE(results, '[]'::jsonb)) as url_count,
         (SELECT count(*) FROM jsonb_array_elements(COALESCE(results, '[]'::jsonb)) r 
-         WHERE r->'scrapedData' IS NOT NULL AND jsonb_typeof(r->'scrapedData') = 'object') as scraped_count,
+         WHERE (r->>'hasScrapedData')::boolean = true 
+            OR (r->'scrapedData' IS NOT NULL AND jsonb_typeof(r->'scrapedData') = 'object')) as scraped_count,
         (SELECT count(*) FROM jsonb_array_elements(COALESCE(results, '[]'::jsonb)) r 
-         WHERE r->>'errorStatus' IS NOT NULL 
-            OR (r->>'errorMessage' IS NOT NULL AND (r->'scrapedData' IS NULL OR jsonb_typeof(r->'scrapedData') != 'object'))) as failed_count
+         WHERE r->>'status' = 'failed'
+            OR r->>'errorStatus' IS NOT NULL 
+            OR (r->>'errorMessage' IS NOT NULL AND (r->>'hasScrapedData')::boolean IS NOT TRUE AND (r->'scrapedData' IS NULL OR jsonb_typeof(r->'scrapedData') != 'object'))) as failed_count
       FROM projects 
       ORDER BY last_scraped DESC NULLS LAST
     `);
@@ -97,7 +99,8 @@ export class DatabaseStorage implements IStorage {
               'priority', r->>'priority',
               'images', COALESCE(r->'images', '[]'::jsonb),
               'videos', COALESCE(r->'videos', '[]'::jsonb),
-              'hasScrapedData', (r->'scrapedData' IS NOT NULL AND jsonb_typeof(r->'scrapedData') = 'object'),
+              'hasScrapedData', COALESCE((r->>'hasScrapedData')::boolean, r->'scrapedData' IS NOT NULL AND jsonb_typeof(r->'scrapedData') = 'object'),
+              'status', COALESCE(r->>'status', CASE WHEN (r->>'hasScrapedData')::boolean = true THEN 'scraped' WHEN r->>'errorMessage' IS NOT NULL THEN 'failed' ELSE 'pending' END),
               'pdfCount', COALESCE(jsonb_array_length(r->'scrapedData'->'linkedPdfs'), 0),
               'errorStatus', r->>'errorStatus',
               'errorMessage', r->>'errorMessage'

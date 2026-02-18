@@ -3384,6 +3384,7 @@ export async function registerRoutes(
                   }],
                 },
                 hasScrapedData: true,
+                status: 'scraped',
               };
             }
 
@@ -4475,7 +4476,7 @@ export async function registerRoutes(
           
           // Store update in memory - will be applied in batch
           if (data) {
-            urlUpdates.set(url, { hasScrapedData: true, errorStatus: undefined, errorMessage: undefined });
+            urlUpdates.set(url, { hasScrapedData: true, status: 'scraped', errorStatus: undefined, errorMessage: undefined });
             
             // Save to filesystem
             try {
@@ -4548,7 +4549,7 @@ export async function registerRoutes(
           const errorMessage = (err as Error).message;
           
           // Store error in memory - will be applied in batch
-          urlUpdates.set(url, { errorStatus: 'failed', errorMessage: errorMessage });
+          urlUpdates.set(url, { status: 'failed', errorStatus: 'failed', errorMessage: errorMessage });
           
           return { url, success: false, error: errorMessage };
         }

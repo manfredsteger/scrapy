@@ -5514,35 +5514,39 @@ export async function registerRoutes(
           const filename = `${baseName}_${urlHash}.pdf`;
           const assetPath = `assets/${filename}`;
 
+          let assetFromFs = false;
           try {
             let buffer: Buffer | null = null;
-            let fromFs = false;
 
-            // Try filesystem first — PDFs downloaded during scraping
             try {
               const pageDir = fileStorage.getProjectPageDir(projectId, project.domain, asset.docUrl);
               const localPdfs = await fileStorage.listPdfs(pageDir);
               const match = localPdfs.find(p => p.includes(safeName) || p.includes(baseName));
               if (match) {
                 buffer = await fileStorage.readPdf(match);
-                if (buffer) fromFs = true;
+                if (buffer) assetFromFs = true;
               }
               if (!buffer) {
-                // Try any PDF in the page's pdfs directory
                 for (const p of localPdfs) {
                   const pdfName = p.split('/').pop() || '';
                   const urlFilename = asset.url.split('/').pop()?.split('?')[0] || '';
                   if (urlFilename && pdfName === urlFilename) {
                     buffer = await fileStorage.readPdf(p);
-                    if (buffer) { fromFs = true; break; }
+                    if (buffer) { assetFromFs = true; break; }
                   }
                 }
               }
             } catch { /* filesystem not available */ }
 
-            // Fall back to downloading
             if (!buffer) {
               console.log(`[RAG Pack] Downloading asset ${assetIndex + 1}/${seenUrls.size}: ${asset.url.slice(0, 80)}`);
+              sendEvent('progress', {
+                phase: 'downloading',
+                current: assetIndex,
+                total: seenUrls.size,
+                currentUrl: asset.url,
+                message: `Lade PDF ${assetIndex + 1}/${seenUrls.size} herunter...`,
+              });
               const response = await fetch(asset.url, {
                 headers: { 'User-Agent': 'MapScraperPro/1.0' },
                 signal: AbortSignal.timeout(30000),
@@ -5559,7 +5563,6 @@ export async function registerRoutes(
                   downloaded: false, error: `HTTP ${response.status}`,
                 });
                 assetIndex++;
-                sendEvent('progress', { phase: 'downloading', current: assetIndex, total: seenUrls.size, currentUrl: asset.url.slice(0, 80), message: `Lade PDF ${assetIndex}/${seenUrls.size} herunter...` });
                 if (clientDisconnected) break;
                 continue;
               }
@@ -5591,8 +5594,9 @@ export async function registerRoutes(
             phase: 'downloading',
             current: assetIndex,
             total: seenUrls.size,
-            currentUrl: asset.url.slice(0, 80),
-            message: `Lade PDF ${assetIndex}/${seenUrls.size} herunter...`,
+            message: assetFromFs
+              ? `PDF ${assetIndex}/${seenUrls.size} aus Cache geladen`
+              : `PDF ${assetIndex}/${seenUrls.size} verarbeitet`,
           });
           if (clientDisconnected) break;
         }

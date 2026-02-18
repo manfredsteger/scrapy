@@ -231,7 +231,7 @@ export default function RagPackProgress({
   const getPhaseLabel = () => {
     switch (progress.phase) {
       case 'init': return 'Initialisiere...';
-      case 'downloading': return 'PDFs herunterladen';
+      case 'downloading': return 'PDFs verarbeiten';
       case 'extracting': return 'PDF-Text extrahieren';
       case 'building': return 'Dokumente erstellen';
       case 'zipping': return 'ZIP erstellen';
@@ -251,15 +251,15 @@ export default function RagPackProgress({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-lg w-[480px] max-h-[90vh] overflow-y-auto overflow-x-hidden" data-testid="ragpack-progress-modal">
+      <DialogContent className="sm:max-w-[480px] w-[480px] max-h-[90vh] overflow-hidden" data-testid="ragpack-progress-modal">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Package className="w-5 h-5" />
+            <Package className="w-5 h-5 shrink-0" />
             RAG Pack Export
           </DialogTitle>
         </DialogHeader>
 
-        <div className="space-y-6 py-4">
+        <div className="space-y-6 py-4 min-w-0 overflow-hidden">
           <div className="flex flex-col items-center gap-3">
             {getPhaseIcon()}
             <p className="text-sm font-medium text-foreground text-center">
@@ -273,7 +273,7 @@ export default function RagPackProgress({
           {progress.phase !== 'complete' && progress.phase !== 'error' && (
             <div className="space-y-2">
               <Progress value={progressPercent} className="h-3" data-testid="progress-bar" />
-              <div className="flex justify-between text-xs text-muted-foreground">
+              <div className="flex justify-between gap-2 text-xs text-muted-foreground">
                 <span>
                   {progress.phase === 'downloading' && progress.total > 0
                     ? `PDF ${progress.current}/${progress.total}`
@@ -287,12 +287,10 @@ export default function RagPackProgress({
             </div>
           )}
 
-          {progress.currentUrl && progress.phase !== 'complete' && progress.phase !== 'error' && (
-            <div className="text-xs text-muted-foreground bg-secondary p-2 rounded overflow-hidden max-w-full min-w-0">
-              <span className="font-medium">Aktuell: </span>
-              <span className="block truncate max-w-full">{progress.currentUrl}</span>
-            </div>
-          )}
+          <div className="text-xs text-muted-foreground bg-secondary p-2 rounded min-w-0 overflow-hidden" style={{ visibility: (progress.currentUrl && progress.phase !== 'complete' && progress.phase !== 'error') ? 'visible' : 'hidden' }}>
+            <span className="font-medium">Aktuell: </span>
+            <span className="block truncate">{progress.currentUrl || '\u00A0'}</span>
+          </div>
 
           {progress.phase === 'complete' && (
             <>

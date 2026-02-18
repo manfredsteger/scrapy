@@ -5588,14 +5588,6 @@ export async function registerRoutes(
             });
           }
           assetIndex++;
-          sendEvent('progress', {
-            phase: 'downloading',
-            current: assetIndex,
-            total: seenUrls.size,
-            message: assetFromFs
-              ? `PDF ${assetIndex}/${seenUrls.size} aus Cache geladen`
-              : `PDF ${assetIndex}/${seenUrls.size} verarbeitet`,
-          });
           if (clientDisconnected) break;
         }
 

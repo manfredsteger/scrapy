@@ -4604,10 +4604,12 @@ export async function registerRoutes(
         }
       }
       
-      // Include rate limiter state in response for debugging
+      try {
+        await fileStorage.buildProjectPdfsJson(projectId, project.domain);
+      } catch {}
+
       const rateLimitState = rateLimiter?.getState();
       
-      // Return lightweight response - data is saved to DB directly
       res.json({ 
         results,
         rateLimitState,
@@ -5526,31 +5528,25 @@ export async function registerRoutes(
           let assetFromFs = false;
           try {
             let buffer: Buffer | null = null;
+            const urlFilename = asset.url.split('/').pop()?.split('?')[0] || '';
+            const docPageDir = fileStorage.getProjectPageDir(projectId, project.domain, asset.docUrl);
 
-            buffer = await fileStorage.readProjectPdfCache(projectId, project.domain, asset.url);
-            if (buffer) {
-              assetFromFs = true;
+            const searchDirs = [docPageDir];
+            if (asset.url !== asset.docUrl) {
+              searchDirs.push(fileStorage.getProjectPageDir(projectId, project.domain, asset.url));
             }
-
-            if (!buffer) {
-              const urlFilename = asset.url.split('/').pop()?.split('?')[0] || '';
-              const searchDirs = [
-                fileStorage.getProjectPageDir(projectId, project.domain, asset.docUrl),
-                fileStorage.getProjectPageDir(projectId, project.domain, asset.url),
-              ];
-              for (const dir of searchDirs) {
-                if (buffer) break;
-                try {
-                  const localPdfs = await fileStorage.listPdfs(dir);
-                  for (const p of localPdfs) {
-                    const pdfName = p.split('/').pop() || '';
-                    if (pdfName.includes(baseName) || (urlFilename && pdfName === urlFilename)) {
-                      buffer = await fileStorage.readPdf(p);
-                      if (buffer) { assetFromFs = true; break; }
-                    }
+            for (const dir of searchDirs) {
+              if (buffer) break;
+              try {
+                const localPdfs = await fileStorage.listPdfs(dir);
+                for (const p of localPdfs) {
+                  const pdfName = p.split('/').pop() || '';
+                  if (pdfName.includes(baseName) || (urlFilename && pdfName === urlFilename)) {
+                    buffer = await fileStorage.readPdf(p);
+                    if (buffer) { assetFromFs = true; break; }
                   }
-                } catch {}
-              }
+                }
+              } catch {}
             }
 
             if (!buffer) {
@@ -5569,7 +5565,7 @@ export async function registerRoutes(
               if (response.ok) {
                 buffer = Buffer.from(await response.arrayBuffer());
                 try {
-                  await fileStorage.saveProjectPdfCache(projectId, project.domain, asset.url, buffer);
+                  await fileStorage.savePdf(docPageDir, urlFilename || `${baseName}.pdf`, buffer);
                 } catch {}
               } else {
                 console.warn(`[RAG Pack] Failed to download ${asset.url}: HTTP ${response.status}`);
@@ -5620,6 +5616,10 @@ export async function registerRoutes(
         }
 
         console.log(`[RAG Pack] Downloaded ${assetEntries.filter(a => a.downloaded).length}/${seenUrls.size} unique assets`);
+
+        try {
+          await fileStorage.buildProjectPdfsJson(projectId, project.domain);
+        } catch {}
       }
 
       if (includeAssets) {
@@ -6209,7 +6209,42 @@ export async function registerRoutes(
     }
   });
 
-  // Storage stats endpoint
+  app.get('/api/projects/:id/pdfs', async (req, res) => {
+    try {
+      const projectId = Number(req.params.id);
+      const project = await storage.getProject(projectId);
+      if (!project) return res.status(404).json({ message: 'Project not found' });
+
+      let pdfs = await fileStorage.readProjectPdfsJson(projectId, project.domain);
+      if (!pdfs) {
+        pdfs = await fileStorage.buildProjectPdfsJson(projectId, project.domain);
+      }
+      res.json({
+        total: pdfs.length,
+        downloaded: pdfs.filter(p => p.downloaded).length,
+        pdfs,
+      });
+    } catch (err) {
+      res.status(500).json({ message: (err as Error).message });
+    }
+  });
+
+  app.post('/api/projects/:id/pdfs/rebuild', async (req, res) => {
+    try {
+      const projectId = Number(req.params.id);
+      const project = await storage.getProject(projectId);
+      if (!project) return res.status(404).json({ message: 'Project not found' });
+
+      const pdfs = await fileStorage.buildProjectPdfsJson(projectId, project.domain);
+      res.json({
+        total: pdfs.length,
+        downloaded: pdfs.filter(p => p.downloaded).length,
+      });
+    } catch (err) {
+      res.status(500).json({ message: (err as Error).message });
+    }
+  });
+
   app.get('/api/storage/stats', async (_req, res) => {
     try {
       const stats = await fileStorage.getStorageStats();

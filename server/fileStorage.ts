@@ -163,32 +163,6 @@ export async function readPdf(filePath: string): Promise<Buffer | null> {
   }
 }
 
-export async function saveProjectPdfCache(projectId: number, domain: string, pdfUrl: string, buffer: Buffer): Promise<string> {
-  const projectDir = getProjectDir(projectId, domain);
-  const cacheDir = path.join(projectDir, "pdf-cache");
-  await ensureDir(cacheDir);
-  const hash = urlHash(pdfUrl);
-  const urlFilename = pdfUrl.split('/').pop()?.split('?')[0] || 'document';
-  const safeName = sanitizeDirName(urlFilename.replace(/\.pdf$/i, '')) + '.pdf';
-  const filePath = path.join(cacheDir, `${hash}_${safeName}`);
-  await fs.writeFile(filePath, buffer);
-  return filePath;
-}
-
-export async function readProjectPdfCache(projectId: number, domain: string, pdfUrl: string): Promise<Buffer | null> {
-  const projectDir = getProjectDir(projectId, domain);
-  const cacheDir = path.join(projectDir, "pdf-cache");
-  const hash = urlHash(pdfUrl);
-  try {
-    const entries = await fs.readdir(cacheDir);
-    const match = entries.find(f => f.startsWith(hash));
-    if (match) {
-      return await fs.readFile(path.join(cacheDir, match));
-    }
-  } catch {}
-  return null;
-}
-
 export async function countProjectAttachments(projectId: number, domain: string): Promise<number> {
   const projectDir = getProjectDir(projectId, domain);
   const pageDirs = await listPageDirs(projectDir);
@@ -217,6 +191,62 @@ export async function getPagePdfCounts(projectId: number, domain: string): Promi
     } catch {}
   }
   return counts;
+}
+
+export interface PdfReference {
+  url: string;
+  title?: string;
+  linkText?: string;
+  pageUrl: string;
+  localPath?: string;
+  downloaded: boolean;
+}
+
+export async function buildProjectPdfsJson(projectId: number, domain: string): Promise<PdfReference[]> {
+  const projectDir = getProjectDir(projectId, domain);
+  const pageDirs = await listPageDirs(projectDir);
+  const allPdfs: PdfReference[] = [];
+
+  for (const pageDir of pageDirs) {
+    try {
+      const meta = await readPageMeta(pageDir);
+      if (!meta?.linkedPdfs || !Array.isArray(meta.linkedPdfs)) continue;
+
+      const localPdfs = await listPdfs(pageDir);
+      const localNames = localPdfs.map(p => p.split('/').pop() || '');
+
+      for (const pdf of meta.linkedPdfs) {
+        const urlFilename = pdf.url?.split('/').pop()?.split('?')[0] || '';
+        const matchedLocal = localPdfs.find((_, i) => {
+          const name = localNames[i];
+          return name === urlFilename || name.includes(sanitizeDirName(urlFilename.replace(/\.pdf$/i, '')));
+        });
+
+        allPdfs.push({
+          url: pdf.url,
+          title: pdf.title,
+          linkText: pdf.linkText,
+          pageUrl: meta.url || '',
+          localPath: matchedLocal ? path.relative(projectDir, matchedLocal) : undefined,
+          downloaded: !!matchedLocal,
+        });
+      }
+    } catch {}
+  }
+
+  await ensureDir(projectDir);
+  await fs.writeFile(path.join(projectDir, "pdfs.json"), JSON.stringify(allPdfs, null, 2), "utf-8");
+  return allPdfs;
+}
+
+export async function readProjectPdfsJson(projectId: number, domain: string): Promise<PdfReference[] | null> {
+  const projectDir = getProjectDir(projectId, domain);
+  try {
+    const raw = await fs.readFile(path.join(projectDir, "pdfs.json"), "utf-8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
 }
 
 export async function saveProjectChunks(projectId: number, domain: string, chunks: any[]): Promise<void> {

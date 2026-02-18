@@ -251,7 +251,7 @@ export default function RagPackProgress({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-lg w-[480px] max-h-[90vh] overflow-y-auto" data-testid="ragpack-progress-modal">
+      <DialogContent className="sm:max-w-lg w-[480px] max-h-[90vh] overflow-y-auto overflow-x-hidden" data-testid="ragpack-progress-modal">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Package className="w-5 h-5" />
@@ -288,9 +288,9 @@ export default function RagPackProgress({
           )}
 
           {progress.currentUrl && progress.phase !== 'complete' && progress.phase !== 'error' && (
-            <div className="text-xs text-muted-foreground bg-secondary p-2 rounded overflow-hidden">
+            <div className="text-xs text-muted-foreground bg-secondary p-2 rounded overflow-hidden max-w-full min-w-0">
               <span className="font-medium">Aktuell: </span>
-              <span className="block truncate">{progress.currentUrl}</span>
+              <span className="block truncate max-w-full">{progress.currentUrl}</span>
             </div>
           )}
 

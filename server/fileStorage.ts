@@ -163,6 +163,38 @@ export async function readPdf(filePath: string): Promise<Buffer | null> {
   }
 }
 
+export async function saveProjectChunks(projectId: number, domain: string, chunks: any[]): Promise<void> {
+  const dir = getProjectDir(projectId, domain);
+  await ensureDir(dir);
+  await fs.writeFile(path.join(dir, "chunks.json"), JSON.stringify(chunks), "utf-8");
+}
+
+export async function readProjectChunks(projectId: number, domain: string): Promise<any[] | null> {
+  const dir = getProjectDir(projectId, domain);
+  try {
+    const raw = await fs.readFile(path.join(dir, "chunks.json"), "utf-8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+export async function saveSinglePageChunks(pageId: number, domain: string, chunks: any[]): Promise<void> {
+  const dir = getSinglePageDir(pageId, domain);
+  await ensureDir(dir);
+  await fs.writeFile(path.join(dir, "chunks.json"), JSON.stringify(chunks), "utf-8");
+}
+
+export async function readSinglePageChunks(pageId: number, domain: string): Promise<any[] | null> {
+  const dir = getSinglePageDir(pageId, domain);
+  try {
+    const raw = await fs.readFile(path.join(dir, "chunks.json"), "utf-8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 export async function deleteProjectDir(projectId: number, domain: string): Promise<void> {
   const dir = getProjectDir(projectId, domain);
   try {

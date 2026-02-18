@@ -1,6 +1,8 @@
 import type { Express } from "express";
 import type { Server } from "http";
 import { storage } from "./storage";
+import { db } from "./db";
+import { sql } from "drizzle-orm";
 import { api } from "@shared/routes";
 import { z } from "zod";
 import { JSDOM } from "jsdom";
@@ -47,6 +49,18 @@ async function loadResultsWithFilesystem(
     }
   }
   return enriched;
+}
+
+async function loadProjectChunks(project: any): Promise<any[]> {
+  const fsChunks = await fileStorage.readProjectChunks(project.id, project.domain);
+  if (fsChunks && fsChunks.length > 0) return fsChunks;
+  return project.chunks || [];
+}
+
+async function loadSinglePageChunks(singlePage: any): Promise<any[]> {
+  const fsChunks = await fileStorage.readSinglePageChunks(singlePage.id, singlePage.domain);
+  if (fsChunks && fsChunks.length > 0) return fsChunks;
+  return singlePage.chunks || [];
 }
 
 // Rate Limiter class for managing request delays with auto-adjustment
@@ -2982,10 +2996,15 @@ export async function registerRoutes(
 
   app.get(api.projects.get.path, async (req, res) => {
     try {
-      // Use optimized query that computes hasScrapedData in SQL
       const project = await storage.getProjectLite(Number(req.params.id));
       if (!project) {
         return res.status(404).json({ message: 'Project not found' });
+      }
+      if (!project.chunkCount || project.chunkCount === 0) {
+        const fsChunks = await fileStorage.readProjectChunks(project.id, project.domain);
+        if (fsChunks) {
+          project.chunkCount = fsChunks.length;
+        }
       }
       res.json(project);
     } catch (error) {
@@ -3460,6 +3479,9 @@ export async function registerRoutes(
       return res.status(404).json({ message: 'Single page not found' });
     }
 
+    const fsChunks = await fileStorage.readSinglePageChunks(id, singlePage.domain);
+    const enrichedChunks = (fsChunks && fsChunks.length > 0) ? fsChunks : (singlePage.chunks || []);
+
     if (!singlePage.scrapedData) {
       try {
         const pageDir = fileStorage.getSinglePageDir(id, singlePage.domain);
@@ -3470,6 +3492,7 @@ export async function registerRoutes(
         if (markdownContent && meta) {
           return res.json({
             ...singlePage,
+            chunks: enrichedChunks,
             scrapedData: {
               title: meta.title,
               timestamp: meta.timestamp,
@@ -3486,7 +3509,7 @@ export async function registerRoutes(
       }
     }
 
-    res.json(singlePage);
+    res.json({ ...singlePage, chunks: enrichedChunks });
   });
 
   app.post("/api/single-pages", async (req, res) => {
@@ -3733,9 +3756,9 @@ export async function registerRoutes(
           }
         }
 
-        // Update with final data
+        await fileStorage.saveSinglePageChunks(singlePage.id, domain, allChunks);
         const updatedPage = await storage.updateSinglePage(singlePage.id, {
-          chunks: allChunks,
+          chunks: [],
           chunkStats,
           status: 'completed',
         });
@@ -3894,7 +3917,7 @@ export async function registerRoutes(
         return;
       }
 
-      const chunks = singlePage.chunks || [];
+      const chunks = await loadSinglePageChunks(singlePage);
       if (chunks.length === 0) {
         sendEvent('error', { message: 'No chunks available.' });
         res.end();
@@ -4772,7 +4795,8 @@ export async function registerRoutes(
 
       const { chunks, deduplicationStats } = generateChunksForProject(scrapedResults, project.domain, settings);
 
-      await storage.updateProject(projectId, { chunks });
+      await fileStorage.saveProjectChunks(projectId, project.domain, chunks);
+      await storage.updateProject(projectId, { chunks: [] });
 
       res.json({ 
         success: true, 
@@ -5101,16 +5125,16 @@ export async function registerRoutes(
         }
       }
 
-      // Save chunks to database
       sendEvent({
         type: 'progress',
         current: total,
         total,
         chunksGenerated: finalChunks.length,
-        currentUrl: 'Speichere Chunks in Datenbank...',
+        currentUrl: 'Speichere Chunks...',
         phase: 'saving',
       });
-      await storage.updateProject(projectId, { chunks: finalChunks });
+      await fileStorage.saveProjectChunks(projectId, project.domain, finalChunks);
+      await storage.updateProject(projectId, { chunks: [] });
 
       // Send completion event
       sendEvent({
@@ -5157,7 +5181,7 @@ export async function registerRoutes(
         return res.status(404).json({ message: 'Project not found' });
       }
 
-      const chunks = project.chunks || [];
+      const chunks = await loadProjectChunks(project);
       if (chunks.length === 0) {
         return res.status(400).json({ message: 'No chunks available. Generate chunks first.' });
       }
@@ -5212,7 +5236,7 @@ export async function registerRoutes(
         return res.status(404).json({ message: 'Project not found' });
       }
 
-      const chunks = project.chunks || [];
+      const chunks = await loadProjectChunks(project);
       if (chunks.length === 0) {
         return res.status(400).json({ message: 'No chunks available. Generate chunks first.' });
       }
@@ -5315,7 +5339,7 @@ export async function registerRoutes(
         return res.status(404).json({ message: 'Project not found' });
       }
 
-      const chunks = project.chunks || [];
+      const chunks = await loadProjectChunks(project);
       if (chunks.length === 0) {
         return res.status(400).json({ message: 'No chunks available. Generate chunks first.' });
       }
@@ -5410,7 +5434,7 @@ export async function registerRoutes(
         return;
       }
 
-      const chunks = project.chunks || [];
+      const chunks = await loadProjectChunks(project);
       if (chunks.length === 0) {
         sendEvent('error', { message: 'No chunks available. Generate chunks first.' });
         res.end();
@@ -6169,6 +6193,43 @@ export async function registerRoutes(
       const stats = await fileStorage.getStorageStats();
       res.json(stats);
     } catch (err) {
+      res.status(500).json({ message: (err as Error).message });
+    }
+  });
+
+  app.post('/api/admin/migrate-chunks-to-filesystem', async (_req, res) => {
+    try {
+      const migrated: string[] = [];
+
+      const projectRows = await db.execute(sql`
+        SELECT id, domain, chunks FROM projects 
+        WHERE jsonb_array_length(COALESCE(chunks, '[]'::jsonb)) > 0
+      `);
+      for (const row of projectRows.rows as any[]) {
+        const chunks = row.chunks || [];
+        if (chunks.length > 0) {
+          await fileStorage.saveProjectChunks(row.id, row.domain, chunks);
+          await db.execute(sql`UPDATE projects SET chunks = '[]'::jsonb WHERE id = ${row.id}`);
+          migrated.push(`project:${row.id} (${row.domain}) - ${chunks.length} chunks`);
+        }
+      }
+
+      const spRows = await db.execute(sql`
+        SELECT id, domain, chunks FROM single_pages 
+        WHERE jsonb_array_length(COALESCE(chunks, '[]'::jsonb)) > 0
+      `);
+      for (const row of spRows.rows as any[]) {
+        const chunks = row.chunks || [];
+        if (chunks.length > 0) {
+          await fileStorage.saveSinglePageChunks(row.id, row.domain, chunks);
+          await db.execute(sql`UPDATE single_pages SET chunks = '[]'::jsonb WHERE id = ${row.id}`);
+          migrated.push(`single-page:${row.id} (${row.domain}) - ${chunks.length} chunks`);
+        }
+      }
+
+      res.json({ success: true, migrated });
+    } catch (err) {
+      console.error('Chunk migration error:', err);
       res.status(500).json({ message: (err as Error).message });
     }
   });

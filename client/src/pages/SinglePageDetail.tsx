@@ -7,6 +7,7 @@ import {
   Loader2, AlertCircle, ExternalLink, RefreshCw, Settings, MoreVertical, Trash2, Package,
   Copy, Check, Tag, Sparkles
 } from 'lucide-react';
+import RagPackProgress from '@/components/RagPackProgress';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -190,6 +191,7 @@ export default function SinglePageDetail() {
   const [copied, setCopied] = useState<string | null>(null);
   const [copiedChunk, setCopiedChunk] = useState<number | null>(null);
   const [expandedChunk, setExpandedChunk] = useState<number | null>(null);
+  const [showRagPackProgress, setShowRagPackProgress] = useState(false);
 
   const { data: page, isLoading, error, refetch } = useQuery<SinglePage>({
     queryKey: ['/api/single-pages', id],
@@ -408,7 +410,7 @@ export default function SinglePageDetail() {
                 {t('reScrape')}
               </DropdownMenuItem>
               <DropdownMenuItem 
-                onClick={() => window.open(`/api/single-pages/${id}/rag-pack`, '_blank')} 
+                onClick={() => setShowRagPackProgress(true)} 
                 className="gap-2" 
                 data-testid="action-save-ragpack"
               >
@@ -637,6 +639,15 @@ export default function SinglePageDetail() {
           </div>
         </div>
       </div>
+      {showRagPackProgress && id && (
+        <RagPackProgress
+          open={showRagPackProgress}
+          onClose={() => setShowRagPackProgress(false)}
+          projectId={parseInt(id)}
+          mode="single-page"
+          t={t}
+        />
+      )}
     </div>
   );
 }

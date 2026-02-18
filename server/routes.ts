@@ -2865,6 +2865,42 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
   
+  const MAX_RAG_PACK_STORAGE_BYTES = 500 * 1024 * 1024;
+  const ragPackDownloads = new Map<string, { buffer: Buffer; filename: string; createdAt: number }>();
+
+  function getRagPackStorageSize(): number {
+    let total = 0;
+    for (const entry of ragPackDownloads.values()) {
+      total += entry.buffer.length;
+    }
+    return total;
+  }
+
+  function storeRagPackDownload(id: string, buffer: Buffer, filename: string): boolean {
+    const currentSize = getRagPackStorageSize();
+    if (currentSize + buffer.length > MAX_RAG_PACK_STORAGE_BYTES) {
+      const entries = [...ragPackDownloads.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt);
+      for (const [key, entry] of entries) {
+        ragPackDownloads.delete(key);
+        if (getRagPackStorageSize() + buffer.length <= MAX_RAG_PACK_STORAGE_BYTES) break;
+      }
+    }
+    if (buffer.length > MAX_RAG_PACK_STORAGE_BYTES) {
+      return false;
+    }
+    ragPackDownloads.set(id, { buffer, filename, createdAt: Date.now() });
+    return true;
+  }
+
+  setInterval(() => {
+    const now = Date.now();
+    for (const [key, value] of ragPackDownloads.entries()) {
+      if (now - value.createdAt > 10 * 60 * 1000) {
+        ragPackDownloads.delete(key);
+      }
+    }
+  }, 5 * 60 * 1000);
+
   app.get(api.projects.list.path, async (req, res) => {
     try {
       // Use optimized query that computes counts in SQL without transferring large data
@@ -3674,21 +3710,41 @@ export async function registerRoutes(
     res.status(204).send();
   });
 
-  app.get("/api/single-pages/:id/rag-pack", async (req, res) => {
+  app.post("/api/single-pages/:id/rag-pack/stream", async (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+
+    const sendEvent = (type: string, data: any) => {
+      if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+      }
+    };
+
+    let clientDisconnected = false;
+    req.on('close', () => { clientDisconnected = true; });
+
     try {
       const id = Number(req.params.id);
       if (isNaN(id)) {
-        return res.status(400).json({ message: 'Invalid ID' });
+        sendEvent('error', { message: 'Invalid ID' });
+        res.end();
+        return;
       }
 
       const singlePage = await storage.getSinglePage(id);
       if (!singlePage) {
-        return res.status(404).json({ message: 'Single page not found' });
+        sendEvent('error', { message: 'Single page not found' });
+        res.end();
+        return;
       }
 
       const chunks = singlePage.chunks || [];
       if (chunks.length === 0) {
-        return res.status(400).json({ message: 'No chunks available.' });
+        sendEvent('error', { message: 'No chunks available.' });
+        res.end();
+        return;
       }
 
       const zip = new JSZip();
@@ -3740,6 +3796,12 @@ export async function registerRoutes(
       let spPdfValidCount = 0;
       let spPdfInvalidCount = 0;
 
+      sendEvent('init', {
+        totalDocuments: 1,
+        totalPdfs: spLinkedPdfs?.length || 0,
+        includeAssets: !!(spLinkedPdfs && spLinkedPdfs.length > 0),
+      });
+
       if (spLinkedPdfs && spLinkedPdfs.length > 0) {
         const assetsFolder = zip.folder('assets');
         const seenUrls = new Set<string>();
@@ -3788,6 +3850,14 @@ export async function registerRoutes(
             });
           }
           idx++;
+          sendEvent('progress', {
+            phase: 'downloading',
+            current: idx,
+            total: seenUrls.size,
+            currentUrl: pdf.url.slice(0, 80),
+            message: `Lade PDF ${idx}/${seenUrls.size} herunter...`,
+          });
+          if (clientDisconnected) break;
         }
 
         documentObj.linked_pdfs = spLinkedPdfs.map((pdf: any) => {
@@ -3805,9 +3875,17 @@ export async function registerRoutes(
       const uniqueDownloadedSpAssets = spAssetEntries.filter(a => a.downloaded && a.path);
       const seenSpAssetPaths = new Set<string>();
 
+      sendEvent('progress', {
+        phase: 'extracting',
+        current: 0,
+        total: uniqueDownloadedSpAssets.length,
+        message: 'Extrahiere Text aus PDFs...',
+      });
+
       for (const asset of uniqueDownloadedSpAssets) {
         if (seenSpAssetPaths.has(asset.path)) continue;
         seenSpAssetPaths.add(asset.path);
+        if (clientDisconnected) break;
 
         try {
           const pdfFile = zip.file(asset.path);
@@ -3906,6 +3984,13 @@ export async function registerRoutes(
           });
 
           console.log(`[RAG Pack SP] PDF ${asset.filename}: ${pdfChunkedSections.length} chunks from ${pdfResult.numPages} pages`);
+            sendEvent('progress', {
+              phase: 'extracting',
+              current: seenSpAssetPaths.size,
+              total: uniqueDownloadedSpAssets.length,
+              currentUrl: asset.filename,
+              message: `PDF Text extrahiert: ${asset.filename}`,
+            });
         } catch (err) {
           console.warn(`[RAG Pack SP] Error processing PDF ${asset.filename}:`, (err as Error).message);
           spPdfInvalidCount++;
@@ -3916,6 +4001,13 @@ export async function registerRoutes(
       if (spPdfValidCount > 0 || spPdfInvalidCount > 0) {
         console.log(`[RAG Pack SP] PDF processing: ${spPdfValidCount} valid, ${spPdfInvalidCount} invalid/skipped`);
       }
+
+      sendEvent('progress', {
+        phase: 'building',
+        current: 0,
+        total: 1,
+        message: 'Erstelle Dokumente und Chunks...',
+      });
 
       const documentsJsonl = [
         JSON.stringify(documentObj),
@@ -4012,19 +4104,50 @@ export async function registerRoutes(
         }
       }, null, 2));
 
+      sendEvent('progress', {
+        phase: 'zipping',
+        current: 0,
+        total: 1,
+        message: 'Erstelle ZIP-Archiv...',
+      });
+
       const content = await zip.generateAsync({ type: 'nodebuffer' });
       const filename = `rag-pack-single-${singlePage.domain}-${singlePage.id}.zip`;
 
-      res.set({
-        'Content-Type': 'application/zip',
-        'Content-Disposition': `attachment; filename="${filename}"`,
-        'Content-Length': content.length,
+      const downloadId = sha256(`sp-${id}-${Date.now()}-${Math.random()}`).slice(0, 16);
+      const stored = storeRagPackDownload(downloadId, content, filename);
+      if (!stored) {
+        sendEvent('error', { message: 'ZIP-Datei zu groß für temporären Speicher' });
+        res.end();
+        return;
+      }
+
+      sendEvent('complete', {
+        downloadId,
+        filename,
+        fileSize: content.length,
+        documents: 1 + spPdfDocuments.length,
+        chunks: allSpExportChunks.length,
+        pdfValid: spPdfValidCount,
+        pdfInvalid: spPdfInvalidCount,
+        assets: spAssetEntries.filter(a => a.downloaded).length,
       });
-      res.send(content);
+      res.end();
     } catch (err) {
       console.error('Error generating single page RAG pack:', err);
-      res.status(500).json({ message: (err as Error).message });
+      try {
+        sendEvent('error', { message: (err as Error).message });
+        res.end();
+      } catch {
+        res.end();
+      }
     }
+  });
+
+  app.get("/api/single-pages/:id/rag-pack", async (req, res) => {
+    res.status(400).json({
+      message: 'Use /api/single-pages/:id/rag-pack/stream for SSE progress, then download from /api/rag-pack/download/:id'
+    });
   });
 
   // Website type detection endpoint
@@ -4990,19 +5113,49 @@ export async function registerRoutes(
     }
   });
 
-  // Export RAG Pack as ZIP
-  app.get('/api/projects/:id/rag-pack', async (req, res) => {
+  app.get('/api/rag-pack/download/:downloadId', (req, res) => {
+    const download = ragPackDownloads.get(req.params.downloadId);
+    if (!download) {
+      return res.status(404).json({ message: 'Download expired or not found' });
+    }
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${download.filename}"`);
+    res.setHeader('Content-Length', download.buffer.length);
+    res.send(download.buffer);
+    ragPackDownloads.delete(req.params.downloadId);
+  });
+
+  // Export RAG Pack as ZIP (SSE with progress)
+  app.get('/api/projects/:id/rag-pack/stream', async (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+
+    const sendEvent = (type: string, data: any) => {
+      if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+      }
+    };
+
+    let clientDisconnected = false;
+    req.on('close', () => { clientDisconnected = true; });
+
     try {
       const projectId = parseInt(req.params.id);
       const project = await storage.getProject(projectId);
       
       if (!project) {
-        return res.status(404).json({ message: 'Project not found' });
+        sendEvent('error', { message: 'Project not found' });
+        res.end();
+        return;
       }
 
       const chunks = project.chunks || [];
       if (chunks.length === 0) {
-        return res.status(400).json({ message: 'No chunks available. Generate chunks first.' });
+        sendEvent('error', { message: 'No chunks available. Generate chunks first.' });
+        res.end();
+        return;
       }
 
       const settings = project.projectSettings || getDefaultSettings();
@@ -5027,6 +5180,12 @@ export async function registerRoutes(
           }
         }
       }
+
+      sendEvent('init', {
+        totalDocuments: scrapedResults.length,
+        totalPdfs: allAssets.length,
+        includeAssets,
+      });
 
       // Download and embed PDFs if includeAssets is enabled
       const assetEntries: Array<{ asset_id: string; doc_id: string; doc_url: string; url: string; title?: string; link_text?: string; filename: string; path: string; size_bytes: number; mime_type: string; downloaded: boolean; error?: string }> = [];
@@ -5131,6 +5290,14 @@ export async function registerRoutes(
             });
           }
           assetIndex++;
+          sendEvent('progress', {
+            phase: 'downloading',
+            current: assetIndex,
+            total: seenUrls.size,
+            currentUrl: asset.url.slice(0, 80),
+            message: `Lade PDF ${assetIndex}/${seenUrls.size} herunter...`,
+          });
+          if (clientDisconnected) break;
         }
 
         console.log(`[RAG Pack] Downloaded ${assetEntries.filter(a => a.downloaded).length}/${seenUrls.size} unique assets`);
@@ -5140,9 +5307,17 @@ export async function registerRoutes(
         const uniqueDownloadedAssets = assetEntries.filter(a => a.downloaded && a.path);
         const seenAssetPaths = new Set<string>();
 
+        sendEvent('progress', {
+          phase: 'extracting',
+          current: 0,
+          total: uniqueDownloadedAssets.length,
+          message: 'Extrahiere Text aus PDFs...',
+        });
+
         for (const asset of uniqueDownloadedAssets) {
           if (seenAssetPaths.has(asset.path)) continue;
           seenAssetPaths.add(asset.path);
+          if (clientDisconnected) break;
 
           try {
             const pdfFile = zip.file(asset.path);
@@ -5248,6 +5423,13 @@ export async function registerRoutes(
             });
 
             console.log(`[RAG Pack] PDF ${asset.filename}: ${pdfChunkedSections.length} chunks from ${pdfResult.numPages} pages`);
+            sendEvent('progress', {
+              phase: 'extracting',
+              current: seenAssetPaths.size,
+              total: uniqueDownloadedAssets.length,
+              currentUrl: asset.filename,
+              message: `PDF Text extrahiert: ${asset.filename}`,
+            });
           } catch (err) {
             console.warn(`[RAG Pack] Error processing PDF ${asset.filename}:`, (err as Error).message);
             pdfInvalidCount++;
@@ -5257,6 +5439,13 @@ export async function registerRoutes(
 
         console.log(`[RAG Pack] PDF processing: ${pdfValidCount} valid, ${pdfInvalidCount} invalid/skipped`);
       }
+
+      sendEvent('progress', {
+        phase: 'building',
+        current: 0,
+        total: 1,
+        message: 'Erstelle Dokumente und Chunks...',
+      });
 
       const documentsJsonl = [
         ...scrapedResults.map(entry => {
@@ -5498,20 +5687,52 @@ export async function registerRoutes(
         zip.folder('schema')?.file('assets.schema.json', JSON.stringify(assetsSchema, null, 2));
       }
 
+      sendEvent('progress', {
+        phase: 'zipping',
+        current: 0,
+        total: 1,
+        message: 'Erstelle ZIP-Archiv...',
+      });
+
       // Generate ZIP buffer
       const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
 
-      // Set headers and send
+      const downloadId = sha256(`${projectId}-${Date.now()}-${Math.random()}`).slice(0, 16);
       const fileName = `rag_pack_${project.domain.replace(/[^a-z0-9]/gi, '_')}_${Date.now()}.zip`;
-      res.setHeader('Content-Type', 'application/zip');
-      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-      res.setHeader('Content-Length', zipBuffer.length);
-      res.send(zipBuffer);
+      const stored = storeRagPackDownload(downloadId, zipBuffer, fileName);
+      if (!stored) {
+        sendEvent('error', { message: 'ZIP-Datei zu groß für temporären Speicher' });
+        res.end();
+        return;
+      }
+
+      sendEvent('complete', {
+        downloadId,
+        filename: fileName,
+        fileSize: zipBuffer.length,
+        documents: scrapedResults.length + pdfDocuments.length,
+        chunks: allExportChunks.length,
+        pdfValid: pdfValidCount,
+        pdfInvalid: pdfInvalidCount,
+        assets: assetEntries.filter(a => a.downloaded).length,
+      });
+      res.end();
 
     } catch (err) {
       console.error('RAG Pack export error:', err);
-      res.status(500).json({ message: (err as Error).message });
+      try {
+        sendEvent('error', { message: (err as Error).message });
+        res.end();
+      } catch {
+        res.end();
+      }
     }
+  });
+
+  app.get('/api/projects/:id/rag-pack', async (req, res) => {
+    res.status(400).json({
+      message: 'Use /api/projects/:id/rag-pack/stream for SSE progress, then download from /api/rag-pack/download/:id'
+    });
   });
 
   return httpServer;

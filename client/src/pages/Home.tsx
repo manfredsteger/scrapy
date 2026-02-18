@@ -26,6 +26,7 @@ import ErrorLogs from '@/components/ErrorLogs';
 import ProjectCard from '@/components/ProjectCard';
 import ProjectSettings from '@/components/ProjectSettings';
 import ChunkingProgress from '@/components/ChunkingProgress';
+import RagPackProgress from '@/components/RagPackProgress';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import { Progress } from '@/components/ui/progress';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -48,6 +49,7 @@ export default function Home() {
   const [showNewProject, setShowNewProject] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showChunkingProgress, setShowChunkingProgress] = useState(false);
+  const [showRagPackProgress, setShowRagPackProgress] = useState(false);
   const [attachmentSync, setAttachmentSync] = useState<{
     active: boolean;
     processed: number;
@@ -1479,8 +1481,7 @@ export default function Home() {
                             toast({ title: t('noChunksYet'), variant: 'destructive' });
                             return;
                           }
-                          toast({ title: t('exportRagPack'), description: 'Export wird vorbereitet...' });
-                          window.open(`/api/projects/${activeProject!.id}/rag-pack`, '_blank');
+                          setShowRagPackProgress(true);
                         }}
                         className={`gap-2 ${((activeProject as any)?.chunkCount || activeProject?.chunks?.length || 0) === 0 ? 'opacity-50' : ''}`}
                         disabled={((activeProject as any)?.chunkCount || activeProject?.chunks?.length || 0) === 0}
@@ -1822,6 +1823,16 @@ export default function Home() {
               description: `${result.chunksGenerated} ${t('chunksGenerated')}` 
             });
           }}
+          t={t}
+        />
+      )}
+
+      {showRagPackProgress && activeProject && (
+        <RagPackProgress
+          open={showRagPackProgress}
+          onClose={() => setShowRagPackProgress(false)}
+          projectId={activeProject.id}
+          mode="project"
           t={t}
         />
       )}

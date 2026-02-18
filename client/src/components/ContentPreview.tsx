@@ -16,6 +16,7 @@ interface ContentPreviewProps {
   onClose: () => void;
   t: (key: any) => string;
   chunks?: RagChunk[];
+  projectId?: number;
 }
 
 function elementToMarkdown(el: ScrapedElement): string {
@@ -315,7 +316,7 @@ function renderElement(el: ScrapedElement, idx: number) {
   return null;
 }
 
-export default function ContentPreview({ entry, onClose, t, chunks = [] }: ContentPreviewProps) {
+export default function ContentPreview({ entry, onClose, t, chunks = [], projectId }: ContentPreviewProps) {
   const [copied, setCopied] = useState<string | null>(null);
   const [copiedChunk, setCopiedChunk] = useState<number | null>(null);
   const [selectedChunk, setSelectedChunk] = useState<number | null>(null);
@@ -493,11 +494,16 @@ export default function ContentPreview({ entry, onClose, t, chunks = [] }: Conte
               onClick={() => {
                 if (data?.linkedPdfs) {
                   data.linkedPdfs.forEach((pdf) => {
+                    const pdfFilename = pdf.url.split('/').pop()?.split('?')[0] || 'document.pdf';
                     const a = document.createElement('a');
-                    a.href = pdf.url;
-                    a.download = pdf.url.split('/').pop() || 'document.pdf';
-                    a.target = '_blank';
-                    a.rel = 'noopener noreferrer';
+                    if (projectId) {
+                      a.href = `/api/projects/${projectId}/pdf?url=${encodeURIComponent(entry.loc)}&pdfUrl=${encodeURIComponent(pdf.url)}&filename=${encodeURIComponent(pdfFilename)}`;
+                    } else {
+                      a.href = pdf.url;
+                      a.target = '_blank';
+                      a.rel = 'noopener noreferrer';
+                    }
+                    a.download = pdfFilename;
                     document.body.appendChild(a);
                     a.click();
                     document.body.removeChild(a);
@@ -505,7 +511,7 @@ export default function ContentPreview({ entry, onClose, t, chunks = [] }: Conte
                 }
               }}
               data-testid="button-download-all-pdfs"
-              title={data?.linkedPdfs?.length === 1 ? 'PDF herunterladen' : `Alle ${data?.linkedPdfs?.length} PDFs herunterladen`}
+              title={data?.linkedPdfs?.length === 1 ? 'PDF herunterladen (lokal)' : `Alle ${data?.linkedPdfs?.length} PDFs herunterladen (lokal)`}
             >
               <Download className="w-4 h-4 mx-auto mb-1 text-red-500" />
               <p className="text-xs text-muted-foreground">PDFs</p>

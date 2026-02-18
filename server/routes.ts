@@ -6,6 +6,8 @@ import { z } from "zod";
 import { JSDOM } from "jsdom";
 import { encode } from "gpt-tokenizer";
 import crypto from "crypto";
+import path from "path";
+import fsPromises from "fs/promises";
 import JSZip from "jszip";
 import { ProxyAgent, fetch as undiciFetch } from "undici";
 import type { RagChunk, ProjectSettings, ScrapedElement, SitemapUrlEntry, StructuredData, ChunkQuality, TableChunk, CodeBlock, RateLimitState, ProxyConfig, ChunkStats } from "@shared/schema";
@@ -6093,6 +6095,71 @@ export async function registerRoutes(
     } catch (err) {
       sendEvent('error', { message: (err as Error).message });
       res.end();
+    }
+  });
+
+  app.get('/api/projects/:id/pdf', async (req, res) => {
+    try {
+      const projectId = Number(req.params.id);
+      const pageUrl = req.query.url as string;
+      const pdfUrl = req.query.pdfUrl as string;
+      const filename = req.query.filename as string;
+      if (!pageUrl || !filename) {
+        return res.status(400).json({ message: 'Missing url or filename query parameter' });
+      }
+      const project = await storage.getProject(projectId);
+      if (!project) {
+        return res.status(404).json({ message: 'Project not found' });
+      }
+      const pageDir = fileStorage.getProjectPageDir(projectId, project.domain, pageUrl);
+      const safeName = fileStorage.sanitizeDirName(filename.replace(/\.pdf$/i, '')) + '.pdf';
+      const pdfPath = path.join(pageDir, 'pdfs', safeName);
+
+      let fileBuffer: Buffer | null = null;
+      try {
+        fileBuffer = await fsPromises.readFile(pdfPath);
+      } catch {
+        if (!pdfUrl) {
+          return res.status(404).json({ message: 'PDF not found on filesystem' });
+        }
+        // Validate: only allow downloads from the project's own domain
+        try {
+          const parsedPdfUrl = new URL(pdfUrl);
+          const projectDomain = project.domain.toLowerCase().replace(/^www\./, '');
+          const pdfDomain = parsedPdfUrl.hostname.toLowerCase().replace(/^www\./, '');
+          if (pdfDomain !== projectDomain) {
+            return res.status(403).json({ message: 'PDF URL domain does not match project domain' });
+          }
+        } catch {
+          return res.status(400).json({ message: 'Invalid PDF URL' });
+        }
+        try {
+          const pdfResponse = await fetch(pdfUrl, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SitemapScraper/1.0)' },
+            signal: AbortSignal.timeout(30000),
+          });
+          if (!pdfResponse.ok) {
+            return res.status(404).json({ message: `PDF not available (HTTP ${pdfResponse.status})` });
+          }
+          const contentType = pdfResponse.headers.get('content-type') || '';
+          if (!contentType.includes('pdf') && !contentType.includes('octet-stream')) {
+            return res.status(400).json({ message: 'Response is not a PDF' });
+          }
+          fileBuffer = Buffer.from(await pdfResponse.arrayBuffer());
+          if (fileBuffer.length > 50 * 1024 * 1024) {
+            return res.status(413).json({ message: 'PDF too large (>50MB)' });
+          }
+          await fileStorage.savePdf(pageDir, filename, fileBuffer);
+        } catch (dlErr) {
+          return res.status(404).json({ message: `PDF not available: ${(dlErr as Error).message}` });
+        }
+      }
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+      res.send(fileBuffer);
+    } catch (err) {
+      res.status(500).json({ message: (err as Error).message });
     }
   });
 

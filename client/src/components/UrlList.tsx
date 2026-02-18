@@ -137,6 +137,7 @@ export default function UrlList({ urls, projectId, t, chunks = [], onRescrapeUrl
           onClose={() => setPreviewEntry(null)} 
           t={t}
           chunks={chunks}
+          projectId={projectId}
         />
       )}
 

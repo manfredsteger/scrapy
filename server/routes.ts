@@ -3426,6 +3426,32 @@ export async function registerRoutes(
       return res.status(404).json({ message: 'Single page not found' });
     }
 
+    if (!singlePage.scrapedData) {
+      try {
+        const pageDir = fileStorage.getSinglePageDir(id, singlePage.domain);
+        const [markdownContent, meta] = await Promise.all([
+          fileStorage.readPageContent(pageDir),
+          fileStorage.readPageMeta(pageDir),
+        ]);
+        if (markdownContent && meta) {
+          return res.json({
+            ...singlePage,
+            scrapedData: {
+              title: meta.title,
+              timestamp: meta.timestamp,
+              wordCount: meta.wordCount,
+              structuredData: meta.structuredData,
+              linkedPdfs: meta.linkedPdfs,
+              orderedElements: meta.orderedElements || [],
+            },
+            markdownContent,
+            source: 'filesystem',
+          });
+        }
+      } catch {
+      }
+    }
+
     res.json(singlePage);
   });
 
@@ -3843,12 +3869,28 @@ export async function registerRoutes(
         return;
       }
 
+      let scrapedDataObj = singlePage.scrapedData as any;
+      if (!scrapedDataObj) {
+        try {
+          const spPageDir = fileStorage.getSinglePageDir(id, singlePage.domain);
+          const meta = await fileStorage.readPageMeta(spPageDir);
+          if (meta) {
+            scrapedDataObj = {
+              title: meta.title,
+              orderedElements: meta.orderedElements || [],
+              linkedPdfs: meta.linkedPdfs,
+              structuredData: meta.structuredData,
+            };
+          }
+        } catch {}
+      }
+
       const zip = new JSZip();
       const now = new Date().toISOString();
       const docId = `doc_${sha256(singlePage.url).slice(0, 12)}`;
       const rawTitle = singlePage.title || '';
       const cleanedTitle = cleanHtmlTitle(rawTitle, singlePage.url);
-      const textContent = (singlePage.scrapedData?.orderedElements || [])
+      const textContent = (scrapedDataObj?.orderedElements || [])
         .filter((el: any) => el.type === 'text' || el.type === 'heading' || el.type === 'paragraph')
         .map((el: any) => el.content || '')
         .join(' ');
@@ -3878,12 +3920,12 @@ export async function registerRoutes(
           chunk_count: chunks.length,
         },
         hashes: {
-          content_sha256: sha256(JSON.stringify(singlePage.scrapedData?.orderedElements || [])),
+          content_sha256: sha256(JSON.stringify(scrapedDataObj?.orderedElements || [])),
           source_fingerprint: sha256(singlePage.url + '|' + cleanedTitle),
         },
       };
 
-      const spLinkedPdfs = (singlePage.scrapedData as any)?.linkedPdfs;
+      const spLinkedPdfs = scrapedDataObj?.linkedPdfs;
       const spAssetEntries: Array<{ asset_id: string; doc_id: string; url: string; title?: string; link_text?: string; filename: string; path: string; size_bytes: number; mime_type: string; downloaded: boolean; error?: string }> = [];
       const spAssetPathMap = new Map<string, string>();
       const spPdfDocuments: any[] = [];

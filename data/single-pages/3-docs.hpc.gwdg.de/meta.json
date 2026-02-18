@@ -1,0 +1,272 @@
+{
+  "url": "https://docs.hpc.gwdg.de/services/chat-ai/index.html",
+  "title": "Chat AI :: Documentation for HPC",
+  "timestamp": "2026-01-29T07:17:42.125Z",
+  "wordCount": 1023,
+  "structuredData": {
+    "openGraph": {
+      "url": "https://docs.hpc.gwdg.de/services/chat-ai/index.html",
+      "type": "website",
+      "title": "Chat AI :: Documentation for HPC",
+      "locale": "de_de",
+      "site_name": "Documentation for HPC",
+      "description": "Chat AI is a stand-alone LLM (large language model) web service that we provide, which hosts multiple LLMs on a scalable backend. It runs on our cloud virtual machine with secure access to run the LLMs on our HPC systems. It is our secure solution to commercial LLM services, where none of your data gets used by us or stored on our systems.\nThe service can be reached via a it’s web interface. To use the models via the API, refer to API Request, and to use the models via Visual Studio Code, refer to CoCo AI."
+    },
+    "schemaOrg": [
+      {
+        "name": "Chat AI :: Documentation for HPC",
+        "@type": "http://schema.org/Article",
+        "keywords": "Ai,Llm,Chat-Ai",
+        "wordCount": "1105",
+        "description": "Chat AI is a stand-alone LLM (large language model) web service that we provide, which hosts multiple LLMs on a scalable backend. It runs on our cloud virtual machine with secure access to run the LLMs on our HPC systems. It is our secure solution to commercial LLM services, where none of your data gets used by us or stored on our systems.\nThe service can be reached via a it’s web interface. To use the models via the API, refer to API Request, and to use the models via Visual Studio Code, refer to CoCo AI.",
+        "dateModified": "2025-10-06T08:55:35+00:00"
+      },
+      {
+        "@type": "http://schema.org/BreadcrumbList"
+      },
+      {
+        "item": "https://docs.hpc.gwdg.de/index.html",
+        "name": "Home",
+        "@type": "https://schema.org/ListItem",
+        "position": "1"
+      },
+      {
+        "item": "https://docs.hpc.gwdg.de/services/index.html",
+        "name": "Services",
+        "@type": "https://schema.org/ListItem",
+        "position": "2"
+      },
+      {
+        "name": "Chat AI",
+        "@type": "https://schema.org/ListItem",
+        "position": "3"
+      }
+    ],
+    "twitterCard": {
+      "card": "summary",
+      "title": "Chat AI :: Documentation for HPC",
+      "description": "Chat AI is a stand-alone LLM (large language model) web service that we provide, which hosts multiple LLMs on a scalable backend. It runs on our cloud virtual machine with secure access to run the LLMs on our HPC systems. It is our secure solution to commercial LLM services, where none of your data gets used by us or stored on our systems.\nThe service can be reached via a it’s web interface. To use the models via the API, refer to API Request, and to use the models via Visual Studio Code, refer to CoCo AI."
+    }
+  },
+  "orderedElements": [
+    {
+      "tag": "h1",
+      "type": "heading",
+      "level": 1,
+      "content": "Chat AI"
+    },
+    {
+      "alt": "Chat AI Logo",
+      "src": "https://docs.hpc.gwdg.de/img/services/chatai-logo.png",
+      "tag": "img",
+      "type": "media"
+    },
+    {
+      "type": "paragraph",
+      "content": "Chat AI is a stand-alone LLM (large language model) web service that we provide, which hosts multiple LLMs on a scalable backend. It runs on our cloud virtual machine with secure access to run the LLMs on our HPC systems. It is our secure solution to commercial LLM services, where none of your data gets used by us or stored on our systems."
+    },
+    {
+      "type": "paragraph",
+      "content": "The service can be reached via a it’s web interface.\nTo use the models via the API, refer to API Request, and to use the models via Visual Studio Code, refer to CoCo AI."
+    },
+    {
+      "type": "paragraph",
+      "content": "If all you need is a quick change of your persona, this is the page you are looking for."
+    },
+    {
+      "type": "paragraph",
+      "content": "You need an Academic Cloud account to access the AI Services.\nUse the federated login or create a new account. Details are on this page."
+    },
+    {
+      "tag": "h2",
+      "type": "heading",
+      "level": 2,
+      "content": "Current Models"
+    },
+    {
+      "type": "paragraph",
+      "content": "Chat AI currently hosts a large assortment of high-quality, open-source models. All models except ChatGPT are self-hosted with the guarantee of the highest standards of data protection. These models run completely on our hardware and don’t store any user data."
+    },
+    {
+      "type": "paragraph",
+      "content": "For more detailed information about all our models, please refer to available models."
+    },
+    {
+      "tag": "h2",
+      "type": "heading",
+      "level": 2,
+      "content": "Web interface and usage"
+    },
+    {
+      "type": "paragraph",
+      "content": "If you have an AcademicCloud account, the web interface can also easily be reached here. All models of ChatAI are free to use, for free, for all users, with the exception of the ChatGPT models, which are only freely available to public universities and research institutes in Lower Saxony and the Max Planck Society."
+    },
+    {
+      "type": "paragraph",
+      "content": "Choose a model suitable to your needs from the available models.\nAfter learning the basic usage, learn about ChatAI’s advanced features here"
+    },
+    {
+      "type": "paragraph",
+      "content": "From the web interface, there are built-in actions that can make your prompts easier or better. These include:"
+    },
+    {
+      "tag": "ul",
+      "type": "list",
+      "children": [
+        "Attach (+ button): Add files that the model use as context for your prompts.",
+        "Listen (microphone button): Speak to the model instead of typing.",
+        "Import/Export (upload/download button): If you have downloaded conversations from a previous ChatAI session or another service, you can import that session and continue it.",
+        "Footer (bottom arrow): Change the view to include the footer, which includes “Terms of use”, “FAQ”, etc. and the option to switch between English and German.",
+        "Light/Dark mode (sun/moon button): Toggle between light and dark mode.",
+        "Options: Further configuration options for tailoring your prompts and model more closely. These include :System prompt, which can be considered the role that the model should assume for your prompts. The job interview prompt above is an example.Completion options such as temperature and top_p sampling.Share button, which generates a shareable URL for Chat AI that loads your current model, system prompt, and other settings. Note that this does not include your conversation.Clear button, which deletes the entire data stored in your browser, removing your conversations and settings.Memory Settings, the system supports three memory modes to control conversational context:None: Disables memory—each conversation is treated independently.Recall: Adds previous messages to the system prompt for contextual continuity.Learn: Extends Recall by updating memory with relevant parts of the current conversation, enabling a more natural dialogue flow."
+      ]
+    },
+    {
+      "type": "blockquote",
+      "content": "Note: Memory is stored locally in the browser and does not affect external (OpenAI) models."
+    },
+    {
+      "type": "paragraph",
+      "content": "We suggest to set a system prompt before starting your session in order to define the role the model should play. A more detailed system prompt is usually better. Examples include:"
+    },
+    {
+      "tag": "ul",
+      "type": "list",
+      "children": [
+        "“I will ask questions about data science, to which I want detailed answers with example code if applicable and citations to at least 3 research papers discussing the main subject in each question.”",
+        "“I want the following text to be summarized with 40% compression. Provide an English and a German translation.”",
+        "“You are a difficult job interviewer at the Deutsch Bahn company and I am applying for a job as a conductor”."
+      ]
+    },
+    {
+      "tag": "h3",
+      "type": "heading",
+      "level": 3,
+      "content": "Completion options"
+    },
+    {
+      "type": "paragraph",
+      "content": "Two important concepts to understand among completion options are temperature and top_p sampling."
+    },
+    {
+      "tag": "ul",
+      "type": "list",
+      "children": [
+        "temperature is a slider from 0 to 2 adjusting the creativity, with closer to 0 being more predictable and closer to 2 being more creative. It does this by expanding or flattening the probabilities of the next token (response building block).",
+        "top_p is a slider from 0 to 1 which adjusts the total population of probabilities considered for the next token. A top_p of 0.1 would mean that only the top 10% of cumulative probabilities are considered. Varying top_p has a similar effect on predictability and creativity as temperature, with larger values considered to increase creativity."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": "Predictable results, for tasks such as coding, require low values for both parameters, and creative results, for tasks such as brainstorming, require high values. See the table in the available models section for value suggestions."
+    },
+    {
+      "tag": "h2",
+      "type": "heading",
+      "level": 2,
+      "content": "Features"
+    },
+    {
+      "type": "paragraph",
+      "content": "More comprehensive documentation for all features is found here."
+    },
+    {
+      "tag": "ul",
+      "type": "list",
+      "children": [
+        "Arcana / RAG",
+        "Tools",
+        "Memory",
+        "Personas",
+        "Model Context Protocol (MCP)"
+      ]
+    },
+    {
+      "tag": "h3",
+      "type": "heading",
+      "level": 3,
+      "content": "Chat AI Tools"
+    },
+    {
+      "type": "paragraph",
+      "content": "The settings window shows you an option to activate tools.\nOnce activated, these tools are available:"
+    },
+    {
+      "tag": "ul",
+      "type": "list",
+      "children": [
+        "Web Search",
+        "Image generation",
+        "Image editing",
+        "text to speech (tts)"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": "Also, if you want to use Toolbox, meaning the image, video, and audio features of the models, you need to activate the tools in the settings."
+    },
+    {
+      "type": "paragraph",
+      "content": "These tools only work using the models hosted by GWDG and KISSKI. The external models from OpenAI do not work with the tools."
+    },
+    {
+      "tag": "h3",
+      "type": "heading",
+      "level": 3,
+      "content": "Web Search"
+    },
+    {
+      "type": "paragraph",
+      "content": "This tool works by creating a search query that can be used with search engines.\nThe entire chat history is used and processed to create a short search query that generates a processable response.\nOnce the response is retrieved from the search engine it is used together with the model to write a reply to the prompt."
+    },
+    {
+      "type": "paragraph",
+      "content": "Most importantly, this allows the response to contain recent information instead of the outdated information present in the model that was selected."
+    },
+    {
+      "type": "paragraph",
+      "content": "For more information, check out the Tools Documentation."
+    },
+    {
+      "tag": "h2",
+      "type": "heading",
+      "level": 2,
+      "content": "Acknowledgements"
+    },
+    {
+      "type": "paragraph",
+      "content": "We thank Priyeshkumar Chikhaliya for the design and implementation of the web interface."
+    },
+    {
+      "type": "paragraph",
+      "content": "We thank all colleagues and partners involved in this project."
+    },
+    {
+      "tag": "h2",
+      "type": "heading",
+      "level": 2,
+      "content": "Citation"
+    },
+    {
+      "type": "paragraph",
+      "content": "If you use Chat AI in your research, services or publications, please cite us as follows:"
+    },
+    {
+      "tag": "pre",
+      "type": "code",
+      "content": "@misc{doosthosseiniSAIASeamlessSlurmNative2025,\n  title = {{{SAIA}}: {{A Seamless Slurm-Native Solution}} for {{HPC-Based Services}}},\n  shorttitle = {{{SAIA}}},\n  author = {Doosthosseini, Ali and Decker, Jonathan and Nolte, Hendrik and Kunkel, Julian},\n  year = {2025},\n  month = jul,\n  publisher = {Research Square},\n  issn = {2693-5015},\n  doi = {10.21203/rs.3.rs-6648693/v1},\n  url = {https://www.researchsquare.com/article/rs-6648693/v1},\n  urldate = {2025-07-29},\n  archiveprefix = {Research Square}\n}",
+      "language": "bibtex",
+      "lineCount": 13
+    },
+    {
+      "tag": "h2",
+      "type": "heading",
+      "level": 2,
+      "content": "Further services"
+    },
+    {
+      "type": "paragraph",
+      "content": "If you have questions, please browse the FAQ first.\nFor more detail on how the service works, you can read our research paper here.\nIf you have more specific questions, feel free to contact us at kisski-support@gwdg.de."
+    }
+  ]
+}

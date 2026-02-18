@@ -15,6 +15,38 @@ import { orderedElementsToMarkdown } from './markdownConverter';
 
 const CONCURRENCY = 10;
 
+async function loadResultsWithFilesystem(
+  results: any[],
+  projectId: number,
+  domain: string
+): Promise<any[]> {
+  const enriched: any[] = [];
+  for (const r of results) {
+    if (r.scrapedData) {
+      enriched.push(r);
+    } else if (r.hasScrapedData && r.loc) {
+      try {
+        const pageDir = fileStorage.getProjectPageDir(projectId, domain, r.loc);
+        const meta = await fileStorage.readPageMeta(pageDir);
+        if (meta) {
+          enriched.push({
+            ...r,
+            scrapedData: {
+              title: meta.title,
+              timestamp: meta.timestamp,
+              wordCount: meta.wordCount,
+              structuredData: meta.structuredData,
+              linkedPdfs: meta.linkedPdfs,
+              orderedElements: meta.orderedElements || [],
+            },
+          });
+        }
+      } catch {}
+    }
+  }
+  return enriched;
+}
+
 // Rate Limiter class for managing request delays with auto-adjustment
 class RateLimiter {
   private currentDelay: number;
@@ -3104,9 +3136,8 @@ export async function registerRoutes(
         errorStatus: null, // Clear previous error status
       }));
       
-      // All URLs without scrapedData need extraction (including previously failed ones)
       const contentUrls = resetResults
-        .filter((r: any) => !r.scrapedData)
+        .filter((r: any) => !r.scrapedData && !r.hasScrapedData)
         .map((r: any) => r.loc);
 
       if (contentUrls.length === 0) {
@@ -3541,10 +3572,8 @@ export async function registerRoutes(
         const imageCount = scrapedResult.orderedElements?.filter((el: any) => el.type === 'media' && el.tag === 'img').length || 0;
         const videoCount = scrapedResult.orderedElements?.filter((el: any) => el.type === 'media' && el.tag === 'video').length || 0;
 
-        // Update status to chunking
         await storage.updateSinglePage(singlePage.id, {
           title: scrapedResult.title,
-          scrapedData: scrapedResult,
           structuredData: scrapedResult.structuredData,
           wordCount: scrapedResult.wordCount,
           imageCount,
@@ -4446,7 +4475,7 @@ export async function registerRoutes(
           
           // Store update in memory - will be applied in batch
           if (data) {
-            urlUpdates.set(url, { scrapedData: data, errorStatus: undefined, errorMessage: undefined });
+            urlUpdates.set(url, { hasScrapedData: true, errorStatus: undefined, errorMessage: undefined });
             
             // Save to filesystem
             try {
@@ -4730,7 +4759,8 @@ export async function registerRoutes(
         return res.status(404).json({ message: 'Project not found' });
       }
 
-      const scrapedResults = (project.results || []).filter(r => r.scrapedData);
+      const allResults = (project.results || []).filter((r: any) => r.scrapedData || r.hasScrapedData);
+      const scrapedResults = await loadResultsWithFilesystem(allResults, projectId, project.domain);
       if (scrapedResults.length === 0) {
         return res.status(400).json({ message: 'No scraped content available. Run deep scraping first.' });
       }
@@ -4787,7 +4817,8 @@ export async function registerRoutes(
         return;
       }
 
-      const scrapedResults = (project.results || []).filter(r => r.scrapedData);
+      const allChunkResults = (project.results || []).filter((r: any) => r.scrapedData || r.hasScrapedData);
+      const scrapedResults = await loadResultsWithFilesystem(allChunkResults, projectId, project.domain);
       if (scrapedResults.length === 0) {
         sendEvent({ type: 'error', message: 'No scraped content available. Run deep scraping first.' });
         res.end();
@@ -5388,7 +5419,8 @@ export async function registerRoutes(
       const includeAssets = settings.export?.includeAssets ?? true;
       const exportFormats = settings.export?.formats || ['json'];
 
-      const scrapedResults = (project.results || []).filter(r => r.scrapedData);
+      const allRagResults = (project.results || []).filter((r: any) => r.scrapedData || r.hasScrapedData);
+      const scrapedResults = await loadResultsWithFilesystem(allRagResults, projectId, project.domain);
       const zip = new JSZip();
       const now = new Date().toISOString();
 

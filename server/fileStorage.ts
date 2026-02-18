@@ -176,6 +176,71 @@ export async function findPdfByUrl(pageDir: string, pdfUrl: string): Promise<Buf
   }
 }
 
+const pdfDownloadIndexCache = new Map<string, Map<string, string>>();
+
+async function loadPdfDownloadIndex(projectDir: string): Promise<Map<string, string>> {
+  const cached = pdfDownloadIndexCache.get(projectDir);
+  if (cached) return cached;
+  const indexPath = path.join(projectDir, 'pdf-downloads', 'index.json');
+  try {
+    const data = JSON.parse(await fs.readFile(indexPath, 'utf-8'));
+    const map = new Map<string, string>(Object.entries(data));
+    pdfDownloadIndexCache.set(projectDir, map);
+    return map;
+  } catch {
+    const map = new Map<string, string>();
+    pdfDownloadIndexCache.set(projectDir, map);
+    return map;
+  }
+}
+
+async function savePdfDownloadIndex(projectDir: string, index: Map<string, string>): Promise<void> {
+  const dlDir = path.join(projectDir, 'pdf-downloads');
+  await ensureDir(dlDir);
+  const obj: Record<string, string> = {};
+  for (const [k, v] of index) obj[k] = v;
+  await fs.writeFile(path.join(dlDir, 'index.json'), JSON.stringify(obj, null, 2), 'utf-8');
+}
+
+export async function findProjectPdf(projectId: number, domain: string, pdfUrl: string, pageDir?: string): Promise<Buffer | null> {
+  if (pageDir) {
+    const fromPage = await findPdfByUrl(pageDir, pdfUrl);
+    if (fromPage) return fromPage;
+  }
+  const projectDir = getProjectDir(projectId, domain);
+  const index = await loadPdfDownloadIndex(projectDir);
+  const localPath = index.get(pdfUrl);
+  if (localPath) {
+    try {
+      return await fs.readFile(localPath);
+    } catch {
+      index.delete(pdfUrl);
+    }
+  }
+  return null;
+}
+
+export async function saveProjectPdf(projectId: number, domain: string, pdfUrl: string, buffer: Buffer): Promise<string> {
+  const projectDir = getProjectDir(projectId, domain);
+  const dlDir = path.join(projectDir, 'pdf-downloads');
+  await ensureDir(dlDir);
+  const hash = urlHash(pdfUrl);
+  const urlFilename = pdfUrl.split('/').pop()?.split('?')[0] || 'document.pdf';
+  const safeName = sanitizeDirName(urlFilename.replace(/\.pdf$/i, '')) + '.pdf';
+  const filename = `${hash}_${safeName}`;
+  const filePath = path.join(dlDir, filename);
+  await fs.writeFile(filePath, buffer);
+  const index = await loadPdfDownloadIndex(projectDir);
+  index.set(pdfUrl, filePath);
+  await savePdfDownloadIndex(projectDir, index);
+  return filePath;
+}
+
+export function clearPdfDownloadIndexCache(projectId: number, domain: string): void {
+  const projectDir = getProjectDir(projectId, domain);
+  pdfDownloadIndexCache.delete(projectDir);
+}
+
 export async function countProjectAttachments(projectId: number, domain: string): Promise<number> {
   const projectDir = getProjectDir(projectId, domain);
   const pageDirs = await listPageDirs(projectDir);

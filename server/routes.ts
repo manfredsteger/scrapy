@@ -5523,10 +5523,9 @@ export async function registerRoutes(
 
           try {
             let buffer: Buffer | null = null;
-            const urlFilename = asset.url.split('/').pop()?.split('?')[0] || '';
             const docPageDir = fileStorage.getProjectPageDir(projectId, project.domain, asset.docUrl);
 
-            buffer = await fileStorage.findPdfByUrl(docPageDir, asset.url);
+            buffer = await fileStorage.findProjectPdf(projectId, project.domain, asset.url, docPageDir);
 
             if (buffer) {
               sendEvent('progress', {
@@ -5551,7 +5550,7 @@ export async function registerRoutes(
               if (response.ok) {
                 buffer = Buffer.from(await response.arrayBuffer());
                 try {
-                  await fileStorage.savePdf(docPageDir, urlFilename || `${baseName}.pdf`, buffer);
+                  await fileStorage.saveProjectPdf(projectId, project.domain, asset.url, buffer);
                 } catch {}
               } else {
                 console.warn(`[RAG Pack] Failed to download ${asset.url}: HTTP ${response.status}`);

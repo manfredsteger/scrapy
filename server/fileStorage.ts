@@ -163,6 +163,62 @@ export async function readPdf(filePath: string): Promise<Buffer | null> {
   }
 }
 
+export async function saveProjectPdfCache(projectId: number, domain: string, pdfUrl: string, buffer: Buffer): Promise<string> {
+  const projectDir = getProjectDir(projectId, domain);
+  const cacheDir = path.join(projectDir, "pdf-cache");
+  await ensureDir(cacheDir);
+  const hash = urlHash(pdfUrl);
+  const urlFilename = pdfUrl.split('/').pop()?.split('?')[0] || 'document';
+  const safeName = sanitizeDirName(urlFilename.replace(/\.pdf$/i, '')) + '.pdf';
+  const filePath = path.join(cacheDir, `${hash}_${safeName}`);
+  await fs.writeFile(filePath, buffer);
+  return filePath;
+}
+
+export async function readProjectPdfCache(projectId: number, domain: string, pdfUrl: string): Promise<Buffer | null> {
+  const projectDir = getProjectDir(projectId, domain);
+  const cacheDir = path.join(projectDir, "pdf-cache");
+  const hash = urlHash(pdfUrl);
+  try {
+    const entries = await fs.readdir(cacheDir);
+    const match = entries.find(f => f.startsWith(hash));
+    if (match) {
+      return await fs.readFile(path.join(cacheDir, match));
+    }
+  } catch {}
+  return null;
+}
+
+export async function countProjectAttachments(projectId: number, domain: string): Promise<number> {
+  const projectDir = getProjectDir(projectId, domain);
+  const pageDirs = await listPageDirs(projectDir);
+  let total = 0;
+  for (const pageDir of pageDirs) {
+    try {
+      const meta = await readPageMeta(pageDir);
+      if (meta?.linkedPdfs && Array.isArray(meta.linkedPdfs)) {
+        total += meta.linkedPdfs.length;
+      }
+    } catch {}
+  }
+  return total;
+}
+
+export async function getPagePdfCounts(projectId: number, domain: string): Promise<Map<string, number>> {
+  const projectDir = getProjectDir(projectId, domain);
+  const pageDirs = await listPageDirs(projectDir);
+  const counts = new Map<string, number>();
+  for (const pageDir of pageDirs) {
+    try {
+      const meta = await readPageMeta(pageDir);
+      if (meta?.url && meta?.linkedPdfs && Array.isArray(meta.linkedPdfs)) {
+        counts.set(meta.url, meta.linkedPdfs.length);
+      }
+    } catch {}
+  }
+  return counts;
+}
+
 export async function saveProjectChunks(projectId: number, domain: string, chunks: any[]): Promise<void> {
   const dir = getProjectDir(projectId, domain);
   await ensureDir(dir);

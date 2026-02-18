@@ -3006,6 +3006,15 @@ export async function registerRoutes(
           project.chunkCount = fsChunks.length;
         }
       }
+      const pdfCounts = await fileStorage.getPagePdfCounts(project.id, project.domain);
+      if (pdfCounts.size > 0 && project.results) {
+        for (const r of project.results) {
+          const loc = r.loc;
+          if (loc && pdfCounts.has(loc)) {
+            r.pdfCount = pdfCounts.get(loc);
+          }
+        }
+      }
       res.json(project);
     } catch (error) {
       console.error('Error fetching project:', error);
@@ -5518,25 +5527,31 @@ export async function registerRoutes(
           try {
             let buffer: Buffer | null = null;
 
-            try {
-              const pageDir = fileStorage.getProjectPageDir(projectId, project.domain, asset.docUrl);
-              const localPdfs = await fileStorage.listPdfs(pageDir);
-              const match = localPdfs.find(p => p.includes(safeName) || p.includes(baseName));
-              if (match) {
-                buffer = await fileStorage.readPdf(match);
-                if (buffer) assetFromFs = true;
-              }
-              if (!buffer) {
-                for (const p of localPdfs) {
-                  const pdfName = p.split('/').pop() || '';
-                  const urlFilename = asset.url.split('/').pop()?.split('?')[0] || '';
-                  if (urlFilename && pdfName === urlFilename) {
-                    buffer = await fileStorage.readPdf(p);
-                    if (buffer) { assetFromFs = true; break; }
+            buffer = await fileStorage.readProjectPdfCache(projectId, project.domain, asset.url);
+            if (buffer) {
+              assetFromFs = true;
+            }
+
+            if (!buffer) {
+              const urlFilename = asset.url.split('/').pop()?.split('?')[0] || '';
+              const searchDirs = [
+                fileStorage.getProjectPageDir(projectId, project.domain, asset.docUrl),
+                fileStorage.getProjectPageDir(projectId, project.domain, asset.url),
+              ];
+              for (const dir of searchDirs) {
+                if (buffer) break;
+                try {
+                  const localPdfs = await fileStorage.listPdfs(dir);
+                  for (const p of localPdfs) {
+                    const pdfName = p.split('/').pop() || '';
+                    if (pdfName.includes(baseName) || (urlFilename && pdfName === urlFilename)) {
+                      buffer = await fileStorage.readPdf(p);
+                      if (buffer) { assetFromFs = true; break; }
+                    }
                   }
-                }
+                } catch {}
               }
-            } catch { /* filesystem not available */ }
+            }
 
             if (!buffer) {
               console.log(`[RAG Pack] Downloading asset ${assetIndex + 1}/${seenUrls.size}: ${asset.url.slice(0, 80)}`);
@@ -5553,6 +5568,9 @@ export async function registerRoutes(
               });
               if (response.ok) {
                 buffer = Buffer.from(await response.arrayBuffer());
+                try {
+                  await fileStorage.saveProjectPdfCache(projectId, project.domain, asset.url, buffer);
+                } catch {}
               } else {
                 console.warn(`[RAG Pack] Failed to download ${asset.url}: HTTP ${response.status}`);
                 assetEntries.push({

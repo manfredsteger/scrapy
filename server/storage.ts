@@ -101,7 +101,7 @@ export class DatabaseStorage implements IStorage {
               'videos', COALESCE(r->'videos', '[]'::jsonb),
               'hasScrapedData', COALESCE((r->>'hasScrapedData')::boolean, r->'scrapedData' IS NOT NULL AND jsonb_typeof(r->'scrapedData') = 'object'),
               'status', COALESCE(r->>'status', CASE WHEN (r->>'hasScrapedData')::boolean = true THEN 'scraped' WHEN r->>'errorMessage' IS NOT NULL THEN 'failed' ELSE 'pending' END),
-              'pdfCount', COALESCE(jsonb_array_length(r->'scrapedData'->'linkedPdfs'), 0),
+              'pdfCount', 0,
               'errorStatus', r->>'errorStatus',
               'errorMessage', r->>'errorMessage'
             )

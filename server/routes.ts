@@ -5536,6 +5536,20 @@ export async function registerRoutes(
             let buffer: Buffer | null = null;
             const docPageDir = fileStorage.getProjectPageDir(projectId, project.domain, asset.docUrl);
 
+            const isFailed = await fileStorage.isProjectPdfFailed(projectId, project.domain, asset.url);
+            if (isFailed) {
+              assetEntries.push({
+                asset_id: `asset_${sha256(asset.url).slice(0, 12)}`,
+                doc_id: asset.docId, doc_url: asset.docUrl, url: asset.url,
+                title: asset.title, link_text: asset.linkText,
+                filename: '', path: '', size_bytes: 0, mime_type: 'application/pdf',
+                downloaded: false, error: 'Previously failed',
+              });
+              assetIndex++;
+              if (clientDisconnected) break;
+              continue;
+            }
+
             buffer = await fileStorage.findProjectPdf(projectId, project.domain, asset.url, docPageDir);
 
             if (buffer) {
@@ -5565,6 +5579,9 @@ export async function registerRoutes(
                 } catch {}
               } else {
                 console.warn(`[RAG Pack] Failed to download ${asset.url}: HTTP ${response.status}`);
+                try {
+                  await fileStorage.markProjectPdfFailed(projectId, project.domain, asset.url);
+                } catch {}
                 assetEntries.push({
                   asset_id: `asset_${sha256(asset.url).slice(0, 12)}`,
                   doc_id: asset.docId, doc_url: asset.docUrl, url: asset.url,
@@ -5589,6 +5606,9 @@ export async function registerRoutes(
             });
           } catch (err) {
             console.warn(`[RAG Pack] Error downloading ${asset.url}:`, (err as Error).message);
+            try {
+              await fileStorage.markProjectPdfFailed(projectId, project.domain, asset.url);
+            } catch {}
             assetEntries.push({
               asset_id: `asset_${sha256(asset.url).slice(0, 12)}`,
               doc_id: asset.docId, doc_url: asset.docUrl, url: asset.url,

@@ -211,6 +211,7 @@ export async function findProjectPdf(projectId: number, domain: string, pdfUrl: 
   const index = await loadPdfDownloadIndex(projectDir);
   const localPath = index.get(pdfUrl);
   if (localPath) {
+    if (localPath === 'FAILED') return null;
     try {
       return await fs.readFile(localPath);
     } catch {
@@ -218,6 +219,19 @@ export async function findProjectPdf(projectId: number, domain: string, pdfUrl: 
     }
   }
   return null;
+}
+
+export async function isProjectPdfFailed(projectId: number, domain: string, pdfUrl: string): Promise<boolean> {
+  const projectDir = getProjectDir(projectId, domain);
+  const index = await loadPdfDownloadIndex(projectDir);
+  return index.get(pdfUrl) === 'FAILED';
+}
+
+export async function markProjectPdfFailed(projectId: number, domain: string, pdfUrl: string): Promise<void> {
+  const projectDir = getProjectDir(projectId, domain);
+  const index = await loadPdfDownloadIndex(projectDir);
+  index.set(pdfUrl, 'FAILED');
+  await savePdfDownloadIndex(projectDir, index);
 }
 
 export async function saveProjectPdf(projectId: number, domain: string, pdfUrl: string, buffer: Buffer): Promise<string> {

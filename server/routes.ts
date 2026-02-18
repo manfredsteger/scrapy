@@ -2937,41 +2937,62 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
   
-  const MAX_RAG_PACK_STORAGE_BYTES = 500 * 1024 * 1024;
-  const ragPackDownloads = new Map<string, { buffer: Buffer; filename: string; createdAt: number }>();
+  const EXPORT_RETENTION_DAYS = 30;
 
-  function getRagPackStorageSize(): number {
-    let total = 0;
-    Array.from(ragPackDownloads.values()).forEach(entry => {
-      total += entry.buffer.length;
-    });
-    return total;
-  }
-
-  function storeRagPackDownload(id: string, buffer: Buffer, filename: string): boolean {
-    const currentSize = getRagPackStorageSize();
-    if (currentSize + buffer.length > MAX_RAG_PACK_STORAGE_BYTES) {
-      const entries = Array.from(ragPackDownloads.entries()).sort((a, b) => a[1].createdAt - b[1].createdAt);
-      for (const [key] of entries) {
-        ragPackDownloads.delete(key);
-        if (getRagPackStorageSize() + buffer.length <= MAX_RAG_PACK_STORAGE_BYTES) break;
-      }
-    }
-    if (buffer.length > MAX_RAG_PACK_STORAGE_BYTES) {
+  async function saveRagPackExport(
+    projectId: number,
+    domain: string,
+    downloadId: string,
+    buffer: Buffer,
+    filename: string,
+    stats: { documents: number; chunks: number; pdfValid: number; pdfInvalid: number; assets: number }
+  ): Promise<boolean> {
+    try {
+      const projectDir = fileStorage.getProjectDir(projectId, domain);
+      const exportsDir = path.join(projectDir, 'exports');
+      await fileStorage.ensureDir(exportsDir);
+      const filePath = path.join(exportsDir, filename);
+      await fsPromises.writeFile(filePath, buffer);
+      const expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + EXPORT_RETENTION_DAYS);
+      await storage.createRagPackExport({
+        projectId,
+        downloadId,
+        filename,
+        filePath,
+        fileSize: buffer.length,
+        documents: stats.documents,
+        chunks: stats.chunks,
+        pdfValid: stats.pdfValid,
+        pdfInvalid: stats.pdfInvalid,
+        assets: stats.assets,
+        expiresAt,
+      });
+      return true;
+    } catch (err) {
+      console.error('[RAG Pack] Failed to save export:', err);
       return false;
     }
-    ragPackDownloads.set(id, { buffer, filename, createdAt: Date.now() });
-    return true;
   }
 
-  setInterval(() => {
-    const now = Date.now();
-    Array.from(ragPackDownloads.entries()).forEach(([key, value]) => {
-      if (now - value.createdAt > 10 * 60 * 1000) {
-        ragPackDownloads.delete(key);
+  async function cleanupExpiredExports() {
+    try {
+      const expired = await storage.deleteExpiredRagPackExports();
+      for (const entry of expired) {
+        try {
+          await fsPromises.unlink(entry.filePath);
+        } catch {}
       }
-    });
-  }, 5 * 60 * 1000);
+      if (expired.length > 0) {
+        console.log(`[RAG Pack] Cleaned up ${expired.length} expired exports`);
+      }
+    } catch (err) {
+      console.error('[RAG Pack] Cleanup error:', err);
+    }
+  }
+
+  cleanupExpiredExports();
+  setInterval(cleanupExpiredExports, 24 * 60 * 60 * 1000);
 
   app.get(api.projects.list.path, async (req, res) => {
     try {
@@ -4347,22 +4368,38 @@ export async function registerRoutes(
       const filename = `rag-pack-single-${singlePage.domain}-${singlePage.id}.zip`;
 
       const downloadId = sha256(`sp-${id}-${Date.now()}-${Math.random()}`).slice(0, 16);
-      const stored = storeRagPackDownload(downloadId, content, filename);
-      if (!stored) {
-        sendEvent('error', { message: 'ZIP-Datei zu groß für temporären Speicher' });
-        res.end();
-        return;
+      const spExportStats = {
+        documents: 1 + spPdfDocuments.length,
+        chunks: allSpExportChunks.length,
+        pdfValid: spPdfValidCount,
+        pdfInvalid: spPdfInvalidCount,
+        assets: spAssetEntries.filter(a => a.downloaded).length,
+      };
+      const spExportsDir = path.join(fileStorage.getSinglePageDir(id, singlePage.domain), 'exports');
+      await fileStorage.ensureDir(spExportsDir);
+      const spFilePath = path.join(spExportsDir, filename);
+      await fsPromises.writeFile(spFilePath, content);
+      const spExpiresAt = new Date();
+      spExpiresAt.setDate(spExpiresAt.getDate() + EXPORT_RETENTION_DAYS);
+      try {
+        await storage.createRagPackExport({
+          projectId: id,
+          downloadId,
+          filename,
+          filePath: spFilePath,
+          fileSize: content.length,
+          ...spExportStats,
+          expiresAt: spExpiresAt,
+        });
+      } catch (err) {
+        console.error('[RAG Pack] Failed to save single-page export metadata:', err);
       }
 
       sendEvent('complete', {
         downloadId,
         filename,
         fileSize: content.length,
-        documents: 1 + spPdfDocuments.length,
-        chunks: allSpExportChunks.length,
-        pdfValid: spPdfValidCount,
-        pdfInvalid: spPdfInvalidCount,
-        assets: spAssetEntries.filter(a => a.downloaded).length,
+        ...spExportStats,
       });
       res.end();
     } catch (err) {
@@ -5414,16 +5451,68 @@ export async function registerRoutes(
     }
   });
 
-  app.get('/api/rag-pack/download/:downloadId', (req, res) => {
-    const download = ragPackDownloads.get(req.params.downloadId);
-    if (!download) {
-      return res.status(404).json({ message: 'Download expired or not found' });
+  app.get('/api/rag-pack/download/:downloadId', async (req, res) => {
+    try {
+      const entry = await storage.getRagPackExportByDownloadId(req.params.downloadId);
+      if (!entry) {
+        return res.status(404).json({ message: 'Download nicht gefunden' });
+      }
+      if (new Date() > entry.expiresAt) {
+        return res.status(410).json({ message: 'Download abgelaufen (älter als 30 Tage)' });
+      }
+      try {
+        await fsPromises.access(entry.filePath);
+      } catch {
+        return res.status(404).json({ message: 'Export-Datei nicht mehr vorhanden' });
+      }
+      const stat = await fsPromises.stat(entry.filePath);
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="${entry.filename}"`);
+      res.setHeader('Content-Length', stat.size);
+      const { createReadStream } = await import('fs');
+      const stream = createReadStream(entry.filePath);
+      stream.pipe(res);
+    } catch (err) {
+      console.error('[RAG Pack] Download error:', err);
+      res.status(500).json({ message: (err as Error).message });
     }
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', `attachment; filename="${download.filename}"`);
-    res.setHeader('Content-Length', download.buffer.length);
-    res.send(download.buffer);
-    ragPackDownloads.delete(req.params.downloadId);
+  });
+
+  app.get('/api/projects/:id/exports', async (req, res) => {
+    try {
+      const projectId = parseInt(req.params.id);
+      if (isNaN(projectId)) {
+        return res.status(400).json({ message: 'Invalid project ID' });
+      }
+      const exports = await storage.getRagPackExportsByProject(projectId);
+      const validExports = [];
+      for (const exp of exports) {
+        if (new Date() > exp.expiresAt) continue;
+        try {
+          await fsPromises.access(exp.filePath);
+          validExports.push(exp);
+        } catch {
+          try { await storage.deleteRagPackExport(exp.id); } catch {}
+        }
+      }
+      res.json(validExports);
+    } catch (err) {
+      res.status(500).json({ message: (err as Error).message });
+    }
+  });
+
+  app.delete('/api/exports/:downloadId', async (req, res) => {
+    try {
+      const entry = await storage.getRagPackExportByDownloadId(req.params.downloadId);
+      if (!entry) {
+        return res.status(404).json({ message: 'Export nicht gefunden' });
+      }
+      try { await fsPromises.unlink(entry.filePath); } catch {}
+      await storage.deleteRagPackExport(entry.id);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ message: (err as Error).message });
+    }
   });
 
   // Export RAG Pack as ZIP (SSE with progress)
@@ -6024,9 +6113,16 @@ export async function registerRoutes(
 
       const downloadId = sha256(`${projectId}-${Date.now()}-${Math.random()}`).slice(0, 16);
       const fileName = `rag_pack_${project.domain.replace(/[^a-z0-9]/gi, '_')}_${Date.now()}.zip`;
-      const stored = storeRagPackDownload(downloadId, zipBuffer, fileName);
+      const exportStats = {
+        documents: scrapedResults.length + pdfDocuments.length,
+        chunks: allExportChunks.length,
+        pdfValid: pdfValidCount,
+        pdfInvalid: pdfInvalidCount,
+        assets: assetEntries.filter(a => a.downloaded).length,
+      };
+      const stored = await saveRagPackExport(projectId, project.domain, downloadId, zipBuffer, fileName, exportStats);
       if (!stored) {
-        sendEvent('error', { message: 'ZIP-Datei zu groß für temporären Speicher' });
+        sendEvent('error', { message: 'Export konnte nicht gespeichert werden' });
         res.end();
         return;
       }
@@ -6035,11 +6131,7 @@ export async function registerRoutes(
         downloadId,
         filename: fileName,
         fileSize: zipBuffer.length,
-        documents: scrapedResults.length + pdfDocuments.length,
-        chunks: allExportChunks.length,
-        pdfValid: pdfValidCount,
-        pdfInvalid: pdfInvalidCount,
-        assets: assetEntries.filter(a => a.downloaded).length,
+        ...exportStats,
       });
       res.end();
 

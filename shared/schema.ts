@@ -387,3 +387,27 @@ export const insertSinglePageSchema = createInsertSchema(singlePages).omit({
 
 export type SinglePage = typeof singlePages.$inferSelect;
 export type InsertSinglePage = z.infer<typeof insertSinglePageSchema>;
+
+export const ragPackExports = pgTable("rag_pack_exports", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull(),
+  downloadId: text("download_id").notNull().unique(),
+  filename: text("filename").notNull(),
+  filePath: text("file_path").notNull(),
+  fileSize: integer("file_size").notNull(),
+  documents: integer("documents").notNull().default(0),
+  chunks: integer("chunks").notNull().default(0),
+  pdfValid: integer("pdf_valid").notNull().default(0),
+  pdfInvalid: integer("pdf_invalid").notNull().default(0),
+  assets: integer("assets").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+  expiresAt: timestamp("expires_at").notNull(),
+});
+
+export const insertRagPackExportSchema = createInsertSchema(ragPackExports).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type RagPackExport = typeof ragPackExports.$inferSelect;
+export type InsertRagPackExport = z.infer<typeof insertRagPackExportSchema>;

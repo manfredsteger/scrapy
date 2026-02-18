@@ -5,7 +5,7 @@ import {
   Play, Square, Loader2, Download, Settings, 
   Trash2, ScanText, Globe, ArrowLeft, Plus, RefreshCw, Pause, X,
   Layers, Package, Cog, FileText, AlertTriangle, Pencil, Paperclip,
-  CheckSquare, FolderPlus
+  CheckSquare, FolderPlus, History
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -27,6 +27,7 @@ import ProjectCard from '@/components/ProjectCard';
 import ProjectSettings from '@/components/ProjectSettings';
 import ChunkingProgress from '@/components/ChunkingProgress';
 import RagPackProgress from '@/components/RagPackProgress';
+import ExportVersionsDialog from '@/components/ExportVersionsDialog';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import { Progress } from '@/components/ui/progress';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -50,6 +51,7 @@ export default function Home() {
   const [showSettings, setShowSettings] = useState(false);
   const [showChunkingProgress, setShowChunkingProgress] = useState(false);
   const [showRagPackProgress, setShowRagPackProgress] = useState(false);
+  const [showExportVersions, setShowExportVersions] = useState(false);
   const [attachmentSync, setAttachmentSync] = useState<{
     active: boolean;
     processed: number;
@@ -1489,6 +1491,14 @@ export default function Home() {
                         <Package className="w-4 h-4" />
                         {t('exportRagPack')}
                       </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => setShowExportVersions(true)}
+                        className="gap-2"
+                        data-testid="button-export-versions"
+                      >
+                        <History className="w-4 h-4" />
+                        RAG Pack Versionen
+                      </DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem 
                         onClick={() => {
@@ -1833,7 +1843,18 @@ export default function Home() {
           onClose={() => setShowRagPackProgress(false)}
           projectId={activeProject.id}
           mode="project"
+          onComplete={() => {
+            queryClient.invalidateQueries({ queryKey: ['/api/projects', activeProject.id, 'exports'] });
+          }}
           t={t}
+        />
+      )}
+
+      {showExportVersions && activeProject && (
+        <ExportVersionsDialog
+          open={showExportVersions}
+          onClose={() => setShowExportVersions(false)}
+          projectId={activeProject.id}
         />
       )}
 

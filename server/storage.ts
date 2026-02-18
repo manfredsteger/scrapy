@@ -1,6 +1,6 @@
 import { db } from "./db";
-import { projects, settings, singlePages, type Project, type InsertProject, type Settings, type InsertSettings, type SinglePage, type InsertSinglePage } from "@shared/schema";
-import { eq, desc, sql } from "drizzle-orm";
+import { projects, settings, singlePages, ragPackExports, type Project, type InsertProject, type Settings, type InsertSettings, type SinglePage, type InsertSinglePage, type RagPackExport, type InsertRagPackExport } from "@shared/schema";
+import { eq, desc, sql, and, lt } from "drizzle-orm";
 
 // Lightweight project type for list views (without large data fields)
 export interface ProjectLite {
@@ -34,6 +34,11 @@ export interface IStorage {
   createSinglePage(data: InsertSinglePage): Promise<SinglePage>;
   updateSinglePage(id: number, data: Partial<SinglePage>): Promise<SinglePage | undefined>;
   deleteSinglePage(id: number): Promise<boolean>;
+  createRagPackExport(data: InsertRagPackExport): Promise<RagPackExport>;
+  getRagPackExportsByProject(projectId: number): Promise<RagPackExport[]>;
+  getRagPackExportByDownloadId(downloadId: string): Promise<RagPackExport | undefined>;
+  deleteRagPackExport(id: number): Promise<void>;
+  deleteExpiredRagPackExports(): Promise<RagPackExport[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -213,6 +218,37 @@ export class DatabaseStorage implements IStorage {
   async deleteSinglePage(id: number): Promise<boolean> {
     const result = await db.delete(singlePages).where(eq(singlePages.id, id));
     return true;
+  }
+
+  async createRagPackExport(data: InsertRagPackExport): Promise<RagPackExport> {
+    const [entry] = await db.insert(ragPackExports).values(data).returning();
+    return entry;
+  }
+
+  async getRagPackExportsByProject(projectId: number): Promise<RagPackExport[]> {
+    return await db.select().from(ragPackExports)
+      .where(eq(ragPackExports.projectId, projectId))
+      .orderBy(desc(ragPackExports.createdAt));
+  }
+
+  async getRagPackExportByDownloadId(downloadId: string): Promise<RagPackExport | undefined> {
+    const [entry] = await db.select().from(ragPackExports)
+      .where(eq(ragPackExports.downloadId, downloadId));
+    return entry;
+  }
+
+  async deleteRagPackExport(id: number): Promise<void> {
+    await db.delete(ragPackExports).where(eq(ragPackExports.id, id));
+  }
+
+  async deleteExpiredRagPackExports(): Promise<RagPackExport[]> {
+    const expired = await db.select().from(ragPackExports)
+      .where(lt(ragPackExports.expiresAt, new Date()));
+    if (expired.length > 0) {
+      await db.delete(ragPackExports)
+        .where(lt(ragPackExports.expiresAt, new Date()));
+    }
+    return expired;
   }
 }
 

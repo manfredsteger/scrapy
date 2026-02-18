@@ -48,6 +48,7 @@ MapScraper Pro utilizes a monorepo structure, hosting both the React TypeScript 
 - **Access Pattern**: Repository pattern implemented in `server/storage.ts` for data access. API endpoints read from filesystem, no DB fallback needed post-migration.
 - **Download Limits**: PDFs max 50MB each (10 per page), media max 10MB each (50 per page).
 - **Storage Stats**: `GET /api/storage/stats` returns filesystem usage (total files, size).
+- **Persistent RAG Pack Exports**: ZIP exports saved to `data/projects/{id}-{domain}/exports/` and tracked in `rag_pack_exports` DB table with 30-day retention. API: `GET /api/projects/:id/exports` (list), `GET /api/rag-pack/download/:downloadId` (download from filesystem), `DELETE /api/exports/:downloadId` (delete). Auto-cleanup of expired exports on server startup and daily. UI: "RAG Pack Versionen" button in Aktionsmenü shows export history with download/delete per version.
 
 ### RAG Pack Generation (v2.0)
 - **Chunking System**: Fast character-based token estimation (`text.length / 4`), configurable target/overlap tokens, sentence-based overlap, preservation of heading hierarchy, tables, and code blocks. Includes SHA256 hashing for integrity and quality checks.

@@ -1,8 +1,10 @@
 import { useState, useRef, useCallback } from 'react';
 import { useLocation } from 'wouter';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { 
   Upload, Package, Loader2, Download, Trash2, Plus, 
-  FileText, File, CheckCircle2, XCircle, RotateCcw
+  FileText, File, CheckCircle2, XCircle, RotateCcw, Save,
+  Calendar, Archive, FolderOpen
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -10,6 +12,7 @@ import { Progress } from '@/components/ui/progress';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import Sidebar from '@/components/Sidebar';
 import Header from '@/components/Header';
+import ConfirmDialog from '@/components/ConfirmDialog';
 import { useLanguage } from '@/hooks/use-language';
 import { useToast } from '@/hooks/use-toast';
 
@@ -35,12 +38,32 @@ interface GenerateResult {
   fileSize: number;
   documents: number;
   chunks: number;
+  assets: number;
+}
+
+interface SavedExport {
+  id: number;
+  sessionId: string;
+  name: string;
+  downloadId: string;
+  filename: string;
+  fileSize: number;
+  documents: number;
+  chunks: number;
+  assets: number;
+  sourceFiles: string[];
+  createdAt: string;
 }
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatDate(dateStr: string): string {
+  const d = new Date(dateStr);
+  return d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
 function getFileIcon(name: string) {
@@ -56,6 +79,7 @@ export default function Converter() {
   const [, navigate] = useLocation();
   const { language, setLanguage, t } = useLanguage();
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropRef = useRef<HTMLDivElement>(null);
 
@@ -66,6 +90,13 @@ export default function Converter() {
   const [result, setResult] = useState<GenerateResult | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isSaved, setIsSaved] = useState(false);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
+
+  const { data: savedExports = [], isLoading: exportsLoading } = useQuery<SavedExport[]>({
+    queryKey: ['/api/converter/exports'],
+  });
 
   const uploadFiles = useCallback(async (files: FileList | File[]) => {
     const fileArray = Array.from(files);
@@ -135,6 +166,7 @@ export default function Converter() {
     if (!sessionId) return;
     setPhase('generating');
     setErrorMessage(null);
+    setIsSaved(false);
     setProgress({ phase: 'init', current: 0, total: 0, message: 'Starte...' });
 
     try {
@@ -171,6 +203,7 @@ export default function Converter() {
                   fileSize: data.fileSize,
                   documents: data.documents,
                   chunks: data.chunks,
+                  assets: data.assets || 0,
                 });
                 setPhase('complete');
               } else if (data.type === 'error') {
@@ -200,8 +233,58 @@ export default function Converter() {
     }
   }, [sessionId, t, toast]);
 
+  const saveExport = useCallback(async () => {
+    if (!result || !sessionId) return;
+    setIsSaving(true);
+    try {
+      const response = await fetch('/api/converter/exports/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId,
+          downloadId: result.downloadId,
+          name: result.filename,
+        }),
+      });
+      if (!response.ok) throw new Error('Save failed');
+      setIsSaved(true);
+      queryClient.invalidateQueries({ queryKey: ['/api/converter/exports'] });
+      toast({ title: t('exportSaved'), description: t('savedSuccessfully') });
+    } catch (err) {
+      toast({ title: t('uploadError'), description: (err as Error).message, variant: 'destructive' });
+    } finally {
+      setIsSaving(false);
+    }
+  }, [result, sessionId, queryClient, t, toast]);
+
+  const deleteExport = useCallback(async (id: number) => {
+    try {
+      await fetch(`/api/converter/exports/${id}`, { method: 'DELETE' });
+      queryClient.invalidateQueries({ queryKey: ['/api/converter/exports'] });
+      toast({ title: t('exportDeleted') });
+    } catch (err) {
+      toast({ title: 'Error', description: (err as Error).message, variant: 'destructive' });
+    }
+  }, [queryClient, t, toast]);
+
+  const reloadSession = useCallback(async (exportId: number) => {
+    try {
+      const response = await fetch(`/api/converter/exports/${exportId}/files`);
+      if (!response.ok) throw new Error('Failed to load session');
+      const data = await response.json();
+      setSessionId(data.sessionId);
+      setUploadedFiles(data.files || []);
+      setPhase('idle');
+      setResult(null);
+      setIsSaved(false);
+      setErrorMessage(null);
+    } catch (err) {
+      toast({ title: t('uploadError'), description: (err as Error).message, variant: 'destructive' });
+    }
+  }, [t, toast]);
+
   const resetConverter = useCallback(async () => {
-    if (sessionId) {
+    if (sessionId && !isSaved) {
       try {
         await fetch(`/api/converter/${sessionId}`, { method: 'DELETE' });
       } catch {}
@@ -212,7 +295,8 @@ export default function Converter() {
     setProgress({ phase: 'idle', current: 0, total: 0, message: '' });
     setResult(null);
     setErrorMessage(null);
-  }, [sessionId]);
+    setIsSaved(false);
+  }, [sessionId, isSaved]);
 
   const progressPercent = progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;
 
@@ -342,18 +426,34 @@ export default function Converter() {
                   </div>
 
                   <div className="flex gap-3 flex-wrap">
-                    <Badge variant="secondary">{result.documents} Dokumente</Badge>
-                    <Badge variant="secondary">{result.chunks} Chunks</Badge>
+                    <Badge variant="secondary">{result.documents} {t('documents')}</Badge>
+                    <Badge variant="secondary">{result.chunks} {t('chunks')}</Badge>
+                    {result.assets > 0 && <Badge variant="secondary">{result.assets} {t('assets')}</Badge>}
                     <Badge variant="outline">{formatFileSize(result.fileSize)}</Badge>
                   </div>
 
-                  <div className="flex gap-3">
+                  <div className="flex gap-3 flex-wrap">
                     <Button
                       onClick={() => window.open(`/api/converter/download/${result.downloadId}`, '_blank')}
                       data-testid="button-download-ragpack"
                     >
                       <Download className="w-4 h-4 mr-2" />
                       {t('downloadRagPack')}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      onClick={saveExport}
+                      disabled={isSaving || isSaved}
+                      data-testid="button-save-export"
+                    >
+                      {isSaving ? (
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      ) : isSaved ? (
+                        <CheckCircle2 className="w-4 h-4 mr-2" />
+                      ) : (
+                        <Save className="w-4 h-4 mr-2" />
+                      )}
+                      {isSaved ? t('exportSaved') : t('saveExport')}
                     </Button>
                     <Button variant="outline" onClick={resetConverter} data-testid="button-reset">
                       <RotateCcw className="w-4 h-4 mr-2" />
@@ -404,9 +504,114 @@ export default function Converter() {
               </div>
             )}
 
+            <Card data-testid="saved-exports-section">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Archive className="w-4 h-4" />
+                  {t('savedExports')}
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {exportsLoading ? (
+                  <div className="flex items-center justify-center py-6">
+                    <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+                  </div>
+                ) : savedExports.length === 0 ? (
+                  <p className="text-sm text-muted-foreground text-center py-6" data-testid="no-saved-exports">
+                    {t('noSavedExports')}
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    {savedExports.map((exp) => (
+                      <div
+                        key={exp.id}
+                        className="border rounded-lg p-4 space-y-3"
+                        data-testid={`saved-export-${exp.id}`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium truncate">{exp.name}</p>
+                            <div className="flex items-center gap-1.5 mt-1 text-xs text-muted-foreground">
+                              <Calendar className="w-3 h-3" />
+                              {formatDate(exp.createdAt)}
+                            </div>
+                          </div>
+                          <div className="flex gap-2 shrink-0">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => window.open(`/api/converter/download/${exp.downloadId}`, '_blank')}
+                              data-testid={`button-download-export-${exp.id}`}
+                            >
+                              <Download className="w-3.5 h-3.5 mr-1" />
+                              {t('downloadRagPack')}
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => reloadSession(exp.id)}
+                              data-testid={`button-reload-export-${exp.id}`}
+                            >
+                              <FolderOpen className="w-3.5 h-3.5 mr-1" />
+                              {t('addMoreFiles')}
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setDeleteConfirmId(exp.id)}
+                              className="text-destructive hover:text-destructive"
+                              data-testid={`button-delete-export-${exp.id}`}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </Button>
+                          </div>
+                        </div>
+
+                        <div className="flex gap-2 flex-wrap">
+                          <Badge variant="secondary" className="text-xs">{exp.documents} {t('documents')}</Badge>
+                          <Badge variant="secondary" className="text-xs">{exp.chunks} {t('chunks')}</Badge>
+                          {exp.assets > 0 && <Badge variant="secondary" className="text-xs">{exp.assets} {t('assets')}</Badge>}
+                          <Badge variant="outline" className="text-xs">{formatFileSize(exp.fileSize)}</Badge>
+                        </div>
+
+                        {exp.sourceFiles && exp.sourceFiles.length > 0 && (
+                          <div>
+                            <p className="text-xs text-muted-foreground mb-1">{t('sourceFilesLabel')}:</p>
+                            <div className="flex gap-1.5 flex-wrap">
+                              {exp.sourceFiles.map((f, i) => (
+                                <Badge key={i} variant="outline" className="text-xs font-normal">
+                                  {getFileIcon(f)}
+                                  <span className="ml-1">{f}</span>
+                                </Badge>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
           </div>
         </main>
       </div>
+
+      <ConfirmDialog
+        open={deleteConfirmId !== null}
+        onOpenChange={(open) => { if (!open) setDeleteConfirmId(null); }}
+        title={t('confirmDeleteExport')}
+        description={t('confirmDeleteExport')}
+        confirmText={t('deleteExport')}
+        onConfirm={() => {
+          if (deleteConfirmId !== null) {
+            deleteExport(deleteConfirmId);
+            setDeleteConfirmId(null);
+          }
+        }}
+        variant="destructive"
+      />
     </div>
   );
 }

@@ -411,3 +411,26 @@ export const insertRagPackExportSchema = createInsertSchema(ragPackExports).omit
 
 export type RagPackExport = typeof ragPackExports.$inferSelect;
 export type InsertRagPackExport = z.infer<typeof insertRagPackExportSchema>;
+
+export const converterExports = pgTable("converter_exports", {
+  id: serial("id").primaryKey(),
+  sessionId: text("session_id").notNull(),
+  name: text("name").notNull(),
+  downloadId: text("download_id").notNull().unique(),
+  filename: text("filename").notNull(),
+  filePath: text("file_path").notNull(),
+  fileSize: integer("file_size").notNull(),
+  documents: integer("documents").notNull().default(0),
+  chunks: integer("chunks").notNull().default(0),
+  assets: integer("assets").notNull().default(0),
+  sourceFiles: jsonb("source_files").$type<string[]>().default([]),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertConverterExportSchema = createInsertSchema(converterExports).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type ConverterExport = typeof converterExports.$inferSelect;
+export type InsertConverterExport = z.infer<typeof insertConverterExportSchema>;

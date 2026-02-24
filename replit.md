@@ -60,6 +60,18 @@ MapScraper Pro utilizes a monorepo structure, hosting both the React TypeScript 
 - **Export Format**: RAG Packs v2.0 exported as ZIP archives containing `manifest.json` (with `quality_report`), `documents.jsonl`, `chunks.jsonl`, `assets.jsonl`, and JSON schemas. Quality report tracks: text layer stats, token statistics (min/max/avg), skipped binary PDFs list.
 - **Performance**: All token estimation uses fast approximation (`text.length / 4`), no expensive `gpt-tokenizer` encode() calls in chunking pipeline.
 
+### RAG Pack Converter
+- **Standalone Converter**: Dedicated tab in main navigation (`/converter`) for processing arbitrary uploaded files into RAG Packs without requiring web scraping projects.
+- **Supported File Types**: PDF (via pdf-parse with quality validation), text files (.txt, .md, .csv, .json, .xml, .yaml, etc.), HTML (via JSDOM DOM parsing), unsupported formats included as binary assets.
+- **Source File Inclusion**: All uploaded files are included in the ZIP's `assets/` folder with an `assets.jsonl` manifest, regardless of whether text extraction succeeded. Files with successful extraction get `role: 'source_document'`; files without get `reason` explaining the failure.
+- **File Upload**: Multer-based multipart upload with session management. Multiple uploads append to the same session via `sessionId` in form data. Filenames sanitized with `path.basename()` and character whitelist.
+- **Generation**: SSE-based progress tracking with `data: {"type": "init|progress|complete|error", ...}` format. Generates ZIP with `manifest.json`, `documents.jsonl`, `chunks.jsonl`, `assets.jsonl`, `schemas/`, and `assets/` folder.
+- **Persistent Storage**: `converter_exports` DB table stores saved RAG Packs with session info, source file list, and metadata. API: `POST /api/converter/exports/save`, `GET /api/converter/exports`, `GET /api/converter/exports/:id/files`, `DELETE /api/converter/exports/:id`.
+- **Session Reload**: Saved exports can be reopened to load source files back into the converter for re-processing or adding more files.
+- **Download Persistence**: Download endpoint checks both in-memory map and DB, surviving server restarts.
+- **Storage**: Session files in `./data/converter/{sessionId}/uploads/`, generated ZIPs in `./data/converter/{sessionId}/`.
+- **UI**: Drag-and-drop upload, file list with type icons, real-time progress bar, save/download/reset buttons, saved exports overview with download/reload/delete (with confirmation dialog).
+
 ## External Dependencies
 
 ### Database

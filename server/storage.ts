@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { projects, settings, singlePages, ragPackExports, type Project, type InsertProject, type Settings, type InsertSettings, type SinglePage, type InsertSinglePage, type RagPackExport, type InsertRagPackExport } from "@shared/schema";
+import { projects, settings, singlePages, ragPackExports, converterExports, type Project, type InsertProject, type Settings, type InsertSettings, type SinglePage, type InsertSinglePage, type RagPackExport, type InsertRagPackExport, type ConverterExport, type InsertConverterExport } from "@shared/schema";
 import { eq, desc, sql, and, lt } from "drizzle-orm";
 
 // Lightweight project type for list views (without large data fields)
@@ -39,6 +39,10 @@ export interface IStorage {
   getRagPackExportByDownloadId(downloadId: string): Promise<RagPackExport | undefined>;
   deleteRagPackExport(id: number): Promise<void>;
   deleteExpiredRagPackExports(): Promise<RagPackExport[]>;
+  createConverterExport(data: InsertConverterExport): Promise<ConverterExport>;
+  getConverterExports(): Promise<ConverterExport[]>;
+  getConverterExportByDownloadId(downloadId: string): Promise<ConverterExport | undefined>;
+  deleteConverterExport(id: number): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -249,6 +253,26 @@ export class DatabaseStorage implements IStorage {
         .where(lt(ragPackExports.expiresAt, new Date()));
     }
     return expired;
+  }
+
+  async createConverterExport(data: InsertConverterExport): Promise<ConverterExport> {
+    const [entry] = await db.insert(converterExports).values(data).returning();
+    return entry;
+  }
+
+  async getConverterExports(): Promise<ConverterExport[]> {
+    return await db.select().from(converterExports)
+      .orderBy(desc(converterExports.createdAt));
+  }
+
+  async getConverterExportByDownloadId(downloadId: string): Promise<ConverterExport | undefined> {
+    const [entry] = await db.select().from(converterExports)
+      .where(eq(converterExports.downloadId, downloadId));
+    return entry;
+  }
+
+  async deleteConverterExport(id: number): Promise<void> {
+    await db.delete(converterExports).where(eq(converterExports.id, id));
   }
 }
 

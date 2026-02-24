@@ -3000,7 +3000,7 @@ export async function registerRoutes(
     limits: { fileSize: 100 * 1024 * 1024 },
   });
 
-  const converterDownloads = new Map<string, { path: string; filename: string }>();
+  const converterDownloads = new Map<string, { path: string; filename: string; documents: number; chunks: number; assets: number }>();
 
   const TEXT_EXTENSIONS = new Set([
     '.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '.xml',
@@ -3324,8 +3324,17 @@ export async function registerRoutes(
           sendEvent('progress', {
             current: i + 1,
             total: fileNames.length,
-            message: 'No text content extracted',
+            message: 'Kein Textinhalt extrahiert - als Asset hinzugefügt',
             currentFile: fileName,
+          });
+          const assetBuffer = await fsPromises.readFile(filePath);
+          assetFiles.push({ name: fileName, buffer: assetBuffer });
+          assets.push({
+            asset_id: `asset_${sha256(fileName).slice(0, 12)}`,
+            file_name: fileName,
+            file_size: assetBuffer.length,
+            mime_type: 'application/octet-stream',
+            reason: 'No text content extracted',
           });
           continue;
         }
@@ -3384,6 +3393,29 @@ export async function registerRoutes(
             quality,
           });
         }
+
+        const sourceBuffer = await fsPromises.readFile(filePath);
+        assetFiles.push({ name: fileName, buffer: sourceBuffer });
+        const mimeMap: Record<string, string> = {
+          '.pdf': 'application/pdf',
+          '.txt': 'text/plain',
+          '.md': 'text/markdown',
+          '.html': 'text/html',
+          '.htm': 'text/html',
+          '.csv': 'text/csv',
+          '.json': 'application/json',
+          '.xml': 'application/xml',
+          '.yaml': 'application/x-yaml',
+          '.yml': 'application/x-yaml',
+        };
+        assets.push({
+          asset_id: `asset_${sha256(fileName).slice(0, 12)}`,
+          file_name: fileName,
+          file_size: sourceBuffer.length,
+          mime_type: mimeMap[ext] || 'application/octet-stream',
+          doc_id: docId,
+          role: 'source_document',
+        });
 
         sendEvent('progress', {
           current: i + 1,
@@ -3481,7 +3513,7 @@ export async function registerRoutes(
       await fsPromises.writeFile(zipPath, zipBuffer);
 
       const downloadId = crypto.randomBytes(16).toString('hex');
-      converterDownloads.set(downloadId, { path: zipPath, filename: zipFilename });
+      converterDownloads.set(downloadId, { path: zipPath, filename: zipFilename, documents: documents.length, chunks: allChunks.length, assets: assets.length });
 
       sendEvent('complete', {
         downloadId,
@@ -3502,22 +3534,142 @@ export async function registerRoutes(
 
   app.get('/api/converter/download/:downloadId', async (req, res) => {
     const { downloadId } = req.params;
-    const entry = converterDownloads.get(downloadId);
+    let filePath: string | null = null;
+    let filename: string | null = null;
 
-    if (!entry) {
+    const memEntry = converterDownloads.get(downloadId);
+    if (memEntry) {
+      filePath = memEntry.path;
+      filename = memEntry.filename;
+    } else {
+      const dbEntry = await storage.getConverterExportByDownloadId(downloadId);
+      if (dbEntry) {
+        filePath = dbEntry.filePath;
+        filename = dbEntry.filename;
+      }
+    }
+
+    if (!filePath || !filename) {
       return res.status(404).json({ error: 'Download not found or expired' });
     }
 
     try {
-      await fsPromises.access(entry.path);
+      await fsPromises.access(filePath);
       res.setHeader('Content-Type', 'application/zip');
-      res.setHeader('Content-Disposition', `attachment; filename="${entry.filename}"`);
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
       const { createReadStream } = await import('fs');
-      const stream = createReadStream(entry.path);
+      const stream = createReadStream(filePath);
       stream.pipe(res);
     } catch {
       converterDownloads.delete(downloadId);
       res.status(404).json({ error: 'File no longer available' });
+    }
+  });
+
+  app.post('/api/converter/exports/save', async (req, res) => {
+    try {
+      const { sessionId, downloadId, name } = req.body;
+      if (!sessionId || !downloadId) {
+        return res.status(400).json({ error: 'Missing sessionId or downloadId' });
+      }
+
+      const entry = converterDownloads.get(downloadId);
+      if (!entry) {
+        return res.status(404).json({ error: 'Download not found' });
+      }
+
+      const stat = await fsPromises.stat(entry.path);
+
+      let sourceFiles: string[] = [];
+      const uploadsDir = path.resolve(`./data/converter/${sessionId}/uploads`);
+      try {
+        sourceFiles = await fsPromises.readdir(uploadsDir);
+      } catch {}
+
+      const saved = await storage.createConverterExport({
+        sessionId,
+        name: name || entry.filename,
+        downloadId,
+        filename: entry.filename,
+        filePath: entry.path,
+        fileSize: stat.size,
+        documents: entry.documents || 0,
+        chunks: entry.chunks || 0,
+        assets: entry.assets || 0,
+        sourceFiles,
+      });
+
+      res.json(saved);
+    } catch (err) {
+      console.error('[Converter] Save error:', err);
+      res.status(500).json({ error: 'Failed to save export' });
+    }
+  });
+
+  app.get('/api/converter/exports', async (_req, res) => {
+    try {
+      const exports = await storage.getConverterExports();
+      res.json(exports);
+    } catch (err) {
+      console.error('[Converter] List exports error:', err);
+      res.status(500).json({ error: 'Failed to list exports' });
+    }
+  });
+
+  app.get('/api/converter/exports/:id/files', async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ error: 'Invalid id' });
+
+      const exports = await storage.getConverterExports();
+      const exp = exports.find(e => e.id === id);
+      if (!exp) return res.status(404).json({ error: 'Export not found' });
+
+      const uploadsDir = path.resolve(`./data/converter/${exp.sessionId}/uploads`);
+      let files: { name: string; size: number; type: string }[] = [];
+      try {
+        const fileNames = await fsPromises.readdir(uploadsDir);
+        for (const name of fileNames) {
+          const stat = await fsPromises.stat(path.join(uploadsDir, name));
+          const ext = path.extname(name).toLowerCase();
+          const mimeTypes: Record<string, string> = {
+            '.pdf': 'application/pdf', '.txt': 'text/plain', '.md': 'text/markdown',
+            '.html': 'text/html', '.csv': 'text/csv', '.json': 'application/json',
+            '.xml': 'application/xml',
+          };
+          files.push({ name, size: stat.size, type: mimeTypes[ext] || 'application/octet-stream' });
+        }
+      } catch {}
+
+      res.json({
+        sessionId: exp.sessionId,
+        downloadId: exp.downloadId,
+        files,
+      });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to get files' });
+    }
+  });
+
+  app.delete('/api/converter/exports/:id', async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ error: 'Invalid id' });
+
+      const exports = await storage.getConverterExports();
+      const exp = exports.find(e => e.id === id);
+      if (exp) {
+        try {
+          await fsPromises.unlink(exp.filePath);
+        } catch {}
+        converterDownloads.delete(exp.downloadId);
+      }
+
+      await storage.deleteConverterExport(id);
+      res.json({ success: true });
+    } catch (err) {
+      console.error('[Converter] Delete export error:', err);
+      res.status(500).json({ error: 'Failed to delete export' });
     }
   });
 

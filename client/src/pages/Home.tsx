@@ -1076,7 +1076,13 @@ export default function Home() {
       
       <Sidebar 
         activeView={activeProjectId ? 'project' : 'dashboard'}
-        onNavigate={() => setActiveProjectId(null)}
+        onNavigate={(view) => {
+          if (view === 'converter') {
+            navigate('/converter');
+          } else {
+            setActiveProjectId(null);
+          }
+        }}
         onImport={() => fileInputRef.current?.click()}
         t={t}
       />

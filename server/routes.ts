@@ -16,6 +16,7 @@ import type { RagChunk, ProjectSettings, ScrapedElement, SitemapUrlEntry, Struct
 import { MoodleScraper } from "./scrapers/moodle-scraper";
 import * as fileStorage from './fileStorage';
 import { orderedElementsToMarkdown } from './markdownConverter';
+import multer from 'multer';
 
 const CONCURRENCY = 10;
 
@@ -2993,6 +2994,544 @@ export async function registerRoutes(
 
   cleanupExpiredExports();
   setInterval(cleanupExpiredExports, 24 * 60 * 60 * 1000);
+
+  const converterUpload = multer({
+    dest: './data/converter-uploads/',
+    limits: { fileSize: 100 * 1024 * 1024 },
+  });
+
+  const converterDownloads = new Map<string, { path: string; filename: string }>();
+
+  const TEXT_EXTENSIONS = new Set([
+    '.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '.xml',
+    '.yaml', '.yml', '.log', '.ini', '.conf', '.cfg', '.properties',
+    '.env', '.toml',
+  ]);
+  const HTML_EXTENSIONS = new Set(['.html', '.htm', '.xhtml']);
+  const SKIP_EXTENSIONS = new Set(['.docx']);
+
+  async function cleanupOldConverterSessions() {
+    try {
+      const converterDir = path.resolve('./data/converter');
+      const entries = await fsPromises.readdir(converterDir, { withFileTypes: true }).catch(() => []);
+      const now = Date.now();
+      const maxAge = 24 * 60 * 60 * 1000;
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        try {
+          const stat = await fsPromises.stat(path.join(converterDir, entry.name));
+          if (now - stat.mtimeMs > maxAge) {
+            await fsPromises.rm(path.join(converterDir, entry.name), { recursive: true, force: true });
+            console.log(`[Converter] Cleaned up old session: ${entry.name}`);
+          }
+        } catch {}
+      }
+    } catch {}
+  }
+
+  cleanupOldConverterSessions();
+  setInterval(cleanupOldConverterSessions, 60 * 60 * 1000);
+
+  app.post('/api/converter/upload', converterUpload.array('files'), async (req, res) => {
+    try {
+      const files = req.files as Express.Multer.File[];
+      if (!files || files.length === 0) {
+        return res.status(400).json({ error: 'No files uploaded' });
+      }
+
+      const existingSessionId = req.body?.sessionId;
+      const sessionId = existingSessionId || crypto.randomBytes(8).toString('hex');
+      const uploadsDir = path.resolve(`./data/converter/${sessionId}/uploads`);
+      await fileStorage.ensureDir(uploadsDir);
+
+      const fileInfos: { name: string; size: number; type: string }[] = [];
+
+      for (const file of files) {
+        const safeName = path.basename(file.originalname).replace(/[^a-zA-Z0-9._\-äöüÄÖÜß ]/g, '_');
+        const destPath = path.join(uploadsDir, safeName);
+        await fsPromises.rename(file.path, destPath);
+        fileInfos.push({
+          name: safeName,
+          size: file.size,
+          type: file.mimetype || 'application/octet-stream',
+        });
+      }
+
+      res.json({ sessionId, files: fileInfos });
+    } catch (err) {
+      console.error('[Converter] Upload error:', err);
+      res.status(500).json({ error: 'Upload failed' });
+    }
+  });
+
+  app.post('/api/converter/:sessionId/generate', async (req, res) => {
+    const { sessionId } = req.params;
+    const uploadsDir = path.resolve(`./data/converter/${sessionId}/uploads`);
+
+    try {
+      await fsPromises.access(uploadsDir);
+    } catch {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    let clientDisconnected = false;
+    req.on('close', () => { clientDisconnected = true; });
+
+    const sendEvent = (type: string, data: any) => {
+      if (clientDisconnected || res.writableEnded) return;
+      res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+    };
+
+    try {
+      const fileNames = await fsPromises.readdir(uploadsDir);
+      sendEvent('init', { totalFiles: fileNames.length });
+
+      const documents: any[] = [];
+      const allChunks: any[] = [];
+      const assets: any[] = [];
+      const assetFiles: { name: string; buffer: Buffer }[] = [];
+      let docIndex = 0;
+
+      for (let i = 0; i < fileNames.length; i++) {
+        if (clientDisconnected) break;
+
+        const fileName = fileNames[i];
+        const filePath = path.join(uploadsDir, fileName);
+        const ext = path.extname(fileName).toLowerCase();
+        const baseName = path.basename(fileName, ext);
+
+        sendEvent('progress', {
+          current: i + 1,
+          total: fileNames.length,
+          message: `Verarbeite: ${fileName}`,
+          currentFile: fileName,
+        });
+
+        let extractedText: string | null = null;
+        let sections: ExtractedSection[] = [];
+        let fileType = 'unknown';
+
+        if (ext === '.pdf') {
+          fileType = 'pdf';
+          try {
+            const buffer = await fsPromises.readFile(filePath);
+            const pdfResult = await extractPdfText(buffer);
+            if (pdfResult && pdfResult.text) {
+              const validation = isValidPdfText(pdfResult.text);
+              if (validation.valid) {
+                extractedText = pdfResult.text;
+                sections = extractSectionsFromPlainText(extractedText);
+              } else {
+                sendEvent('progress', {
+                  current: i + 1,
+                  total: fileNames.length,
+                  message: `PDF text invalid: ${validation.reason}`,
+                  currentFile: fileName,
+                });
+                const assetBuffer = await fsPromises.readFile(filePath);
+                assetFiles.push({ name: fileName, buffer: assetBuffer });
+                assets.push({
+                  asset_id: `asset_${sha256(fileName).slice(0, 12)}`,
+                  file_name: fileName,
+                  file_size: assetBuffer.length,
+                  mime_type: 'application/pdf',
+                  reason: `PDF text extraction failed: ${validation.reason}`,
+                });
+                continue;
+              }
+            } else {
+              sendEvent('progress', {
+                current: i + 1,
+                total: fileNames.length,
+                message: 'PDF could not be parsed',
+                currentFile: fileName,
+              });
+              const assetBuffer = await fsPromises.readFile(filePath);
+              assetFiles.push({ name: fileName, buffer: assetBuffer });
+              assets.push({
+                asset_id: `asset_${sha256(fileName).slice(0, 12)}`,
+                file_name: fileName,
+                file_size: assetBuffer.length,
+                mime_type: 'application/pdf',
+                reason: 'PDF parsing failed',
+              });
+              continue;
+            }
+          } catch (err) {
+            sendEvent('progress', {
+              current: i + 1,
+              total: fileNames.length,
+              message: `PDF error: ${(err as Error).message}`,
+              currentFile: fileName,
+            });
+            const assetBuffer = await fsPromises.readFile(filePath);
+            assetFiles.push({ name: fileName, buffer: assetBuffer });
+            assets.push({
+              asset_id: `asset_${sha256(fileName).slice(0, 12)}`,
+              file_name: fileName,
+              file_size: assetBuffer.length,
+              mime_type: 'application/pdf',
+              reason: 'PDF processing error',
+            });
+            continue;
+          }
+        } else if (TEXT_EXTENSIONS.has(ext)) {
+          fileType = 'text';
+          try {
+            extractedText = await fsPromises.readFile(filePath, 'utf-8');
+            sections = extractSectionsFromPlainText(extractedText);
+          } catch (err) {
+            sendEvent('progress', {
+              current: i + 1,
+              total: fileNames.length,
+              message: `Could not read text file: ${(err as Error).message}`,
+              currentFile: fileName,
+            });
+            continue;
+          }
+        } else if (HTML_EXTENSIONS.has(ext)) {
+          fileType = 'html';
+          try {
+            const htmlContent = await fsPromises.readFile(filePath, 'utf-8');
+            const dom = new JSDOM(htmlContent);
+            const doc = dom.window.document;
+            const body = doc.body;
+
+            const elements: ScrapedElement[] = [];
+            const walker = doc.createTreeWalker(body, 1);
+            let node: Node | null = walker.currentNode;
+            while (node) {
+              const el = node as any;
+              const tag = el.tagName?.toLowerCase();
+              if (['h1','h2','h3','h4','h5','h6'].includes(tag)) {
+                const level = parseInt(tag[1]);
+                const text = el.textContent?.trim();
+                if (text) {
+                  elements.push({ type: 'heading', tag, content: text, level });
+                }
+              } else if (tag === 'p') {
+                const text = el.textContent?.trim();
+                if (text) {
+                  elements.push({ type: 'paragraph', tag: 'p', content: text });
+                }
+              } else if (tag === 'ul' || tag === 'ol') {
+                const items: string[] = [];
+                const lis = el.querySelectorAll('li');
+                lis.forEach((li: any) => {
+                  const t = li.textContent?.trim();
+                  if (t) items.push(t);
+                });
+                if (items.length > 0) {
+                  elements.push({
+                    type: 'list',
+                    tag,
+                    listType: tag === 'ol' ? 'ordered' : 'unordered',
+                    children: items,
+                  });
+                }
+              } else if (tag === 'blockquote') {
+                const text = el.textContent?.trim();
+                if (text) {
+                  elements.push({ type: 'blockquote', tag: 'blockquote', content: text });
+                }
+              } else if (tag === 'pre' || tag === 'code') {
+                const text = el.textContent?.trim();
+                if (text) {
+                  elements.push({ type: 'code', tag, content: text });
+                }
+              } else if (tag === 'table') {
+                const headers: string[] = [];
+                const rows: string[][] = [];
+                el.querySelectorAll('th').forEach((th: any) => {
+                  headers.push(th.textContent?.trim() || '');
+                });
+                el.querySelectorAll('tr').forEach((tr: any) => {
+                  const cells: string[] = [];
+                  tr.querySelectorAll('td').forEach((td: any) => {
+                    cells.push(td.textContent?.trim() || '');
+                  });
+                  if (cells.length > 0) rows.push(cells);
+                });
+                if (headers.length > 0 || rows.length > 0) {
+                  elements.push({ type: 'table', tag: 'table', headers, rows } as any);
+                }
+              }
+              node = walker.nextNode();
+            }
+
+            if (elements.length > 0) {
+              sections = extractTextFromElements(elements);
+              extractedText = sections.map(s => s.text).join('\n\n');
+            } else {
+              extractedText = body.textContent?.trim() || '';
+              if (extractedText) {
+                sections = extractSectionsFromPlainText(extractedText);
+              }
+            }
+          } catch (err) {
+            sendEvent('progress', {
+              current: i + 1,
+              total: fileNames.length,
+              message: `HTML parse error: ${(err as Error).message}`,
+              currentFile: fileName,
+            });
+            continue;
+          }
+        } else if (SKIP_EXTENSIONS.has(ext)) {
+          sendEvent('progress', {
+            current: i + 1,
+            total: fileNames.length,
+            message: `${ext} files are not supported for text extraction. Included as asset.`,
+            currentFile: fileName,
+          });
+          const assetBuffer = await fsPromises.readFile(filePath);
+          assetFiles.push({ name: fileName, buffer: assetBuffer });
+          assets.push({
+            asset_id: `asset_${sha256(fileName).slice(0, 12)}`,
+            file_name: fileName,
+            file_size: assetBuffer.length,
+            mime_type: 'application/octet-stream',
+            reason: `${ext} not supported for text extraction`,
+          });
+          continue;
+        } else {
+          sendEvent('progress', {
+            current: i + 1,
+            total: fileNames.length,
+            message: `Unsupported file type (${ext}). Included as asset.`,
+            currentFile: fileName,
+          });
+          const assetBuffer = await fsPromises.readFile(filePath);
+          assetFiles.push({ name: fileName, buffer: assetBuffer });
+          assets.push({
+            asset_id: `asset_${sha256(fileName).slice(0, 12)}`,
+            file_name: fileName,
+            file_size: assetBuffer.length,
+            mime_type: 'application/octet-stream',
+            reason: 'Unsupported file type',
+          });
+          continue;
+        }
+
+        if (!extractedText || !extractedText.trim() || sections.length === 0) {
+          sendEvent('progress', {
+            current: i + 1,
+            total: fileNames.length,
+            message: 'No text content extracted',
+            currentFile: fileName,
+          });
+          continue;
+        }
+
+        const docId = `doc_${sha256(fileName).slice(0, 12)}`;
+        const title = baseName.replace(/[_-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+        documents.push({
+          doc_id: docId,
+          title,
+          file_type: fileType,
+          file_name: fileName,
+          description: generateDescription(extractedText),
+          word_count: extractedText.split(/\s+/).filter(w => w.length > 0).length,
+          char_count: extractedText.length,
+          token_estimate: estimateTokensFast(extractedText),
+        });
+
+        const chunked = chunkText(sections, 512, 100, 80);
+
+        for (let ci = 0; ci < chunked.length; ci++) {
+          const chunk = chunked[ci];
+          const chunkId = `${docId}_chunk_${ci}`;
+          const textHash = sha256(chunk.text);
+
+          const quality = calculateChunkQuality(chunk.text, {
+            minWordCount: 10,
+            targetTokens: 512,
+            warnOnShortChunks: true,
+            warnOnNoContent: true,
+          });
+
+          allChunks.push({
+            chunk_id: chunkId,
+            doc_id: docId,
+            chunk_index: ci,
+            text: chunk.text,
+            location: {
+              url: `file://${fileName}`,
+              heading_path: chunk.headingPath || [],
+            },
+            structure: {
+              section_path: chunk.heading || null,
+              heading: chunk.heading || null,
+            },
+            language: 'auto',
+            source: {
+              source_url: `file://${fileName}`,
+            },
+            hashes: {
+              text_sha256: textHash,
+            },
+            tokens_estimate: estimateTokensFast(chunk.text),
+            citation: `${title} - ${chunk.heading || 'Content'}`,
+            chunk_type: chunk.type || 'text',
+            quality,
+          });
+        }
+
+        sendEvent('progress', {
+          current: i + 1,
+          total: fileNames.length,
+          message: `${fileName}: ${chunked.length} Chunks erstellt`,
+          currentFile: fileName,
+        });
+
+        docIndex++;
+      }
+
+      if (clientDisconnected) {
+        res.end();
+        return;
+      }
+
+      sendEvent('progress', { current: 0, total: 1, message: 'Erstelle RAG Pack...' });
+
+      const zip = new JSZip();
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+
+      const manifest = {
+        version: '1.0',
+        source_type: 'converter',
+        created_at: new Date().toISOString(),
+        generator: 'rag-pack-converter',
+        stats: {
+          documents: documents.length,
+          chunks: allChunks.length,
+          assets: assets.length,
+          total_tokens: allChunks.reduce((sum: number, c: any) => sum + (c.tokens_estimate || 0), 0),
+        },
+      };
+
+      zip.file('manifest.json', JSON.stringify(manifest, null, 2));
+
+      const documentsJsonl = documents.map(d => JSON.stringify(d)).join('\n');
+      zip.file('documents.jsonl', documentsJsonl);
+
+      const chunksJsonl = allChunks.map(c => JSON.stringify(c)).join('\n');
+      zip.file('chunks.jsonl', chunksJsonl);
+
+      if (assets.length > 0) {
+        const assetsJsonl = assets.map(a => JSON.stringify(a)).join('\n');
+        zip.file('assets.jsonl', assetsJsonl);
+
+        for (const asset of assetFiles) {
+          zip.file(`assets/${asset.name}`, asset.buffer);
+        }
+      }
+
+      const documentSchema = {
+        type: 'object',
+        properties: {
+          doc_id: { type: 'string' },
+          title: { type: 'string' },
+          file_type: { type: 'string' },
+          file_name: { type: 'string' },
+          description: { type: 'string' },
+          word_count: { type: 'integer' },
+          char_count: { type: 'integer' },
+          token_estimate: { type: 'integer' },
+        },
+      };
+      zip.file('schemas/document.schema.json', JSON.stringify(documentSchema, null, 2));
+
+      const chunkSchema = {
+        type: 'object',
+        properties: {
+          chunk_id: { type: 'string' },
+          doc_id: { type: 'string' },
+          chunk_index: { type: 'integer' },
+          text: { type: 'string' },
+          location: { type: 'object' },
+          structure: { type: 'object' },
+          language: { type: 'string' },
+          source: { type: 'object' },
+          hashes: { type: 'object' },
+          tokens_estimate: { type: 'integer' },
+          citation: { type: 'string' },
+          chunk_type: { type: 'string' },
+          quality: { type: 'object' },
+        },
+      };
+      zip.file('schemas/chunk.schema.json', JSON.stringify(chunkSchema, null, 2));
+
+      sendEvent('progress', { current: 0, total: 1, message: 'Erstelle ZIP-Archiv...' });
+
+      const zipBuffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+
+      const zipFilename = `rag_pack_converter_${timestamp}.zip`;
+      const sessionDir = path.resolve(`./data/converter/${sessionId}`);
+      await fileStorage.ensureDir(sessionDir);
+      const zipPath = path.join(sessionDir, zipFilename);
+      await fsPromises.writeFile(zipPath, zipBuffer);
+
+      const downloadId = crypto.randomBytes(16).toString('hex');
+      converterDownloads.set(downloadId, { path: zipPath, filename: zipFilename });
+
+      sendEvent('complete', {
+        downloadId,
+        filename: zipFilename,
+        fileSize: zipBuffer.length,
+        documents: documents.length,
+        chunks: allChunks.length,
+        assets: assets.length,
+      });
+
+      res.end();
+    } catch (err) {
+      console.error('[Converter] Generate error:', err);
+      sendEvent('error', { message: (err as Error).message });
+      res.end();
+    }
+  });
+
+  app.get('/api/converter/download/:downloadId', async (req, res) => {
+    const { downloadId } = req.params;
+    const entry = converterDownloads.get(downloadId);
+
+    if (!entry) {
+      return res.status(404).json({ error: 'Download not found or expired' });
+    }
+
+    try {
+      await fsPromises.access(entry.path);
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="${entry.filename}"`);
+      const { createReadStream } = await import('fs');
+      const stream = createReadStream(entry.path);
+      stream.pipe(res);
+    } catch {
+      converterDownloads.delete(downloadId);
+      res.status(404).json({ error: 'File no longer available' });
+    }
+  });
+
+  app.delete('/api/converter/:sessionId', async (req, res) => {
+    const { sessionId } = req.params;
+    const sessionDir = path.resolve(`./data/converter/${sessionId}`);
+
+    try {
+      await fsPromises.rm(sessionDir, { recursive: true, force: true });
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: 'Cleanup failed' });
+    }
+  });
 
   app.get(api.projects.list.path, async (req, res) => {
     try {

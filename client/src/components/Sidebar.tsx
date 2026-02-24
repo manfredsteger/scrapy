@@ -1,13 +1,13 @@
 import { useState } from 'react';
 import { 
   LayoutDashboard, Globe, Settings, FileText, 
-  ChevronLeft, ChevronRight, Network, Download, Upload
+  ChevronLeft, ChevronRight, Network, Download, Upload, Package
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 interface SidebarProps {
-  activeView: 'dashboard' | 'project';
-  onNavigate: (view: 'dashboard' | 'project') => void;
+  activeView: 'dashboard' | 'project' | 'converter';
+  onNavigate: (view: 'dashboard' | 'project' | 'converter') => void;
   onImport: () => void;
   t: (key: any) => string;
 }
@@ -17,6 +17,7 @@ export default function Sidebar({ activeView, onNavigate, onImport, t }: Sidebar
 
   const menuItems = [
     { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard' },
+    { id: 'converter', icon: Package, label: t('ragPackConverter') },
   ];
 
   return (

@@ -42,6 +42,7 @@ export interface IStorage {
   createConverterExport(data: InsertConverterExport): Promise<ConverterExport>;
   getConverterExports(): Promise<ConverterExport[]>;
   getConverterExportByDownloadId(downloadId: string): Promise<ConverterExport | undefined>;
+  renameConverterExport(id: number, name: string): Promise<ConverterExport | undefined>;
   deleteConverterExport(id: number): Promise<void>;
 }
 
@@ -268,6 +269,14 @@ export class DatabaseStorage implements IStorage {
   async getConverterExportByDownloadId(downloadId: string): Promise<ConverterExport | undefined> {
     const [entry] = await db.select().from(converterExports)
       .where(eq(converterExports.downloadId, downloadId));
+    return entry;
+  }
+
+  async renameConverterExport(id: number, name: string): Promise<ConverterExport | undefined> {
+    const [entry] = await db.update(converterExports)
+      .set({ name })
+      .where(eq(converterExports.id, id))
+      .returning();
     return entry;
   }
 

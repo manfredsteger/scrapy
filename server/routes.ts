@@ -3799,6 +3799,23 @@ export async function registerRoutes(
     }
   });
 
+  app.patch('/api/converter/exports/:id/rename', async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ error: 'Invalid id' });
+      const { name } = req.body;
+      if (!name || typeof name !== 'string' || name.trim().length === 0) {
+        return res.status(400).json({ error: 'Name is required' });
+      }
+      const updated = await storage.renameConverterExport(id, name.trim());
+      if (!updated) return res.status(404).json({ error: 'Export not found' });
+      res.json(updated);
+    } catch (err) {
+      console.error('[Converter] Rename export error:', err);
+      res.status(500).json({ error: 'Failed to rename export' });
+    }
+  });
+
   app.delete('/api/converter/exports/:id', async (req, res) => {
     try {
       const id = parseInt(req.params.id);

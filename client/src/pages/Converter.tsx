@@ -4,12 +4,14 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { 
   Upload, Package, Loader2, Download, Trash2, Plus, 
   FileText, File, CheckCircle2, XCircle, RotateCcw, Save,
-  Calendar, Archive, FolderOpen
+  Calendar, Archive, FolderOpen, Pencil
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import Sidebar from '@/components/Sidebar';
 import Header from '@/components/Header';
 import ConfirmDialog from '@/components/ConfirmDialog';
@@ -109,6 +111,8 @@ export default function Converter() {
   const [isSaving, setIsSaving] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
+  const [renameExportId, setRenameExportId] = useState<number | null>(null);
+  const [renameValue, setRenameValue] = useState('');
 
   const { data: savedExports = [], isLoading: exportsLoading } = useQuery<SavedExport[]>({
     queryKey: ['/api/converter/exports'],
@@ -281,6 +285,23 @@ export default function Converter() {
       await fetch(`/api/converter/exports/${id}`, { method: 'DELETE' });
       queryClient.invalidateQueries({ queryKey: ['/api/converter/exports'] });
       toast({ title: t('exportDeleted') });
+    } catch (err) {
+      toast({ title: 'Error', description: (err as Error).message, variant: 'destructive' });
+    }
+  }, [queryClient, t, toast]);
+
+  const renameExport = useCallback(async (id: number, name: string) => {
+    try {
+      const response = await fetch(`/api/converter/exports/${id}/rename`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      if (!response.ok) throw new Error('Failed to rename');
+      queryClient.invalidateQueries({ queryKey: ['/api/converter/exports'] });
+      toast({ title: t('exportRenamed') });
+      setRenameExportId(null);
+      setRenameValue('');
     } catch (err) {
       toast({ title: 'Error', description: (err as Error).message, variant: 'destructive' });
     }
@@ -612,6 +633,17 @@ export default function Converter() {
                             <Button
                               variant="ghost"
                               size="sm"
+                              onClick={() => {
+                                setRenameExportId(exp.id);
+                                setRenameValue(exp.name);
+                              }}
+                              data-testid={`button-rename-export-${exp.id}`}
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
                               onClick={() => setDeleteConfirmId(exp.id)}
                               className="text-destructive hover:text-destructive"
                               data-testid={`button-delete-export-${exp.id}`}
@@ -666,6 +698,57 @@ export default function Converter() {
         }}
         variant="destructive"
       />
+
+      <Dialog
+        open={renameExportId !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRenameExportId(null);
+            setRenameValue('');
+          }
+        }}
+      >
+        <DialogContent data-testid="rename-dialog">
+          <DialogHeader>
+            <DialogTitle>{t('renameExportTitle')}</DialogTitle>
+            <DialogDescription>{t('renameExportDescription')}</DialogDescription>
+          </DialogHeader>
+          <Input
+            value={renameValue}
+            onChange={(e) => setRenameValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && renameValue.trim() && renameExportId !== null) {
+                renameExport(renameExportId, renameValue.trim());
+              }
+            }}
+            data-testid="input-rename-export"
+            autoFocus
+          />
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setRenameExportId(null);
+                setRenameValue('');
+              }}
+              data-testid="button-cancel-rename"
+            >
+              {t('cancel')}
+            </Button>
+            <Button
+              onClick={() => {
+                if (renameExportId !== null && renameValue.trim()) {
+                  renameExport(renameExportId, renameValue.trim());
+                }
+              }}
+              disabled={!renameValue.trim()}
+              data-testid="button-confirm-rename"
+            >
+              {t('renameExport')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

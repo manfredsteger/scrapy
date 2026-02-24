@@ -3094,7 +3094,7 @@ export async function registerRoutes(
       sendEvent('init', { totalFiles: fileNames.length });
 
       const documents: any[] = [];
-      const allChunks: any[] = [];
+      let allChunks: any[] = [];
       const assets: any[] = [];
       const assetFiles: { name: string; buffer: Buffer }[] = [];
       let docIndex = 0;
@@ -3432,13 +3432,138 @@ export async function registerRoutes(
         return;
       }
 
+      sendEvent('progress', { current: 0, total: 1, message: 'Deduplizierung läuft...' });
+
+      let deduplicationStats = { totalChunks: allChunks.length, exactDuplicates: 0, nearDuplicates: 0, uniqueChunks: allChunks.length };
+      if (allChunks.length > 0) {
+        const dedupResult = deduplicateChunks(allChunks, 0.90);
+        allChunks = dedupResult.chunks;
+        deduplicationStats = dedupResult.stats;
+        sendEvent('progress', {
+          current: 0, total: 1,
+          message: `Deduplizierung: ${deduplicationStats.exactDuplicates} exakte, ${deduplicationStats.nearDuplicates} ähnliche Duplikate entfernt`,
+        });
+      }
+
+      const textChunks = allChunks.filter(c => c.chunk_type === 'text' || !c.chunk_type).length;
+      const tableChunks = allChunks.filter(c => c.chunk_type === 'table').length;
+      const codeChunks = allChunks.filter(c => c.chunk_type === 'code').length;
+      const totalTokens = allChunks.reduce((sum: number, c: any) => sum + (c.tokens_estimate || 0), 0);
+      const tokenValues = allChunks.map((c: any) => c.tokens_estimate || 0);
+      const minTokens = tokenValues.length > 0 ? Math.min(...tokenValues) : 0;
+      const maxTokens = tokenValues.length > 0 ? Math.max(...tokenValues) : 0;
+      const avgTokens = allChunks.length > 0 ? Math.round(totalTokens / allChunks.length) : 0;
+
+      let embeddingsStats: EmbeddingsStats | undefined;
+      let enrichmentStatsResult: EnrichmentStats | undefined;
+      const openaiApiKey = process.env.OPENAI_API_KEY;
+
+      if (openaiApiKey && allChunks.length > 0 && !clientDisconnected) {
+        sendEvent('progress', { current: 0, total: 1, message: 'Generiere Embeddings...', phase: 'embeddings' });
+        try {
+          const nonDuplicateChunks = allChunks.filter(c => !c.is_duplicate);
+          const embResult = await generateEmbeddingsForChunks(
+            nonDuplicateChunks,
+            { model: 'text-embedding-3-small', dimensions: 1536 },
+            openaiApiKey,
+            (processed, total, successful, failed) => {
+              sendEvent('progress', {
+                current: processed, total,
+                message: `Embeddings: ${processed}/${total} (${successful} erfolgreich, ${failed} fehlgeschlagen)`,
+                phase: 'embeddings',
+              });
+            },
+            () => clientDisconnected
+          );
+          embeddingsStats = embResult.stats;
+          const embeddedMap = new Map(embResult.chunks.map(c => [c.chunk_id, c]));
+          allChunks = allChunks.map(c => embeddedMap.get(c.chunk_id) || c);
+          sendEvent('progress', {
+            current: 0, total: 1,
+            message: `Embeddings: ${embeddingsStats.successful} generiert, ${embeddingsStats.failed} fehlgeschlagen`,
+          });
+        } catch (err) {
+          console.error('[Converter] Embeddings error:', (err as Error).message);
+          sendEvent('progress', { current: 0, total: 1, message: `Embeddings-Fehler: ${(err as Error).message}` });
+        }
+
+        if (!clientDisconnected) {
+          sendEvent('progress', { current: 0, total: 1, message: 'AI-Anreicherung läuft...', phase: 'enrichment' });
+          try {
+            const nonDuplicateChunks = allChunks.filter(c => !c.is_duplicate);
+            const enrichSettings: EnrichmentSettings = {
+              extractKeywords: true,
+              generateSummary: true,
+              detectCategory: true,
+              extractEntities: true,
+            };
+            const enrichResult = await enrichChunkMetadata(
+              nonDuplicateChunks,
+              enrichSettings,
+              'gpt-4o-mini',
+              openaiApiKey,
+              (processed, total, partialStats) => {
+                sendEvent('progress', {
+                  current: processed, total,
+                  message: `AI-Anreicherung: ${processed}/${total} Chunks verarbeitet`,
+                  phase: 'enrichment',
+                });
+              },
+              () => clientDisconnected
+            );
+            enrichmentStatsResult = enrichResult.stats;
+            const enrichedMap = new Map(enrichResult.chunks.map(c => [c.chunk_id, c]));
+            allChunks = allChunks.map(c => enrichedMap.get(c.chunk_id) || c);
+            sendEvent('progress', {
+              current: 0, total: 1,
+              message: `AI-Anreicherung: ${enrichmentStatsResult.keywordsExtracted} Keywords, ${enrichmentStatsResult.summariesGenerated} Zusammenfassungen`,
+            });
+          } catch (err) {
+            console.error('[Converter] Enrichment error:', (err as Error).message);
+            sendEvent('progress', { current: 0, total: 1, message: `Anreicherungs-Fehler: ${(err as Error).message}` });
+          }
+        }
+      } else if (!openaiApiKey) {
+        sendEvent('progress', { current: 0, total: 1, message: 'Kein OPENAI_API_KEY gefunden - Embeddings und AI-Anreicherung übersprungen' });
+      }
+
       sendEvent('progress', { current: 0, total: 1, message: 'Erstelle RAG Pack...' });
 
       const zip = new JSZip();
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
 
+      const qualityReport = {
+        token_statistics: { min: minTokens, max: maxTokens, avg: avgTokens, total: totalTokens },
+        chunk_types: { text: textChunks, table: tableChunks, code: codeChunks },
+        deduplication: {
+          total_chunks: deduplicationStats.totalChunks,
+          exact_duplicates: deduplicationStats.exactDuplicates,
+          near_duplicates: deduplicationStats.nearDuplicates,
+          unique_chunks: deduplicationStats.uniqueChunks,
+        },
+        ...(embeddingsStats ? {
+          embeddings: {
+            total: embeddingsStats.totalChunks,
+            successful: embeddingsStats.successful,
+            failed: embeddingsStats.failed,
+            skipped: embeddingsStats.skipped,
+          },
+        } : {}),
+        ...(enrichmentStatsResult ? {
+          enrichment: {
+            total: enrichmentStatsResult.totalChunks,
+            successful: enrichmentStatsResult.successful,
+            failed: enrichmentStatsResult.failed,
+            keywords_extracted: enrichmentStatsResult.keywordsExtracted,
+            summaries_generated: enrichmentStatsResult.summariesGenerated,
+            categories_detected: enrichmentStatsResult.categoriesDetected,
+            entities_extracted: enrichmentStatsResult.entitiesExtracted,
+          },
+        } : {}),
+      };
+
       const manifest = {
-        version: '1.0',
+        version: '2.0',
         source_type: 'converter',
         created_at: new Date().toISOString(),
         generator: 'rag-pack-converter',
@@ -3446,8 +3571,10 @@ export async function registerRoutes(
           documents: documents.length,
           chunks: allChunks.length,
           assets: assets.length,
-          total_tokens: allChunks.reduce((sum: number, c: any) => sum + (c.tokens_estimate || 0), 0),
+          total_tokens: totalTokens,
+          unique_chunks: deduplicationStats.uniqueChunks,
         },
+        quality_report: qualityReport,
       };
 
       zip.file('manifest.json', JSON.stringify(manifest, null, 2));
@@ -3455,7 +3582,14 @@ export async function registerRoutes(
       const documentsJsonl = documents.map(d => JSON.stringify(d)).join('\n');
       zip.file('documents.jsonl', documentsJsonl);
 
-      const chunksJsonl = allChunks.map(c => JSON.stringify(c)).join('\n');
+      const exportChunks = allChunks.map(c => {
+        const exported = { ...c };
+        if (!embeddingsStats) {
+          delete exported.embedding;
+        }
+        return exported;
+      });
+      const chunksJsonl = exportChunks.map(c => JSON.stringify(c)).join('\n');
       zip.file('chunks.jsonl', chunksJsonl);
 
       if (assets.length > 0) {
@@ -3498,6 +3632,10 @@ export async function registerRoutes(
           citation: { type: 'string' },
           chunk_type: { type: 'string' },
           quality: { type: 'object' },
+          embedding: { type: 'array', items: { type: 'number' } },
+          ai_metadata: { type: 'object' },
+          is_duplicate: { type: 'boolean' },
+          duplicate_of: { type: 'string' },
         },
       };
       zip.file('schemas/chunk.schema.json', JSON.stringify(chunkSchema, null, 2));
@@ -3522,6 +3660,16 @@ export async function registerRoutes(
         documents: documents.length,
         chunks: allChunks.length,
         assets: assets.length,
+        deduplication: deduplicationStats,
+        ...(embeddingsStats ? { embeddings: { successful: embeddingsStats.successful, failed: embeddingsStats.failed } } : {}),
+        ...(enrichmentStatsResult ? {
+          enrichment: {
+            keywords: enrichmentStatsResult.keywordsExtracted,
+            summaries: enrichmentStatsResult.summariesGenerated,
+            categories: enrichmentStatsResult.categoriesDetected,
+            entities: enrichmentStatsResult.entitiesExtracted,
+          },
+        } : {}),
       });
 
       res.end();

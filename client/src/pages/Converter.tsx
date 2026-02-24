@@ -39,6 +39,22 @@ interface GenerateResult {
   documents: number;
   chunks: number;
   assets: number;
+  deduplication?: {
+    totalChunks: number;
+    exactDuplicates: number;
+    nearDuplicates: number;
+    uniqueChunks: number;
+  };
+  embeddings?: {
+    successful: number;
+    failed: number;
+  };
+  enrichment?: {
+    keywords: number;
+    summaries: number;
+    categories: number;
+    entities: number;
+  };
 }
 
 interface SavedExport {
@@ -204,6 +220,9 @@ export default function Converter() {
                   documents: data.documents,
                   chunks: data.chunks,
                   assets: data.assets || 0,
+                  deduplication: data.deduplication || undefined,
+                  embeddings: data.embeddings || undefined,
+                  enrichment: data.enrichment || undefined,
                 });
                 setPhase('complete');
               } else if (data.type === 'error') {
@@ -431,6 +450,41 @@ export default function Converter() {
                     {result.assets > 0 && <Badge variant="secondary">{result.assets} {t('assets')}</Badge>}
                     <Badge variant="outline">{formatFileSize(result.fileSize)}</Badge>
                   </div>
+
+                  {(result.deduplication || result.embeddings || result.enrichment) && (
+                    <div className="space-y-2 text-sm">
+                      {result.deduplication && (result.deduplication.exactDuplicates > 0 || result.deduplication.nearDuplicates > 0) && (
+                        <div className="flex gap-2 flex-wrap items-center" data-testid="dedup-stats">
+                          <span className="text-muted-foreground">{t('deduplication')}:</span>
+                          <Badge variant="outline">{result.deduplication.uniqueChunks} {t('uniqueChunks')}</Badge>
+                          {result.deduplication.exactDuplicates > 0 && (
+                            <Badge variant="destructive">{result.deduplication.exactDuplicates} {t('exactDuplicates')}</Badge>
+                          )}
+                          {result.deduplication.nearDuplicates > 0 && (
+                            <Badge variant="destructive">{result.deduplication.nearDuplicates} {t('nearDuplicates')}</Badge>
+                          )}
+                        </div>
+                      )}
+                      {result.embeddings && (
+                        <div className="flex gap-2 flex-wrap items-center" data-testid="embeddings-stats">
+                          <span className="text-muted-foreground">Embeddings:</span>
+                          <Badge variant="secondary">{result.embeddings.successful} {t('generated')}</Badge>
+                          {result.embeddings.failed > 0 && (
+                            <Badge variant="destructive">{result.embeddings.failed} {t('failed')}</Badge>
+                          )}
+                        </div>
+                      )}
+                      {result.enrichment && (
+                        <div className="flex gap-2 flex-wrap items-center" data-testid="enrichment-stats">
+                          <span className="text-muted-foreground">{t('aiEnrichment')}:</span>
+                          {result.enrichment.keywords > 0 && <Badge variant="secondary">{result.enrichment.keywords} Keywords</Badge>}
+                          {result.enrichment.summaries > 0 && <Badge variant="secondary">{result.enrichment.summaries} {t('summariesCount')}</Badge>}
+                          {result.enrichment.categories > 0 && <Badge variant="secondary">{result.enrichment.categories} {t('categories')}</Badge>}
+                          {result.enrichment.entities > 0 && <Badge variant="secondary">{result.enrichment.entities} {t('entities')}</Badge>}
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   <div className="flex gap-3 flex-wrap">
                     <Button

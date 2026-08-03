@@ -4000,25 +4000,98 @@ export async function registerRoutes(
 
   app.put(api.projects.update.path, async (req, res) => {
     try {
-      const input = api.projects.update.input.parse(req.body);
+      const id = Number(req.params.id);
+      const { expectedVersion, lockOwner, ...updates } = api.projects.update.input.parse(req.body) as any;
+      const existing = await storage.getProject(id);
+      if (!existing) {
+        return res.status(404).json({ message: 'Project not found' });
+      }
+
+      const ACTIVE_STATUSES = ['scraping', 'crawling', 'content_scraping'];
+      const LOCK_TTL_MS = 70000;
+      const now = Date.now();
+      const currentLock = (existing as any).scrapeLock as { owner: string; expiresAt: number } | null;
+      const lockActive = !!(currentLock && currentLock.expiresAt > now);
+      const isStatusChange = typeof updates.status === 'string' && updates.status !== existing.status;
+      const isProgressWrite = ['queue', 'processed', 'results', 'errors', 'stats'].some(k => k in updates);
+
+      // Scrape lock: while another session actively owns the processing loop,
+      // progress writes from other owners are rejected. Explicit status changes
+      // (pause/stop/resume by the user) are always allowed. The actual check is
+      // enforced atomically in the UPDATE's WHERE clause below; this early check
+      // only produces a friendlier response without a doomed write attempt.
+      const enforceLock = isProgressWrite && !isStatusChange;
+
+      // A status change (stop/pause/resume) from a tab that does NOT own the
+      // active lease is honored, but any progress payload it carries (queue,
+      // results, ...) is based on stale UI state and must not erase the
+      // owner's newer progress — apply the status transition only.
+      if (isStatusChange && lockActive && lockOwner !== currentLock!.owner) {
+        for (const k of ['queue', 'processed', 'results', 'errors', 'stats']) {
+          delete updates[k];
+        }
+      }
+
+      if (enforceLock && lockActive && lockOwner !== currentLock!.owner) {
+        return res.status(409).json({
+          message: 'Project is being processed by another session',
+          reason: 'locked',
+          version: (existing as any).version,
+        });
+      }
+
       // Safety: clients may send results derived from the "lite" detail endpoint,
       // where scrapedData is stripped. Never let such a write erase scrapedData
       // that is still stored inline in the DB — re-attach it by URL.
-      if (input.results && input.results.length > 0) {
-        const existing = await storage.getProject(Number(req.params.id));
-        const withData = (existing?.results || []).filter((r: any) => r.scrapedData);
+      if (updates.results && updates.results.length > 0) {
+        const withData = (existing.results || []).filter((r: any) => r.scrapedData);
         if (withData.length > 0) {
           const scrapedByLoc = new Map(withData.map((r: any) => [r.loc, r.scrapedData]));
-          input.results = input.results.map((r: any) =>
+          updates.results = updates.results.map((r: any) =>
             !r.scrapedData && scrapedByLoc.has(r.loc)
               ? { ...r, scrapedData: scrapedByLoc.get(r.loc) }
               : r
           );
         }
       }
-      const project = await storage.updateProject(Number(req.params.id), input);
+
+      // Lock maintenance: only progress writes and explicit status changes may
+      // touch the lock — unrelated writes (e.g. renaming) leave it untouched so
+      // a non-owner can't steal the lease.
+      const nextStatus = typeof updates.status === 'string' ? updates.status : existing.status;
+      if (isStatusChange) {
+        updates.scrapeLock = (ACTIVE_STATUSES.includes(nextStatus) && lockOwner)
+          ? { owner: lockOwner, expiresAt: now + LOCK_TTL_MS }
+          : null;
+      } else if (isProgressWrite && lockOwner) {
+        updates.scrapeLock = ACTIVE_STATUSES.includes(nextStatus)
+          ? { owner: lockOwner, expiresAt: now + LOCK_TTL_MS }
+          : null;
+      }
+
+      // Atomic conditional write: version CAS and lock-ownership condition are
+      // evaluated inside the UPDATE itself, so a concurrent writer can't sneak
+      // in between the check above and this write.
+      const project = await storage.updateProject(id, updates, {
+        expectedVersion,
+        ...(enforceLock ? { enforceLockOwner: lockOwner ?? '' } : {}),
+      });
       if (!project) {
-        return res.status(404).json({ message: 'Project not found' });
+        // The project existed above, so a missing row here means the
+        // compare-and-swap failed (or it was deleted concurrently).
+        const fresh = await storage.getProject(id);
+        if (!fresh) {
+          return res.status(404).json({ message: 'Project not found' });
+        }
+        const freshLock = (fresh as any).scrapeLock as { owner: string; expiresAt: number } | null;
+        const lostToLock = enforceLock && !!freshLock && freshLock.expiresAt > Date.now() && freshLock.owner !== (lockOwner ?? '');
+        return res.status(409).json({
+          message: lostToLock
+            ? 'Project is being processed by another session'
+            : 'Project was modified by another session',
+          reason: lostToLock ? 'locked' : 'version_conflict',
+          version: (fresh as any).version,
+        });
       }
       res.json(project);
     } catch (err) {
@@ -4044,10 +4117,21 @@ export async function registerRoutes(
       if (isNaN(id)) {
         return res.status(400).json({ message: 'Invalid project ID' });
       }
+      const lockOwner: string | undefined = typeof req.body?.lockOwner === 'string' ? req.body.lockOwner : undefined;
 
       const project = await storage.getProject(id);
       if (!project) {
         return res.status(404).json({ message: 'Project not found' });
+      }
+
+      // Refuse to reset an actively processed project while another session
+      // holds the scrape lease (would wipe its queue/results mid-run).
+      const startLock = (project as any).scrapeLock as { owner: string; expiresAt: number } | null;
+      if (startLock && startLock.expiresAt > Date.now() && startLock.owner !== (lockOwner ?? '')) {
+        return res.status(409).json({
+          message: 'Project is being processed by another session',
+          reason: 'locked',
+        });
       }
 
       try {
@@ -4078,13 +4162,23 @@ export async function registerRoutes(
         return res.status(400).json({ message: 'No content pages to extract' });
       }
 
-      // Update project: reset errors, reset results errorStatus, set queue and status
+      // Update project: reset errors, reset results errorStatus, set queue and
+      // status. The write is atomically guarded: version CAS against the state
+      // we computed from + lease condition, so a concurrent owner can't be
+      // silently overwritten between our read and this write.
       const updated = await storage.updateProject(id, {
         status: 'content_scraping',
         queue: contentUrls,
         errors: [], // Clear errors array for fresh start
         results: resetResults, // Save results with cleared errorStatus
-      });
+        ...(lockOwner ? { scrapeLock: { owner: lockOwner, expiresAt: Date.now() + 70000 } } : { scrapeLock: null }),
+      }, { expectedVersion: (project as any).version, enforceLockOwner: lockOwner ?? '' });
+      if (!updated) {
+        return res.status(409).json({
+          message: 'Project was modified concurrently; extraction not started',
+          reason: 'version_conflict',
+        });
+      }
 
       console.log(`[StartExtraction] Started extraction for project ${id} with ${contentUrls.length} URLs (errors reset)`);
       res.json(updated);
@@ -4101,10 +4195,19 @@ export async function registerRoutes(
       if (isNaN(id)) {
         return res.status(400).json({ message: 'Invalid project ID' });
       }
+      const lockOwner: string | undefined = typeof req.body?.lockOwner === 'string' ? req.body.lockOwner : undefined;
 
       const project = await storage.getProject(id);
       if (!project) {
         return res.status(404).json({ message: 'Project not found' });
+      }
+
+      const syncLock = (project as any).scrapeLock as { owner: string; expiresAt: number } | null;
+      if (syncLock && syncLock.expiresAt > Date.now() && syncLock.owner !== (lockOwner ?? '')) {
+        return res.status(409).json({
+          message: 'Project is being processed by another session',
+          reason: 'locked',
+        });
       }
 
       const errors = project.errors || [];
@@ -4144,7 +4247,19 @@ export async function registerRoutes(
       });
 
       if (synced > 0) {
-        await storage.updateProject(id, { results: updatedResults });
+        // Atomic guard: CAS on the version we read + lease condition, so this
+        // can't clobber a batch persisted concurrently by the active owner.
+        const saved = await storage.updateProject(
+          id,
+          { results: updatedResults },
+          { expectedVersion: (project as any).version, enforceLockOwner: lockOwner ?? '' },
+        );
+        if (!saved) {
+          return res.status(409).json({
+            message: 'Project was modified concurrently; errors not synced',
+            reason: 'version_conflict',
+          });
+        }
       }
 
       console.log(`[SyncErrors] Synced ${synced} error URLs for project ${id}`);
@@ -4160,10 +4275,21 @@ export async function registerRoutes(
     if (isNaN(id)) {
       return res.status(400).json({ message: 'Invalid project ID' });
     }
+    const lockOwner: string | undefined = typeof req.query.lockOwner === 'string' ? req.query.lockOwner : undefined;
 
     const project = await storage.getProject(id);
     if (!project) {
       return res.status(404).json({ message: 'Project not found' });
+    }
+
+    // Refuse while another session actively owns the scrape lease - this
+    // endpoint rewrites results and must not race an active scraping loop.
+    const attachLock = (project as any).scrapeLock as { owner: string; expiresAt: number } | null;
+    if (attachLock && attachLock.expiresAt > Date.now() && attachLock.owner !== (lockOwner ?? '')) {
+      return res.status(409).json({
+        message: 'Project is being processed by another session',
+        reason: 'locked',
+      });
     }
 
     const allResults = project.results || [];
@@ -4295,8 +4421,20 @@ export async function registerRoutes(
       }
 
       if (!clientDisconnected) {
+        // Guarded persistence: re-read + re-merge and CAS-write with the lease
+        // condition, so this can't overwrite progress persisted concurrently
+        // by an active scraping session.
+        const MAX_CAS_RETRIES = 3;
+        let persisted = false;
+        for (let attempt = 0; attempt <= MAX_CAS_RETRIES && !persisted; attempt++) {
         const currentProject = await storage.getProject(id);
-        if (currentProject) {
+        if (!currentProject) break;
+        const currentLock = (currentProject as any).scrapeLock as { owner: string; expiresAt: number } | null;
+        if (currentLock && currentLock.expiresAt > Date.now() && currentLock.owner !== (lockOwner ?? '')) {
+          sendEvent('sync-error', { message: 'Project is being processed by another session; attachment results not saved' });
+          break;
+        }
+        {
           const updatedResults = (currentProject.results || []).map((existing: any) => {
             const loc = existing.loc || '';
             const lowerLoc = loc.toLowerCase();
@@ -4334,7 +4472,17 @@ export async function registerRoutes(
             }
             return existing;
           });
-          await storage.updateProject(id, { results: updatedResults });
+          const saved = await storage.updateProject(
+            id,
+            { results: updatedResults },
+            { expectedVersion: (currentProject as any).version, enforceLockOwner: lockOwner ?? '' },
+          );
+          if (saved) {
+            persisted = true;
+          } else if (attempt === MAX_CAS_RETRIES) {
+            sendEvent('sync-error', { message: 'Project was modified concurrently; attachment results not saved' });
+          }
+        }
         }
       }
 
@@ -5382,6 +5530,7 @@ export async function registerRoutes(
       const input = api.scrape.fetchContent.input.parse(req.body);
       const urls = input.urls.slice(0, CONCURRENCY);
       const projectId = input.projectId;
+      const lockOwner = input.lockOwner;
       
       // Validate projectId is required for content scraping (data persistence)
       if (!projectId) {
@@ -5392,6 +5541,16 @@ export async function registerRoutes(
       const project = await storage.getProject(projectId);
       if (!project) {
         return res.status(404).json({ message: `Project ${projectId} not found` });
+      }
+
+      // Scrape lock: refuse to process/persist for a batch initiated by a tab
+      // that doesn't own the active lease (another tab is driving extraction).
+      const existingLock = (project as any).scrapeLock as { owner: string; expiresAt: number } | null;
+      if (existingLock && existingLock.expiresAt > Date.now() && existingLock.owner !== (lockOwner ?? '')) {
+        return res.status(409).json({
+          message: 'Project is being processed by another session',
+          reason: 'locked',
+        });
       }
       
       // Get project settings for rate limiting/proxy support
@@ -5409,6 +5568,9 @@ export async function registerRoutes(
       // Collect all updates in memory first to avoid race conditions
       // Map: url -> { scrapedData?, errorStatus?, errorMessage? }
       const urlUpdates = new Map<string, { scrapedData?: any; hasScrapedData?: boolean; status?: string; errorStatus?: string; errorMessage?: string }>();
+      // Page dirs newly created by THIS batch - removed again if the guarded
+      // DB persistence below is rejected, so no orphan files become visible.
+      const newPageDirs: string[] = [];
       
       const results = await Promise.all(urls.map(async (url) => {
         try {
@@ -5431,6 +5593,8 @@ export async function registerRoutes(
             // Save to filesystem
             try {
               const pageDir = fileStorage.getProjectPageDir(projectId, project.domain, url);
+              const existedBefore = !!(await fileStorage.readPageMeta(pageDir).catch(() => null));
+              if (!existedBefore) newPageDirs.push(pageDir);
               const markdown = orderedElementsToMarkdown(data.orderedElements || []);
               await fileStorage.savePageContent(pageDir, markdown);
               await fileStorage.savePageMeta(pageDir, {
@@ -5505,10 +5669,33 @@ export async function registerRoutes(
         }
       }));
       
-      // Apply all updates in a single batch to avoid race conditions
+      // Apply all updates as an atomic, guarded write. The merge only touches
+      // rows for the URLs in this batch, so on a version conflict (a compatible
+      // concurrent write, e.g. the client's own queue update) we re-read and
+      // re-merge. A lock held by another session aborts without saving.
+      let savedVersion: number | undefined;
+      // Remove files written by this batch if its DB persistence is rejected,
+      // so rejected batches can't surface orphan filesystem content.
+      const cleanupBatchFiles = async () => {
+        for (const dir of newPageDirs) {
+          try {
+            await fsPromises.rm(dir, { recursive: true, force: true });
+          } catch {}
+        }
+      };
       if (urlUpdates.size > 0) {
-        const currentProject = await storage.getProject(projectId);
-        if (currentProject) {
+        const MAX_CAS_RETRIES = 3;
+        for (let attempt = 0; attempt <= MAX_CAS_RETRIES; attempt++) {
+          const currentProject = await storage.getProject(projectId);
+          if (!currentProject) break;
+          const currentLock = (currentProject as any).scrapeLock as { owner: string; expiresAt: number } | null;
+          if (currentLock && currentLock.expiresAt > Date.now() && currentLock.owner !== (lockOwner ?? '')) {
+            await cleanupBatchFiles();
+            return res.status(409).json({
+              message: 'Project is being processed by another session',
+              reason: 'locked',
+            });
+          }
           const updatedResults = (currentProject.results || []).map(existing => {
             const update = urlUpdates.get(existing.loc);
             if (update) {
@@ -5516,7 +5703,26 @@ export async function registerRoutes(
             }
             return existing;
           });
-          await storage.updateProject(projectId, { results: updatedResults });
+          const saved = await storage.updateProject(
+            projectId,
+            {
+              results: updatedResults,
+              // Renew the lease for the driving tab while extraction is active
+              ...(lockOwner ? { scrapeLock: { owner: lockOwner, expiresAt: Date.now() + 70000 } } : {}),
+            },
+            { expectedVersion: (currentProject as any).version, enforceLockOwner: lockOwner ?? '' },
+          );
+          if (saved) {
+            savedVersion = (saved as any).version;
+            break;
+          }
+          if (attempt === MAX_CAS_RETRIES) {
+            await cleanupBatchFiles();
+            return res.status(409).json({
+              message: 'Project was modified concurrently; batch not saved',
+              reason: 'version_conflict',
+            });
+          }
         }
       }
       
@@ -5528,6 +5734,7 @@ export async function registerRoutes(
       
       res.json({ 
         results,
+        version: savedVersion,
         rateLimitState,
         proxyInfo: proxyRotator ? {
           enabled: proxyRotator.isEnabled(),

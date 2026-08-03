@@ -27,6 +27,8 @@ const projectResponseSchema = z.object({
   errors: z.array(scrapingErrorSchema),
   stats: scrapingStatsSchema.nullable(),
   createdAt: z.string().nullable(),
+  version: z.number().optional(),
+  scrapeLock: z.object({ owner: z.string(), expiresAt: z.number() }).nullable().optional(),
 });
 
 export const api = {
@@ -76,11 +78,16 @@ export const api = {
         results: z.array(sitemapUrlEntrySchema).optional(),
         errors: z.array(scrapingErrorSchema).optional(),
         stats: scrapingStatsSchema.optional(),
+        // Optimistic concurrency: reject the write if the stored version differs.
+        expectedVersion: z.number().optional(),
+        // Identifies the browser tab/session performing the write (scrape lock owner).
+        lockOwner: z.string().optional(),
       }),
       responses: {
         200: projectResponseSchema,
         400: errorSchemas.validation,
         404: errorSchemas.notFound,
+        409: z.object({ message: z.string(), reason: z.string(), version: z.number().optional() }),
       },
     },
     delete: {
@@ -152,6 +159,8 @@ export const api = {
       input: z.object({ 
         urls: z.array(z.string()),
         projectId: z.number().optional(),
+        // Identifies the browser tab driving the extraction (scrape lock owner)
+        lockOwner: z.string().optional(),
       }),
       responses: {
         200: z.object({
@@ -161,6 +170,8 @@ export const api = {
             error: z.string().nullable(),
             usedProxy: z.string().optional(),
           })),
+          // Project version after the guarded batch write (for follow-up CAS writes)
+          version: z.number().optional(),
           rateLimitState: z.object({
             currentDelay: z.number(),
             baseDelay: z.number(),

@@ -1,1 +1,2 @@
 - [Lite project endpoints vs. client merges](lite-project-endpoints.md) — list/detail APIs strip results/processed/scrapedData; client read-modify-write loops must fetch full data or lose it.
+- [Project write concurrency](project-write-concurrency.md) — scrape progress writes must be atomically guarded (lease + version) in the UPDATE itself; treat conflicts as "discard batch and refetch".

@@ -41,6 +41,14 @@ import type { Project, SitemapUrlEntry, ProjectSettings as ProjectSettingsType, 
 
 const BATCH_SIZE = 10;
 
+const TAB_ID = (() => {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return `tab-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+})();
+
 // Guards against "zombie" processing loops: the batch loop re-schedules itself
 // via setTimeout closures. After a hot update (or remount) the OLD closure
 // would keep running alongside the new one, doubling requests and writing
@@ -290,13 +298,17 @@ export default function Home() {
   });
 
   const updateProjectMutation = useMutation({
-    mutationFn: async ({ id, updates }: { id: number; updates: Partial<Project> }) => {
+    mutationFn: async ({ id, updates, expectedVersion }: { id: number; updates: Partial<Project>; expectedVersion?: number }) => {
       // Check if project was marked for deletion - don't update if aborted
       if (abortedProjectsRef.current.has(id)) {
         console.log(`[Update] Skipping update for aborted project ${id}`);
         return null;
       }
-      const res = await apiRequest('PUT', `/api/projects/${id}`, updates);
+      const res = await apiRequest('PUT', `/api/projects/${id}`, {
+        ...updates,
+        lockOwner: TAB_ID,
+        ...(expectedVersion !== undefined ? { expectedVersion } : {}),
+      });
       return res.json();
     },
     onSuccess: (data) => {
@@ -432,6 +444,28 @@ export default function Home() {
     retryDelay: 1000,
   });
 
+  // Notify once per project when another tab holds the scrape lock
+  const lockNotifiedRef = useRef<Set<number>>(new Set());
+  const notifyLockedByOtherTab = useCallback((projectId: number) => {
+    console.log(`[Process] Project ${projectId} is locked by another tab, not taking over`);
+    if (!lockNotifiedRef.current.has(projectId)) {
+      lockNotifiedRef.current.add(projectId);
+      toast({
+        title: t('scrapeLockedTitle') || 'Verarbeitung in anderem Tab',
+        description: t('scrapeLockedDescription') || 'Dieses Projekt wird bereits in einem anderen Tab verarbeitet. Dieser Tab übernimmt nicht.',
+      });
+    }
+  }, [toast, t]);
+
+  // A concurrent write (other tab or server action) won the race: discard this
+  // batch, refresh from the server, and let the owner keep going.
+  const handleWriteConflict = useCallback((projectId: number) => {
+    console.warn(`[Process] Write conflict on project ${projectId}, discarding batch and refreshing`);
+    notifyLockedByOtherTab(projectId);
+    queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
+    queryClient.invalidateQueries({ queryKey: ['/api/projects', projectId] });
+  }, [notifyLockedByOtherTab]);
+
   const processStep = useCallback(async () => {
     // Stale loop from a previous mount/hot-update? Stop silently.
     if (loopGenRef.current !== scrapeLoopGeneration) {
@@ -445,6 +479,11 @@ export default function Home() {
       // Check if project was marked for deletion - stop immediately
       if (abortedProjectsRef.current.has(scrapingProject.id)) {
         console.log(`[Process] Project ${scrapingProject.id} was aborted, skipping`);
+        return;
+      }
+      // Another tab is actively processing this project - don't take over
+      if (isLockedByOtherTab(scrapingProject)) {
+        notifyLockedByOtherTab(scrapingProject.id);
         return;
       }
       
@@ -469,6 +508,11 @@ export default function Home() {
         // Fetch the full project first and merge against that.
         const detailRes = await apiRequest('GET', `/api/projects/${scrapingProject.id}`);
         const fullScrapingProject: Project = await detailRes.json();
+        // Re-check with fresh data: another tab may have grabbed the lock meanwhile
+        if (isLockedByOtherTab(fullScrapingProject)) {
+          notifyLockedByOtherTab(scrapingProject.id);
+          return;
+        }
         const scrapeQueue = fullScrapingProject.queue || [];
         const batchUrls = scrapeQueue.slice(0, BATCH_SIZE);
         const remainingQueue = scrapeQueue.slice(BATCH_SIZE);
@@ -524,22 +568,31 @@ export default function Home() {
           timestamp: Date.now(),
         })));
         
-        await updateProjectMutation.mutateAsync({
-          id: scrapingProject.id,
-          updates: {
-            queue: newQueue,
-            processed: newProcessed,
-            results: newResults,
-            errors: newErrors,
-            stats: {
-              ...fullScrapingProject.stats!,
-              processedSitemaps: (fullScrapingProject.stats?.processedSitemaps || 0) + sitemapsProcessed,
-              totalSitemaps: (fullScrapingProject.stats?.totalSitemaps || 0) + newSitemapsFound,
-              totalUrls: newResults.length,
-              totalImages: newResults.reduce((acc, curr) => acc + (curr.images?.length || 0), 0),
+        try {
+          await updateProjectMutation.mutateAsync({
+            id: scrapingProject.id,
+            expectedVersion: fullScrapingProject.version,
+            updates: {
+              queue: newQueue,
+              processed: newProcessed,
+              results: newResults,
+              errors: newErrors,
+              stats: {
+                ...fullScrapingProject.stats!,
+                processedSitemaps: (fullScrapingProject.stats?.processedSitemaps || 0) + sitemapsProcessed,
+                totalSitemaps: (fullScrapingProject.stats?.totalSitemaps || 0) + newSitemapsFound,
+                totalUrls: newResults.length,
+                totalImages: newResults.reduce((acc, curr) => acc + (curr.images?.length || 0), 0),
+              },
             },
-          },
-        });
+          });
+        } catch (err) {
+          if (isConflictError(err)) {
+            handleWriteConflict(scrapingProject.id);
+            return;
+          }
+          throw err;
+        }
       } finally {
         processingRef.current = false;
       }
@@ -552,6 +605,11 @@ export default function Home() {
       // Check if project was marked for deletion - stop immediately
       if (abortedProjectsRef.current.has(crawlingProject.id)) {
         console.log(`[Process] Crawling project ${crawlingProject.id} was aborted, skipping`);
+        return;
+      }
+      // Another tab is actively processing this project - don't take over
+      if (isLockedByOtherTab(crawlingProject)) {
+        notifyLockedByOtherTab(crawlingProject.id);
         return;
       }
       
@@ -576,6 +634,11 @@ export default function Home() {
         // (this froze the UI at "URLs found: 10"). Fetch the full project first.
         const detailRes = await apiRequest('GET', `/api/projects/${crawlingProject.id}`);
         const fullCrawlProject: Project = await detailRes.json();
+        // Re-check with fresh data: another tab may have grabbed the lock meanwhile
+        if (isLockedByOtherTab(fullCrawlProject)) {
+          notifyLockedByOtherTab(crawlingProject.id);
+          return;
+        }
         const crawlQueue = fullCrawlProject.queue || [];
         const batchUrls = crawlQueue.slice(0, BATCH_SIZE);
         const remainingQueue = crawlQueue.slice(BATCH_SIZE);
@@ -641,21 +704,30 @@ export default function Home() {
           timestamp: Date.now(),
         })));
 
-        await updateProjectMutation.mutateAsync({
-          id: crawlingProject.id,
-          updates: {
-            queue: newQueue,
-            processed: newProcessed,
-            results: newResults,
-            errors: newErrors,
-            stats: {
-              ...fullCrawlProject.stats!,
-              totalUrls: newResults.length,
-              totalImages: newResults.reduce((acc, curr) => acc + (curr.images?.length || 0), 0),
-              totalVideos: newResults.reduce((acc, curr) => acc + (curr.videos?.length || 0), 0),
+        try {
+          await updateProjectMutation.mutateAsync({
+            id: crawlingProject.id,
+            expectedVersion: fullCrawlProject.version,
+            updates: {
+              queue: newQueue,
+              processed: newProcessed,
+              results: newResults,
+              errors: newErrors,
+              stats: {
+                ...fullCrawlProject.stats!,
+                totalUrls: newResults.length,
+                totalImages: newResults.reduce((acc, curr) => acc + (curr.images?.length || 0), 0),
+                totalVideos: newResults.reduce((acc, curr) => acc + (curr.videos?.length || 0), 0),
+              },
             },
-          },
-        });
+          });
+        } catch (err) {
+          if (isConflictError(err)) {
+            handleWriteConflict(crawlingProject.id);
+            return;
+          }
+          throw err;
+        }
       } finally {
         processingRef.current = false;
       }
@@ -668,6 +740,11 @@ export default function Home() {
       if (abortedProjectsRef.current.has(contentScrapingProject.id)) {
         console.log(`[Process] Content scraping project ${contentScrapingProject.id} was aborted, skipping`);
         contentQueueRef.current = null;
+        return;
+      }
+      // Another tab is actively processing this project - don't take over
+      if (isLockedByOtherTab(contentScrapingProject)) {
+        notifyLockedByOtherTab(contentScrapingProject.id);
         return;
       }
       
@@ -726,11 +803,24 @@ export default function Home() {
       try {
         // Send projectId so server saves scrapedData directly to DB
         console.log(`[ProcessStep] Starting batch of ${batchUrls.length} URLs, ${remainingQueue.length} remaining`);
-        const res = await apiRequest('POST', '/api/scrape/content', { 
-          urls: batchUrls, 
-          projectId: contentScrapingProject.id 
-        });
-        const { results } = await res.json();
+        let res;
+        try {
+          res = await apiRequest('POST', '/api/scrape/content', { 
+            urls: batchUrls, 
+            projectId: contentScrapingProject.id,
+            lockOwner: TAB_ID,
+          });
+        } catch (err) {
+          if (isConflictError(err)) {
+            // Another tab owns the extraction - discard and stop this tab's loop
+            handleWriteConflict(contentScrapingProject.id);
+            contentQueueRef.current = null;
+            processingRef.current = false;
+            return;
+          }
+          throw err;
+        }
+        const { results, version: batchVersion } = await res.json();
         console.log(`[ProcessStep] Batch completed, ${results.length} results`);
 
         // Server saves scrapedData directly - we only track errors and stats
@@ -787,6 +877,8 @@ export default function Home() {
         try {
           await updateProjectMutation.mutateAsync({
             id: contentScrapingProject.id,
+            // CAS against the version produced by the guarded batch write above
+            expectedVersion: typeof batchVersion === 'number' ? batchVersion : undefined,
             updates: {
               queue: remainingQueue,
               errors: newErrors,
@@ -814,6 +906,12 @@ export default function Home() {
             return { ...old, queue: remainingQueue, errors: newErrors, stats: updatedProject.stats };
           });
         } catch (updateErr) {
+          if (isConflictError(updateErr)) {
+            handleWriteConflict(contentScrapingProject.id);
+            contentQueueRef.current = null;
+            processingRef.current = false;
+            return;
+          }
           console.error('[ProcessStep] Failed to save batch results:', updateErr);
         }
         
@@ -862,6 +960,12 @@ export default function Home() {
             return { ...old, queue: remainingQueue, errors: updatedErrorProject.errors };
           });
         } catch (updateErr) {
+          if (isConflictError(updateErr)) {
+            handleWriteConflict(contentScrapingProject.id);
+            contentQueueRef.current = null;
+            processingRef.current = false;
+            return;
+          }
           console.error('[ProcessStep] Failed to update queue after batch error:', updateErr);
         }
         
@@ -869,7 +973,7 @@ export default function Home() {
         scheduleNextBatch(remainingQueue.length);
       }
     }
-  }, [projects, updateProjectMutation, recordActivity]);
+  }, [projects, updateProjectMutation, recordActivity, notifyLockedByOtherTab, handleWriteConflict]);
 
   // Track last activity time for stuck detection
   const lastActivityRef = useRef<number>(Date.now());
@@ -907,7 +1011,7 @@ export default function Home() {
     
     try {
       // Use dedicated server endpoint that calculates URLs server-side
-      const res = await apiRequest('POST', `/api/projects/${activeProject.id}/start-extraction`);
+      const res = await apiRequest('POST', `/api/projects/${activeProject.id}/start-extraction`, { lockOwner: TAB_ID });
       if (!res.ok) {
         const data = await res.json();
         throw new Error(data.message || 'Failed to start extraction');
@@ -934,7 +1038,7 @@ export default function Home() {
     
     setIsSyncingErrors(true);
     try {
-      const res = await apiRequest('POST', `/api/projects/${activeProject.id}/sync-errors`);
+      const res = await apiRequest('POST', `/api/projects/${activeProject.id}/sync-errors`, { lockOwner: TAB_ID });
       const data = await res.json();
       
       if (!res.ok) {
@@ -1565,7 +1669,7 @@ export default function Home() {
                         onClick={() => {
                           if (!activeProject) return;
                           setAttachmentSync({ active: true, processed: 0, total: 0, pdfsFound: 0, directPdfs: 0, errors: 0, done: false });
-                          const es = new EventSource(`/api/projects/${activeProject.id}/sync-attachments`);
+                          const es = new EventSource(`/api/projects/${activeProject.id}/sync-attachments?lockOwner=${encodeURIComponent(TAB_ID)}`);
                           es.addEventListener('init', (e) => {
                             const data = JSON.parse(e.data);
                             setAttachmentSync(prev => prev ? { ...prev, total: data.totalHtmlPages, directPdfs: data.directPdfUrls } : prev);
@@ -2202,4 +2306,13 @@ export default function Home() {
       )}
     </div>
   );
+}
+
+function isConflictError(err: unknown): boolean {
+  return err instanceof Error && err.message.startsWith('409');
+}
+
+function isLockedByOtherTab(project: { scrapeLock?: { owner: string; expiresAt: number } | null } | undefined): boolean {
+  const lock = project?.scrapeLock;
+  return !!(lock && lock.owner !== TAB_ID && lock.expiresAt > Date.now());
 }

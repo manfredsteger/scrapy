@@ -14,6 +14,8 @@ export interface ProjectLite {
   projectSettings: any;
   lastScraped: Date | null;
   createdAt: Date | null;
+  version: number;
+  scrapeLock: { owner: string; expiresAt: number } | null;
   urlCount: number;
   scrapedCount: number;
   failedCount: number;
@@ -25,7 +27,7 @@ export interface IStorage {
   getProject(id: number): Promise<Project | undefined>;
   getProjectLite(id: number): Promise<any | undefined>;
   createProject(project: InsertProject): Promise<Project>;
-  updateProject(id: number, updates: Partial<InsertProject>): Promise<Project | undefined>;
+  updateProject(id: number, updates: Partial<InsertProject> & { scrapeLock?: { owner: string; expiresAt: number } | null }, guard?: { expectedVersion?: number; enforceLockOwner?: string }): Promise<Project | undefined>;
   deleteProject(id: number): Promise<void>;
   getSetting(key: string): Promise<Settings | undefined>;
   setSetting(key: string, value: string): Promise<Settings>;
@@ -56,7 +58,7 @@ export class DatabaseStorage implements IStorage {
     const result = await db.execute(sql`
       SELECT 
         id, domain, display_name, status, queue, errors, stats, 
-        project_settings, last_scraped, created_at,
+        project_settings, last_scraped, created_at, version, scrape_lock,
         jsonb_array_length(COALESCE(results, '[]'::jsonb)) as url_count,
         (SELECT count(*) FROM jsonb_array_elements(COALESCE(results, '[]'::jsonb)) r 
          WHERE (r->>'hasScrapedData')::boolean = true 
@@ -80,6 +82,8 @@ export class DatabaseStorage implements IStorage {
       projectSettings: row.project_settings || null,
       lastScraped: row.last_scraped,
       createdAt: row.created_at,
+      version: parseInt(row.version) || 0,
+      scrapeLock: row.scrape_lock || null,
       urlCount: parseInt(row.url_count) || 0,
       scrapedCount: parseInt(row.scraped_count) || 0,
       failedCount: parseInt(row.failed_count) || 0,
@@ -98,7 +102,7 @@ export class DatabaseStorage implements IStorage {
       SELECT 
         id, domain, display_name, status, queue, processed, errors, stats, 
         project_settings, last_exported_at, exported_chunk_hashes,
-        last_scraped, created_at,
+        last_scraped, created_at, version, scrape_lock,
         jsonb_array_length(COALESCE(chunks, '[]'::jsonb)) as chunk_count,
         (
           SELECT jsonb_agg(
@@ -141,6 +145,8 @@ export class DatabaseStorage implements IStorage {
       exportedChunkHashes: row.exported_chunk_hashes || {},
       lastScraped: row.last_scraped,
       createdAt: row.created_at,
+      version: parseInt(row.version) || 0,
+      scrapeLock: row.scrape_lock || null,
       results: row.results || [],
     };
   }
@@ -153,10 +159,33 @@ export class DatabaseStorage implements IStorage {
     return project;
   }
 
-  async updateProject(id: number, updates: Partial<InsertProject>): Promise<Project | undefined> {
+  // Updates a project, always incrementing its version. The optional guard makes
+  // the write conditional *atomically* (conditions live in the UPDATE's WHERE):
+  // - expectedVersion: compare-and-swap against the stored version
+  // - enforceLockOwner: only write if the scrape lock is free, expired, or owned
+  //   by this owner (lock check + write is one atomic DB operation)
+  // Returns undefined when the row doesn't match (not found or guard failed).
+  async updateProject(
+    id: number,
+    updates: Partial<InsertProject> & { scrapeLock?: { owner: string; expiresAt: number } | null },
+    guard?: { expectedVersion?: number; enforceLockOwner?: string },
+  ): Promise<Project | undefined> {
+    const conditions: any[] = [eq(projects.id, id)];
+    if (guard?.expectedVersion !== undefined) {
+      conditions.push(eq(projects.version, guard.expectedVersion));
+    }
+    if (guard?.enforceLockOwner !== undefined) {
+      const now = Date.now();
+      conditions.push(sql`(
+        ${projects.scrapeLock} IS NULL
+        OR jsonb_typeof(${projects.scrapeLock}) = 'null'
+        OR COALESCE((${projects.scrapeLock}->>'expiresAt')::bigint, 0) <= ${now}
+        OR ${projects.scrapeLock}->>'owner' = ${guard.enforceLockOwner}
+      )`);
+    }
     const [project] = await db.update(projects)
-      .set({ ...updates, lastScraped: new Date() })
-      .where(eq(projects.id, id))
+      .set({ ...updates, lastScraped: new Date(), version: sql`${projects.version} + 1` })
+      .where(and(...conditions))
       .returning();
     return project;
   }

@@ -122,12 +122,20 @@ export const projects = pgTable("projects", {
   lastExportedAt: timestamp("last_exported_at"),
   exportedChunkHashes: jsonb("exported_chunk_hashes").$type<z.infer<typeof exportedChunkHashSchema>>().default({}),
   createdAt: timestamp("created_at").defaultNow(),
+  // Optimistic-concurrency version: incremented on every update; clients can
+  // send expectedVersion for compare-and-swap semantics.
+  version: integer("version").notNull().default(0),
+  // Scrape lock: which browser tab/session currently owns the client-driven
+  // processing loop. Progress writes from other owners are rejected while active.
+  scrapeLock: jsonb("scrape_lock").$type<{ owner: string; expiresAt: number } | null>().default(null),
 });
 
 export const insertProjectSchema = createInsertSchema(projects).omit({ 
   id: true, 
   createdAt: true,
   lastScraped: true,
+  version: true,
+  scrapeLock: true,
 });
 
 export type Project = typeof projects.$inferSelect;

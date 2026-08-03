@@ -42,6 +42,16 @@ export default function ProjectCard({ project, onSelect, onDelete, onRename, t }
   };
 
   const isActive = project.status !== 'idle';
+  const isRunning = ['crawling', 'scraping', 'content_scraping'].includes(project.status);
+  const statusLabel: string = ({
+    idle: 'Idle',
+    crawling: 'Crawling',
+    scraping: 'Analyse',
+    content_scraping: 'Extraktion',
+    paused: 'Pausiert',
+    crawl_paused: 'Pausiert',
+    content_paused: 'Pausiert',
+  } as Record<string, string>)[project.status] || 'Aktiv';
   // Use direct counts from API if available, fallback to counting results for backwards compatibility
   const urlCount = project.urlCount ?? project.results?.length ?? 0;
   const scrapedCount = project.scrapedCount ?? project.results?.filter((r: any) => r.scrapedData || r.hasScrapedData).length ?? 0;
@@ -55,7 +65,7 @@ export default function ProjectCard({ project, onSelect, onDelete, onRename, t }
       <div className="flex items-start justify-between mb-4">
         <div className="flex items-center gap-3 flex-1 min-w-0">
           <div className={`p-2.5 rounded-lg shrink-0 ${isActive ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground'}`}>
-            {isActive ? (
+            {isRunning ? (
               <Loader2 className="w-5 h-5 animate-spin" />
             ) : (
               <Globe className="w-5 h-5" />
@@ -128,7 +138,7 @@ export default function ProjectCard({ project, onSelect, onDelete, onRename, t }
         <div className="bg-secondary rounded-lg p-3 text-center">
           <p className="text-[10px] font-medium text-muted-foreground uppercase">{t('status')}</p>
           <p className={`text-xs font-bold uppercase ${isActive ? 'text-primary' : 'text-emerald-400'}`}>
-            {isActive ? 'Active' : 'Idle'}
+            {statusLabel}
           </p>
         </div>
       </div>

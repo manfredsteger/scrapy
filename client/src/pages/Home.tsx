@@ -29,6 +29,7 @@ import ChunkingProgress from '@/components/ChunkingProgress';
 import RagPackProgress from '@/components/RagPackProgress';
 import ExportVersionsDialog from '@/components/ExportVersionsDialog';
 import ConfirmDialog from '@/components/ConfirmDialog';
+import LiveActivityFeed, { type LiveActivityEntry } from '@/components/LiveActivityFeed';
 import { Progress } from '@/components/ui/progress';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -84,7 +85,24 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const processingRef = useRef(false);
   const abortedProjectsRef = useRef<Set<number>>(new Set());
+  // Projects for which pause/stop was requested in this tab. In-flight batches
+  // check this after their network call so they don't persist results past the
+  // requested pause/stop boundary (the batch is simply discarded and re-done on resume).
+  const pauseRequestedRef = useRef<Set<number>>(new Set());
   const contentQueueRef = useRef<{projectId: number, queue: string[]} | null>(null);
+  // Live progress: rolling feed of recently processed URLs + session stats for rate/ETA
+  const [liveFeed, setLiveFeed] = useState<LiveActivityEntry[]>([]);
+  const [sessionStats, setSessionStats] = useState<{ projectId: number; startTime: number; processedCount: number } | null>(null);
+
+  const recordActivity = useCallback((projectId: number, entries: LiveActivityEntry[]) => {
+    if (entries.length === 0) return;
+    setLiveFeed(prev => [...entries, ...prev].slice(0, 30));
+    setSessionStats(prev =>
+      prev && prev.projectId === projectId
+        ? { ...prev, processedCount: prev.processedCount + entries.length }
+        : { projectId, startTime: Date.now(), processedCount: entries.length }
+    );
+  }, []);
 
   const { data: projects = [], isLoading, refetch: refetchProjects } = useQuery<Project[]>({
     queryKey: ['/api/projects'],
@@ -476,12 +494,19 @@ export default function Home() {
           }
         });
 
-        // Check again if project was aborted during API call
-        if (abortedProjectsRef.current.has(scrapingProject.id)) {
-          console.log(`[Process] Project ${scrapingProject.id} was aborted during processing, not saving results`);
+        // Check again if project was aborted or paused/stopped during API call
+        if (abortedProjectsRef.current.has(scrapingProject.id) || pauseRequestedRef.current.has(scrapingProject.id)) {
+          console.log(`[Process] Project ${scrapingProject.id} was aborted/paused during processing, not saving results`);
           processingRef.current = false;
           return;
         }
+
+        recordActivity(scrapingProject.id, results.map(res => ({
+          url: res.url,
+          ok: !res.error,
+          message: res.error || undefined,
+          timestamp: Date.now(),
+        })));
         
         await updateProjectMutation.mutateAsync({
           id: scrapingProject.id,
@@ -586,12 +611,19 @@ export default function Home() {
           }
         });
 
-        // Check again if project was aborted during API call
-        if (abortedProjectsRef.current.has(crawlingProject.id)) {
-          console.log(`[Process] Crawling project ${crawlingProject.id} was aborted during processing, not saving results`);
+        // Check again if project was aborted or paused/stopped during API call
+        if (abortedProjectsRef.current.has(crawlingProject.id) || pauseRequestedRef.current.has(crawlingProject.id)) {
+          console.log(`[Process] Crawling project ${crawlingProject.id} was aborted/paused during processing, not saving results`);
           processingRef.current = false;
           return;
         }
+
+        recordActivity(crawlingProject.id, results.map((r: { url: string; error: string | null }) => ({
+          url: r.url,
+          ok: !r.error,
+          message: r.error || undefined,
+          timestamp: Date.now(),
+        })));
 
         await updateProjectMutation.mutateAsync({
           id: crawlingProject.id,
@@ -701,6 +733,14 @@ export default function Home() {
           }
         });
 
+        // Check if pause/stop was requested during the API call - don't persist
+        // past the boundary and don't schedule the next batch
+        if (pauseRequestedRef.current.has(contentScrapingProject.id)) {
+          console.log(`[Process] Content scraping project ${contentScrapingProject.id} was paused/stopped during processing, not saving batch`);
+          contentQueueRef.current = null;
+          processingRef.current = false;
+          return;
+        }
         // Check again if project was aborted during API call
         if (abortedProjectsRef.current.has(contentScrapingProject.id)) {
           console.log(`[Process] Content scraping project ${contentScrapingProject.id} was aborted during processing, not saving results`);
@@ -709,6 +749,13 @@ export default function Home() {
           // Don't schedule next batch - project was aborted
           return;
         }
+
+        recordActivity(contentScrapingProject.id, results.map((r: { url: string; success: boolean; error: string | null }) => ({
+          url: r.url,
+          ok: !!r.success,
+          message: r.error || undefined,
+          timestamp: Date.now(),
+        })));
 
         // Only update queue, errors and stats - NOT results (server handles that)
         const updatedProject = {
@@ -787,7 +834,7 @@ export default function Home() {
         scheduleNextBatch(remainingQueue.length);
       }
     }
-  }, [projects, updateProjectMutation]);
+  }, [projects, updateProjectMutation, recordActivity]);
 
   // Track last activity time for stuck detection
   const lastActivityRef = useRef<number>(Date.now());
@@ -882,6 +929,7 @@ export default function Home() {
   const stopProcess = useCallback(async () => {
     if (!activeProject || processAction) return;
     setProcessAction('stop');
+    pauseRequestedRef.current.add(activeProject.id);
     try {
       await updateProjectMutation.mutateAsync({
         id: activeProject.id,
@@ -895,6 +943,7 @@ export default function Home() {
   const pauseProcess = useCallback(async () => {
     if (!activeProject || processAction) return;
     setProcessAction('pause');
+    pauseRequestedRef.current.add(activeProject.id);
     const currentStatus = activeProject.status;
     try {
       if (currentStatus === 'content_scraping') {
@@ -907,6 +956,11 @@ export default function Home() {
           id: activeProject.id,
           updates: { status: 'paused' },
         });
+      } else if (currentStatus === 'crawling') {
+        await updateProjectMutation.mutateAsync({
+          id: activeProject.id,
+          updates: { status: 'crawl_paused' },
+        });
       }
     } finally {
       setProcessAction(null);
@@ -916,6 +970,7 @@ export default function Home() {
   const resumeProcess = useCallback(async () => {
     if (!activeProject || processAction) return;
     setProcessAction('resume');
+    pauseRequestedRef.current.delete(activeProject.id);
     const currentStatus = activeProject.status;
     try {
       if (currentStatus === 'content_paused') {
@@ -927,6 +982,11 @@ export default function Home() {
         await updateProjectMutation.mutateAsync({
           id: activeProject.id,
           updates: { status: 'scraping' },
+        });
+      } else if (currentStatus === 'crawl_paused') {
+        await updateProjectMutation.mutateAsync({
+          id: activeProject.id,
+          updates: { status: 'crawling' },
         });
       }
     } finally {
@@ -1031,7 +1091,8 @@ export default function Home() {
 
   const progressPercent = useMemo(() => {
     if (!activeProject) return 0;
-    if (activeProject.status === 'scraping' || activeProject.status === 'paused') {
+    if (activeProject.status === 'scraping' || activeProject.status === 'paused' ||
+        activeProject.status === 'crawling' || activeProject.status === 'crawl_paused') {
       const total = (activeProject.processed?.length || 0) + (activeProject.queue?.length || 0);
       return total === 0 ? 0 : Math.min(100, Math.round(((activeProject.processed?.length || 0) / total) * 100));
     }
@@ -1048,8 +1109,8 @@ export default function Home() {
     return 0;
   }, [activeProject]);
 
-  const isProcessing = activeProject?.status === 'scraping' || activeProject?.status === 'content_scraping';
-  const isPaused = activeProject?.status === 'paused' || activeProject?.status === 'content_paused';
+  const isProcessing = activeProject?.status === 'scraping' || activeProject?.status === 'content_scraping' || activeProject?.status === 'crawling';
+  const isPaused = activeProject?.status === 'paused' || activeProject?.status === 'content_paused' || activeProject?.status === 'crawl_paused';
   const hasActiveProcess = isProcessing || isPaused;
   // Use contentQueueRef for live updates during active processing, fallback to project queue
   const remainingUrls = (activeProject?.status === 'content_scraping' && contentQueueRef.current?.projectId === activeProject?.id)
@@ -1068,6 +1129,27 @@ export default function Home() {
   }, 0);
   const errorsArrayCount = (activeProject?.errors || []).length;
   const hasUnsyncedErrors = errorsArrayCount > 0 && pendingContentScrape > 0;
+
+  // Live rate / ETA from the current session (since page load / process start)
+  const liveRateStats = useMemo(() => {
+    if (!sessionStats || sessionStats.projectId !== activeProject?.id) {
+      return { pagesPerMinute: null as number | null, etaMs: null as number | null };
+    }
+    const elapsedMs = Date.now() - sessionStats.startTime;
+    // Need a few seconds of data before the rate is meaningful
+    if (elapsedMs < 5000 || sessionStats.processedCount === 0) {
+      return { pagesPerMinute: null, etaMs: null };
+    }
+    const pagesPerMinute = sessionStats.processedCount / (elapsedMs / 60000);
+    // During crawl discovery the queue keeps growing, so a completion ETA would
+    // be misleading - suppress it and only show the processing rate.
+    const isCrawlDiscovery = activeProject?.status === 'crawling' || activeProject?.status === 'crawl_paused';
+    const etaMs = !isCrawlDiscovery && pagesPerMinute > 0 && remainingUrls > 0
+      ? (remainingUrls / pagesPerMinute) * 60000
+      : null;
+    return { pagesPerMinute, etaMs };
+    // sessionStats changes with every recorded batch, which keeps this fresh
+  }, [sessionStats, activeProject?.id, activeProject?.status, remainingUrls]);
 
   if (langLoading || isLoading) {
     return (
@@ -1720,15 +1802,18 @@ export default function Home() {
                       <div className="flex justify-between items-center mb-2">
                         <div className="flex items-center gap-2">
                           <p className="text-sm font-medium text-foreground">
-                            {(activeProject?.status === 'scraping' || activeProject?.status === 'paused') 
-                              ? t('parallelAnalysis') 
-                              : t('deepExtraction')}
+                            {(activeProject?.status === 'crawling' || activeProject?.status === 'crawl_paused')
+                              ? t('crawlingLabel')
+                              : (activeProject?.status === 'scraping' || activeProject?.status === 'paused')
+                                ? t('parallelAnalysis')
+                                : t('deepExtraction')}
                           </p>
                           {isPaused && (
                             <Badge variant="secondary" className="text-[10px]">{t('paused')}</Badge>
                           )}
                         </div>
                         <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                          <span>{t('urlsFound')}: {urlCount}</span>
                           <span>{t('remainingPages')}: {remainingUrls}</span>
                           <span>{progressPercent}%</span>
                         </div>
@@ -1739,6 +1824,15 @@ export default function Home() {
                           style={{ width: `${progressPercent}%` }}
                         />
                       </div>
+                      {!isPaused && (
+                        <LiveActivityFeed
+                          feed={liveFeed}
+                          processedCount={sessionStats?.projectId === activeProject?.id ? sessionStats.processedCount : 0}
+                          pagesPerMinute={liveRateStats.pagesPerMinute}
+                          etaMs={liveRateStats.etaMs}
+                          t={t}
+                        />
+                      )}
                     </div>
                   </div>
                 </div>

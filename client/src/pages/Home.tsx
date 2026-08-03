@@ -38,6 +38,7 @@ import { useLanguage } from '@/hooks/use-language';
 import { useToast } from '@/hooks/use-toast';
 import { apiRequest, queryClient } from '@/lib/queryClient';
 import type { Project, SitemapUrlEntry, ProjectSettings as ProjectSettingsType, SinglePage } from '@shared/schema';
+import { addDiscoveredLinks } from '@shared/crawl-depth';
 
 const BATCH_SIZE = 10;
 // Safety cap for crawl discovery: stop adding new URLs to the frontier once the
@@ -249,6 +250,7 @@ export default function Home() {
         displayName: domain.replace(/^https?:\/\//, '').replace(/\/$/, ''),
         status: projectStatus,
         queue: initialQueue,
+        crawlDepths: useCrawlMode ? { [initialQueue[0]]: 0 } : {},
         processed: [],
         results: initialResults,
         errors: [],
@@ -396,6 +398,7 @@ export default function Home() {
       const res = await apiRequest('PUT', `/api/projects/${project.id}`, {
         status: projectStatus,
         queue: initialQueue,
+        crawlDepths: useCrawlMode ? { [initialQueue[0]]: 0 } : {},
         processed: [],
         results: initialResults,
         errors: [],
@@ -622,6 +625,7 @@ export default function Home() {
           id: crawlingProject.id, 
           updates: { 
             status: 'idle',
+            crawlDepths: {},
             stats: { ...crawlingProject.stats!, endTime: Date.now() }
           } 
         });
@@ -646,6 +650,12 @@ export default function Home() {
         const crawlQueue = fullCrawlProject.queue || [];
         const batchUrls = crawlQueue.slice(0, BATCH_SIZE);
         const remainingQueue = crawlQueue.slice(BATCH_SIZE);
+
+        // Depth tracking: enforce the project's maxDepth setting. URLs without
+        // a recorded depth (e.g. projects created before depth tracking) count
+        // as depth 0, so existing crawls keep their previous behavior.
+        const maxDepth = fullCrawlProject.projectSettings?.scraping?.maxDepth ?? 5;
+        const newCrawlDepths: Record<string, number> = { ...(fullCrawlProject.crawlDepths || {}) };
 
         // Crawl pages and discover internal links
         const res = await apiRequest('POST', '/api/scrape/crawl', { 
@@ -678,14 +688,21 @@ export default function Home() {
               existingLocs.add(r.url);
             }
             
-            // Add discovered links to queue (bounded by MAX_CRAWL_URLS)
-            r.links.forEach((link: string) => {
-              if (newResults.length + newQueue.length >= MAX_CRAWL_URLS) return;
-              if (!existingLocs.has(link) && !existingProcessed.has(link) && !existingQueue.has(link)) {
-                newQueue.push(link);
-                existingQueue.add(link);
-              }
-            });
+            // Add discovered links to queue (bounded by maxDepth and MAX_CRAWL_URLS)
+            addDiscoveredLinks(
+              {
+                queue: newQueue,
+                depths: newCrawlDepths,
+                resultCount: newResults.length,
+                existingLocs,
+                existingProcessed,
+                existingQueue,
+              },
+              r.url,
+              r.links,
+              maxDepth,
+              MAX_CRAWL_URLS,
+            );
           } else if (r.error) {
             newErrors.push({ 
               url: r.url, 
@@ -710,11 +727,15 @@ export default function Home() {
         })));
 
         try {
+          // Depths of processed URLs are no longer needed - drop them to keep the map bounded
+          batchUrls.forEach((u: string) => { delete newCrawlDepths[u]; });
+
           await updateProjectMutation.mutateAsync({
             id: crawlingProject.id,
             expectedVersion: fullCrawlProject.version,
             updates: {
               queue: newQueue,
+              crawlDepths: newCrawlDepths,
               processed: newProcessed,
               results: newResults,
               errors: newErrors,

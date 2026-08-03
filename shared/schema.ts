@@ -113,6 +113,9 @@ export const projects = pgTable("projects", {
   lastScraped: timestamp("last_scraped").defaultNow(),
   status: text("status").notNull().default("idle"),
   queue: jsonb("queue").$type<string[]>().default([]),
+  // Crawl depth per queued/discovered URL (crawl mode only). Used to enforce
+  // the project's scraping.maxDepth setting. Missing entries default to 0.
+  crawlDepths: jsonb("crawl_depths").$type<Record<string, number>>().default({}),
   processed: jsonb("processed").$type<string[]>().default([]),
   results: jsonb("results").$type<z.infer<typeof sitemapUrlEntrySchema>[]>().default([]),
   errors: jsonb("errors").$type<z.infer<typeof scrapingErrorSchema>[]>().default([]),

@@ -3975,6 +3975,7 @@ export async function registerRoutes(
         displayName: input.displayName || input.domain,
         status: input.status || 'idle',
         queue: input.queue || [],
+        crawlDepths: input.crawlDepths || {},
         processed: input.processed || [],
         results: input.results || [],
         errors: input.errors || [],
@@ -4014,7 +4015,7 @@ export async function registerRoutes(
       const currentLock = (existing as any).scrapeLock as { owner: string; expiresAt: number } | null;
       const lockActive = !!(currentLock && currentLock.expiresAt > now);
       const isStatusChange = typeof updates.status === 'string' && updates.status !== existing.status;
-      const isProgressWrite = ['queue', 'processed', 'results', 'errors', 'stats'].some(k => k in updates);
+      const isProgressWrite = ['queue', 'crawlDepths', 'processed', 'results', 'errors', 'stats'].some(k => k in updates);
 
       // Scrape lock: while another session actively owns the processing loop,
       // progress writes from other owners are rejected. Explicit status changes
@@ -4028,7 +4029,7 @@ export async function registerRoutes(
       // results, ...) is based on stale UI state and must not erase the
       // owner's newer progress — apply the status transition only.
       if (isStatusChange && lockActive && lockOwner !== currentLock!.owner) {
-        for (const k of ['queue', 'processed', 'results', 'errors', 'stats']) {
+        for (const k of ['queue', 'crawlDepths', 'processed', 'results', 'errors', 'stats']) {
           delete updates[k];
         }
       }

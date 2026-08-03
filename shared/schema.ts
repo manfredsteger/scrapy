@@ -80,7 +80,23 @@ export const sitemapUrlEntrySchema = z.object({
   videos: z.array(videoMetadataSchema),
   scrapedData: scrapedDataSchema.optional(),
   hasScrapedData: z.boolean().optional(), // Lightweight indicator from API (scrapedData stripped)
+  // Set by incremental update when the URL is no longer present in the
+  // source (sitemap/crawl). Content is kept but the page is flagged.
+  removedFromSource: z.boolean().optional(),
 });
+
+// State of an incremental update run ("Aktualisieren")
+export const updateRunSchema = z.object({
+  startedAt: z.number(),
+  // 'discovery' while re-crawling (crawl mode); summary fields are filled when
+  // discovery finishes (sitemap mode finishes discovery synchronously).
+  phase: z.enum(['discovery', 'extract', 'done']),
+  newUrls: z.number().optional(),
+  changedUrls: z.number().optional(),
+  removedUrls: z.number().optional(),
+  finishedAt: z.number().optional(),
+});
+export type UpdateRun = z.infer<typeof updateRunSchema>;
 
 // Scraping error
 export const scrapingErrorSchema = z.object({
@@ -131,6 +147,9 @@ export const projects = pgTable("projects", {
   // Scrape lock: which browser tab/session currently owns the client-driven
   // processing loop. Progress writes from other owners are rejected while active.
   scrapeLock: jsonb("scrape_lock").$type<{ owner: string; expiresAt: number } | null>().default(null),
+  // Incremental update run state ("Aktualisieren"): discovery phase + summary
+  // counts (new/changed/removed). Null when no update run has been started.
+  updateRun: jsonb("update_run").$type<z.infer<typeof updateRunSchema> | null>().default(null),
 });
 
 export const insertProjectSchema = createInsertSchema(projects).omit({ 
@@ -139,6 +158,9 @@ export const insertProjectSchema = createInsertSchema(projects).omit({
   lastScraped: true,
   version: true,
   scrapeLock: true,
+}).extend({
+  // createInsertSchema types jsonb as generic Json (incl. string) — pin it
+  updateRun: updateRunSchema.nullable().optional(),
 });
 
 export type Project = typeof projects.$inferSelect;

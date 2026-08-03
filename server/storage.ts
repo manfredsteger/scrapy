@@ -16,6 +16,7 @@ export interface ProjectLite {
   createdAt: Date | null;
   version: number;
   scrapeLock: { owner: string; expiresAt: number } | null;
+  updateRun: any | null;
   urlCount: number;
   scrapedCount: number;
   failedCount: number;
@@ -58,7 +59,7 @@ export class DatabaseStorage implements IStorage {
     const result = await db.execute(sql`
       SELECT 
         id, domain, display_name, status, queue, errors, stats, 
-        project_settings, last_scraped, created_at, version, scrape_lock,
+        project_settings, last_scraped, created_at, version, scrape_lock, update_run,
         jsonb_array_length(COALESCE(results, '[]'::jsonb)) as url_count,
         (SELECT count(*) FROM jsonb_array_elements(COALESCE(results, '[]'::jsonb)) r 
          WHERE (r->>'hasScrapedData')::boolean = true 
@@ -84,6 +85,7 @@ export class DatabaseStorage implements IStorage {
       createdAt: row.created_at,
       version: parseInt(row.version) || 0,
       scrapeLock: row.scrape_lock || null,
+      updateRun: row.update_run || null,
       urlCount: parseInt(row.url_count) || 0,
       scrapedCount: parseInt(row.scraped_count) || 0,
       failedCount: parseInt(row.failed_count) || 0,
@@ -102,7 +104,7 @@ export class DatabaseStorage implements IStorage {
       SELECT 
         id, domain, display_name, status, queue, crawl_depths, processed, errors, stats, 
         project_settings, last_exported_at, exported_chunk_hashes,
-        last_scraped, created_at, version, scrape_lock,
+        last_scraped, created_at, version, scrape_lock, update_run,
         jsonb_array_length(COALESCE(chunks, '[]'::jsonb)) as chunk_count,
         (
           SELECT jsonb_agg(
@@ -117,7 +119,8 @@ export class DatabaseStorage implements IStorage {
               'status', COALESCE(r->>'status', CASE WHEN (r->>'hasScrapedData')::boolean = true THEN 'scraped' WHEN r->>'errorMessage' IS NOT NULL THEN 'failed' ELSE 'pending' END),
               'pdfCount', 0,
               'errorStatus', r->>'errorStatus',
-              'errorMessage', r->>'errorMessage'
+              'errorMessage', r->>'errorMessage',
+              'removedFromSource', COALESCE((r->>'removedFromSource')::boolean, false)
             )
           )
           FROM jsonb_array_elements(COALESCE(results, '[]'::jsonb)) r
@@ -148,6 +151,7 @@ export class DatabaseStorage implements IStorage {
       createdAt: row.created_at,
       version: parseInt(row.version) || 0,
       scrapeLock: row.scrape_lock || null,
+      updateRun: row.update_run || null,
       results: row.results || [],
     };
   }

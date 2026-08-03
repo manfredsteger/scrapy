@@ -17,6 +17,7 @@ import { MoodleScraper } from "./scrapers/moodle-scraper";
 import * as fileStorage from './fileStorage';
 import { orderedElementsToMarkdown } from './markdownConverter';
 import { normalizeCrawlUrl } from './crawl-url';
+import { diffSitemapUpdate, diffCrawlFinish } from './update-diff';
 import multer from 'multer';
 
 const CONCURRENCY = 10;
@@ -4187,6 +4188,176 @@ export async function registerRoutes(
     } catch (err) {
       console.error('[StartExtraction] Error:', err);
       res.status(500).json({ message: 'Failed to start extraction' });
+    }
+  });
+
+  // Incremental update ("Aktualisieren"): re-discover URLs and re-scrape only
+  // new/changed pages. Sitemap projects diff synchronously here; crawl
+  // projects transition to a re-crawl (status 'crawling' with updateRun) and
+  // finish via POST /api/projects/:id/finish-update.
+  app.post('/api/projects/:id/start-update', async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ message: 'Invalid project ID' });
+      }
+      const lockOwner: string | undefined = typeof req.body?.lockOwner === 'string' ? req.body.lockOwner : undefined;
+
+      const project = await storage.getProject(id);
+      if (!project) {
+        return res.status(404).json({ message: 'Project not found' });
+      }
+
+      const ACTIVE = ['scraping', 'crawling', 'content_scraping'];
+      if (ACTIVE.includes(project.status)) {
+        return res.status(409).json({ message: 'Project is currently processing', reason: 'busy' });
+      }
+      const lock = (project as any).scrapeLock as { owner: string; expiresAt: number } | null;
+      if (lock && lock.expiresAt > Date.now() && lock.owner !== (lockOwner ?? '')) {
+        return res.status(409).json({ message: 'Project is being processed by another session', reason: 'locked' });
+      }
+
+      const isSitemapProject = (project.stats?.totalSitemaps || 0) > 0;
+      const startedAt = Date.now();
+
+      if (!isSitemapProject) {
+        // Crawl mode: re-crawl the site; existing results are preserved and the
+        // crawling loop appends newly discovered URLs. finish-update does the diff.
+        let baseUrl = project.domain.trim();
+        if (!baseUrl.startsWith('http')) baseUrl = `https://${baseUrl}`;
+        const updated = await storage.updateProject(id, {
+          status: 'crawling',
+          queue: [baseUrl],
+          crawlDepths: { [baseUrl]: 0 },
+          processed: [],
+          errors: [],
+          updateRun: { startedAt, phase: 'discovery' },
+          ...(lockOwner ? { scrapeLock: { owner: lockOwner, expiresAt: Date.now() + 70000 } } : { scrapeLock: null }),
+        }, { expectedVersion: (project as any).version, enforceLockOwner: lockOwner ?? '' });
+        if (!updated) {
+          return res.status(409).json({ message: 'Project was modified concurrently', reason: 'version_conflict' });
+        }
+        console.log(`[StartUpdate] Project ${id}: crawl re-discovery started from ${baseUrl}`);
+        return res.json({ project: updated, mode: 'crawl' });
+      }
+
+      // Sitemap mode: re-discover all sitemap entries server-side, then diff.
+      const discovered: Array<{ loc: string; lastmod?: string; changefreq?: string; priority?: string; images: any[]; videos: any[] }> = [];
+      const sitemapQueue = await discoverSitemaps(project.domain);
+      if (sitemapQueue.length === 0) {
+        return res.status(400).json({ message: 'No sitemaps found for this domain', reason: 'no_sitemaps' });
+      }
+      const seenSitemaps = new Set<string>();
+      const MAX_SITEMAPS = 500;
+      let sitemapFetchFailures = 0;
+      while (sitemapQueue.length > 0 && seenSitemaps.size < MAX_SITEMAPS) {
+        const smUrl = sitemapQueue.shift()!;
+        if (seenSitemaps.has(smUrl)) continue;
+        seenSitemaps.add(smUrl);
+        try {
+          const xml = await fetchWithTimeout(smUrl);
+          const parsed = parseSitemap(xml);
+          discovered.push(...parsed.urls);
+          parsed.subSitemaps.forEach((s: string) => { if (!seenSitemaps.has(s)) sitemapQueue.push(s); });
+        } catch (err) {
+          sitemapFetchFailures++;
+          console.warn(`[StartUpdate] Project ${id}: sitemap fetch failed for ${smUrl}: ${(err as Error).message}`);
+        }
+      }
+      // An incomplete discovery would wrongly flag every URL from a failed
+      // sitemap as removed — abort instead of risking a misleading diff.
+      if (sitemapFetchFailures > 0) {
+        return res.status(502).json({ message: `Sitemap re-discovery incomplete (${sitemapFetchFailures} fetch failure${sitemapFetchFailures > 1 ? 's' : ''}); update aborted to protect existing data`, reason: 'discovery_incomplete' });
+      }
+      if (discovered.length === 0) {
+        return res.status(400).json({ message: 'Sitemap re-discovery returned no URLs; update aborted to protect existing data', reason: 'empty_discovery' });
+      }
+
+      const diff = diffSitemapUpdate((project.results || []) as any[], discovered);
+      const hasWork = diff.queue.length > 0;
+      const updateRun = {
+        startedAt,
+        phase: hasWork ? 'extract' as const : 'done' as const,
+        newUrls: diff.newUrls,
+        changedUrls: diff.changedUrls,
+        removedUrls: diff.removedUrls,
+        ...(hasWork ? {} : { finishedAt: Date.now() }),
+      };
+      const updated = await storage.updateProject(id, {
+        status: hasWork ? 'content_scraping' : 'idle',
+        queue: diff.queue,
+        results: diff.results as any,
+        errors: [],
+        stats: { ...(project.stats as any), totalUrls: diff.results.length },
+        updateRun,
+        ...(hasWork && lockOwner ? { scrapeLock: { owner: lockOwner, expiresAt: Date.now() + 70000 } } : { scrapeLock: null }),
+      }, { expectedVersion: (project as any).version, enforceLockOwner: lockOwner ?? '' });
+      if (!updated) {
+        return res.status(409).json({ message: 'Project was modified concurrently', reason: 'version_conflict' });
+      }
+      console.log(`[StartUpdate] Project ${id}: sitemap diff done — ${diff.newUrls} new, ${diff.changedUrls} changed, ${diff.removedUrls} removed, queue=${diff.queue.length}`);
+      res.json({ project: updated, mode: 'sitemap', summary: { newUrls: diff.newUrls, changedUrls: diff.changedUrls, removedUrls: diff.removedUrls, queued: diff.queue.length } });
+    } catch (err) {
+      console.error('[StartUpdate] Error:', err);
+      res.status(500).json({ message: 'Failed to start update' });
+    }
+  });
+
+  // Finish an update re-crawl (crawl mode): diff reachable URLs against the
+  // existing results, flag removed pages, and queue new pages for extraction.
+  app.post('/api/projects/:id/finish-update', async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ message: 'Invalid project ID' });
+      }
+      const lockOwner: string | undefined = typeof req.body?.lockOwner === 'string' ? req.body.lockOwner : undefined;
+
+      const project = await storage.getProject(id);
+      if (!project) {
+        return res.status(404).json({ message: 'Project not found' });
+      }
+      const run = (project as any).updateRun as { startedAt: number; phase: string } | null;
+      if (!run || run.phase !== 'discovery') {
+        return res.status(400).json({ message: 'No update discovery in progress', reason: 'no_update_run' });
+      }
+      const lock = (project as any).scrapeLock as { owner: string; expiresAt: number } | null;
+      if (lock && lock.expiresAt > Date.now() && lock.owner !== (lockOwner ?? '')) {
+        return res.status(409).json({ message: 'Project is being processed by another session', reason: 'locked' });
+      }
+      if ((project.queue || []).length > 0) {
+        return res.status(400).json({ message: 'Crawl queue is not empty yet', reason: 'queue_not_empty' });
+      }
+
+      const erroredUrls = ((project.errors || []) as any[])
+        .map(e => (typeof e === 'string' ? e : e?.url))
+        .filter((u: any): u is string => typeof u === 'string');
+      const diff = diffCrawlFinish((project.results || []) as any[], project.processed || [], erroredUrls);
+      const hasWork = diff.queue.length > 0;
+      const updateRun = {
+        startedAt: run.startedAt,
+        phase: hasWork ? 'extract' as const : 'done' as const,
+        newUrls: diff.newUrls,
+        changedUrls: 0,
+        removedUrls: diff.removedUrls,
+        ...(hasWork ? {} : { finishedAt: Date.now() }),
+      };
+      const updated = await storage.updateProject(id, {
+        status: hasWork ? 'content_scraping' : 'idle',
+        queue: diff.queue,
+        results: diff.results as any,
+        stats: { ...(project.stats as any), totalUrls: diff.results.length, endTime: Date.now() },
+        updateRun,
+        ...(hasWork && lockOwner ? { scrapeLock: { owner: lockOwner, expiresAt: Date.now() + 70000 } } : { scrapeLock: null }),
+      }, { expectedVersion: (project as any).version, enforceLockOwner: lockOwner ?? '' });
+      if (!updated) {
+        return res.status(409).json({ message: 'Project was modified concurrently', reason: 'version_conflict' });
+      }
+      console.log(`[FinishUpdate] Project ${id}: ${diff.newUrls} new, ${diff.removedUrls} removed, queue=${diff.queue.length}`);
+      res.json({ project: updated, summary: { newUrls: diff.newUrls, changedUrls: 0, removedUrls: diff.removedUrls, queued: diff.queue.length } });
+    } catch (err) {
+      console.error('[FinishUpdate] Error:', err);
+      res.status(500).json({ message: 'Failed to finish update' });
     }
   });
 

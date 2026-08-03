@@ -621,6 +621,41 @@ export default function Home() {
       }
       
       if (!crawlingProject.queue || crawlingProject.queue.length === 0) {
+        // Incremental update re-crawl finished: let the server diff results
+        // against reachable URLs (flags removed pages, queues new ones).
+        if ((crawlingProject as any).updateRun?.phase === 'discovery') {
+          try {
+            const res = await apiRequest('POST', `/api/projects/${crawlingProject.id}/finish-update`, { lockOwner: TAB_ID });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && data.summary) {
+              const s = data.summary;
+              toast({
+                title: t('updateStarted'),
+                description: (s.newUrls + s.removedUrls) === 0
+                  ? t('updateNoChanges')
+                  : `${s.newUrls} ${t('updateSummaryNew')}, ${s.removedUrls} ${t('updateSummaryRemoved')}`,
+              });
+            } else if (res.status === 409) {
+              // Another tab holds the lease or a concurrent write happened —
+              // refetch and let whoever owns the project finish the update.
+              console.warn('[FinishUpdate] Conflict (409), backing off:', data.message);
+            } else if (!res.ok) {
+              // Terminal failure (400/500): clear the update run so the loop
+              // doesn't retry forever, and return the project to idle.
+              console.error('[FinishUpdate] Failed:', res.status, data.message);
+              toast({ title: t('error'), description: data.message || 'Update failed', variant: 'destructive' });
+              await updateProjectMutation.mutateAsync({
+                id: crawlingProject.id,
+                updates: { status: 'idle', crawlDepths: {}, updateRun: null } as any,
+              });
+            }
+          } catch (err) {
+            // Network error: leave state untouched; the loop retries next tick.
+            console.error('[FinishUpdate] Network error, will retry:', err);
+          }
+          queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
+          return;
+        }
         await updateProjectMutation.mutateAsync({ 
           id: crawlingProject.id, 
           updates: { 
@@ -1081,6 +1116,38 @@ export default function Home() {
     }
   }, [activeProject, toast, t, refetchProjects]);
 
+  // Incremental update: re-discover URLs, then scrape only new/changed pages
+  const startUpdate = useCallback(async (projectId: number) => {
+    processingRef.current = false;
+    try {
+      const res = await apiRequest('POST', `/api/projects/${projectId}/start-update`, { lockOwner: TAB_ID });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.message || 'Failed to start update');
+      }
+      queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
+      await refetchProjects();
+      if (data.mode === 'crawl') {
+        toast({ title: t('updateStarted'), description: t('updateCrawlStarted') });
+      } else if (data.summary) {
+        const s = data.summary;
+        const total = s.newUrls + s.changedUrls + s.removedUrls;
+        toast({
+          title: t('updateStarted'),
+          description: total === 0
+            ? t('updateNoChanges')
+            : `${s.newUrls} ${t('updateSummaryNew')}, ${s.changedUrls} ${t('updateSummaryChanged')}, ${s.removedUrls} ${t('updateSummaryRemoved')}`,
+        });
+      }
+    } catch (err) {
+      toast({
+        title: t('error'),
+        description: err instanceof Error ? err.message : 'Failed to start update',
+        variant: 'destructive',
+      });
+    }
+  }, [toast, t, refetchProjects]);
+
   const [isSyncingErrors, setIsSyncingErrors] = useState(false);
   const [processAction, setProcessAction] = useState<'pause' | 'resume' | 'stop' | null>(null);
   const syncErrors = useCallback(async () => {
@@ -1468,6 +1535,7 @@ export default function Home() {
                           updates: { displayName: newName },
                         });
                       }}
+                      onUpdate={() => startUpdate(project.id)}
                       t={t}
                     />
                   ))}

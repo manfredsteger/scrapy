@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Globe, Trash2, ChevronRight, Pencil, Check, X, Loader2 } from 'lucide-react';
+import { Globe, Trash2, ChevronRight, Pencil, Check, X, Loader2, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import type { Project } from '@shared/schema';
@@ -16,10 +16,11 @@ interface ProjectCardProps {
   onSelect: () => void;
   onDelete: () => void;
   onRename: (newName: string) => void;
+  onUpdate?: () => void;
   t: (key: any) => string;
 }
 
-export default function ProjectCard({ project, onSelect, onDelete, onRename, t }: ProjectCardProps) {
+export default function ProjectCard({ project, onSelect, onDelete, onRename, onUpdate, t }: ProjectCardProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(project.displayName || project.domain);
 
@@ -115,15 +116,29 @@ export default function ProjectCard({ project, onSelect, onDelete, onRename, t }
             )}
           </div>
         </div>
-        <Button 
-          size="icon"
-          variant="ghost"
-          className="shrink-0 h-8 w-8 text-muted-foreground hover:text-destructive"
-          onClick={handleDelete}
-          data-testid="delete-project"
-        >
-          <Trash2 className="w-4 h-4" />
-        </Button>
+        <div className="flex items-center shrink-0">
+          {onUpdate && project.status === 'idle' && scrapedCount > 0 && (
+            <Button 
+              size="icon"
+              variant="ghost"
+              className="h-8 w-8 text-muted-foreground hover:text-primary"
+              title={t('updateProject')}
+              onClick={(e) => { e.stopPropagation(); onUpdate(); }}
+              data-testid={`update-project-${project.id}`}
+            >
+              <RefreshCw className="w-4 h-4" />
+            </Button>
+          )}
+          <Button 
+            size="icon"
+            variant="ghost"
+            className="h-8 w-8 text-muted-foreground hover:text-destructive"
+            onClick={handleDelete}
+            data-testid="delete-project"
+          >
+            <Trash2 className="w-4 h-4" />
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-3 gap-3 mb-4">

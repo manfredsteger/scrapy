@@ -1001,6 +1001,30 @@ export default function Home() {
     }
   }, [projects, processStep]);
 
+  // While another tab owns the scrape lock, poll periodically so this tab
+  // notices an expired lock (e.g. the owning tab was closed) without needing
+  // window focus, and seamlessly takes over processing.
+  useEffect(() => {
+    const active = projects.find(p => p.status === 'scraping' || p.status === 'content_scraping' || p.status === 'crawling');
+    if (!active || !isLockedByOtherTab(active)) return;
+    const timer = setInterval(async () => {
+      if (processingRef.current) return;
+      const result = await refetchProjects();
+      const fresh = result.data?.find(p => p.id === active.id);
+      if (
+        fresh &&
+        (fresh.status === 'scraping' || fresh.status === 'content_scraping' || fresh.status === 'crawling') &&
+        !isLockedByOtherTab(fresh) &&
+        !processingRef.current
+      ) {
+        console.log(`[Process] Lock on project ${fresh.id} expired, taking over processing`);
+        lockNotifiedRef.current.delete(fresh.id);
+        processStep();
+      }
+    }, 30000);
+    return () => clearInterval(timer);
+  }, [projects, refetchProjects, processStep]);
+
   const startContentScrape = useCallback(async () => {
     if (!activeProject) return;
     

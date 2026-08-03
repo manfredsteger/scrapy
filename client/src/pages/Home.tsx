@@ -40,6 +40,10 @@ import { apiRequest, queryClient } from '@/lib/queryClient';
 import type { Project, SitemapUrlEntry, ProjectSettings as ProjectSettingsType, SinglePage } from '@shared/schema';
 
 const BATCH_SIZE = 10;
+// Safety cap for crawl discovery: stop adding new URLs to the frontier once the
+// total of discovered + queued URLs reaches this bound, so parameterized links
+// (pagination, filters) can never grow the crawl without limit.
+const MAX_CRAWL_URLS = 20000;
 
 const TAB_ID = (() => {
   try {
@@ -674,8 +678,9 @@ export default function Home() {
               existingLocs.add(r.url);
             }
             
-            // Add discovered links to queue
+            // Add discovered links to queue (bounded by MAX_CRAWL_URLS)
             r.links.forEach((link: string) => {
+              if (newResults.length + newQueue.length >= MAX_CRAWL_URLS) return;
               if (!existingLocs.has(link) && !existingProcessed.has(link) && !existingQueue.has(link)) {
                 newQueue.push(link);
                 existingQueue.add(link);

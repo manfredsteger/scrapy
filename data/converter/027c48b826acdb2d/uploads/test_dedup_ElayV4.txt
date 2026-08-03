@@ -1,1 +1,0 @@
-Der RAG Pack Converter verarbeitet Dateien und erstellt strukturierte Chunks für AI-Systeme. Dies ist ein umfangreicher Test mit genügend Text um mehrere Chunks zu erzeugen. Die Verarbeitung umfasst Textextraktion, Chunking, Deduplizierung und optional AI-Anreicherung mit Embeddings und Metadaten.

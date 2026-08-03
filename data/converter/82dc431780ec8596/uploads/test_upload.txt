@@ -1,1 +1,0 @@
-Künstliche Intelligenz und Machine Learning sind die Zukunft der Technologie. Diese Datei dient als Test für den RAG Pack Converter mit Speicherfunktion.

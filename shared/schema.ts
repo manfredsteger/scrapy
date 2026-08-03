@@ -73,9 +73,9 @@ export const scrapedDataSchema = z.object({
 // Sitemap URL entry
 export const sitemapUrlEntrySchema = z.object({
   loc: z.string(),
-  lastmod: z.string().optional(),
-  changefreq: z.string().optional(),
-  priority: z.string().optional(),
+  lastmod: z.string().nullish(),
+  changefreq: z.string().nullish(),
+  priority: z.string().nullish(),
   images: z.array(imageMetadataSchema),
   videos: z.array(videoMetadataSchema),
   scrapedData: scrapedDataSchema.optional(),

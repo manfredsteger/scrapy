@@ -4000,6 +4000,21 @@ export async function registerRoutes(
   app.put(api.projects.update.path, async (req, res) => {
     try {
       const input = api.projects.update.input.parse(req.body);
+      // Safety: clients may send results derived from the "lite" detail endpoint,
+      // where scrapedData is stripped. Never let such a write erase scrapedData
+      // that is still stored inline in the DB — re-attach it by URL.
+      if (input.results && input.results.length > 0) {
+        const existing = await storage.getProject(Number(req.params.id));
+        const withData = (existing?.results || []).filter((r: any) => r.scrapedData);
+        if (withData.length > 0) {
+          const scrapedByLoc = new Map(withData.map((r: any) => [r.loc, r.scrapedData]));
+          input.results = input.results.map((r: any) =>
+            !r.scrapedData && scrapedByLoc.has(r.loc)
+              ? { ...r, scrapedData: scrapedByLoc.get(r.loc) }
+              : r
+          );
+        }
+      }
       const project = await storage.updateProject(Number(req.params.id), input);
       if (!project) {
         return res.status(404).json({ message: 'Project not found' });

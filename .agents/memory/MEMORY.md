@@ -1,0 +1,1 @@
+- [Lite project endpoints vs. client merges](lite-project-endpoints.md) — list/detail APIs strip results/processed/scrapedData; client read-modify-write loops must fetch full data or lose it.

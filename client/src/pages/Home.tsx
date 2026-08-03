@@ -427,10 +427,18 @@ export default function Home() {
 
       processingRef.current = true;
       lastActivityRef.current = Date.now();
-      const batchUrls = (scrapingProject.queue || []).slice(0, BATCH_SIZE);
-      const remainingQueue = (scrapingProject.queue || []).slice(BATCH_SIZE);
       
       try {
+        // IMPORTANT: The project list endpoint returns "lite" projects WITHOUT
+        // results/processed arrays. Merging against the lite object would
+        // overwrite all previously discovered URLs with just the current batch.
+        // Fetch the full project first and merge against that.
+        const detailRes = await apiRequest('GET', `/api/projects/${scrapingProject.id}`);
+        const fullScrapingProject: Project = await detailRes.json();
+        const scrapeQueue = fullScrapingProject.queue || [];
+        const batchUrls = scrapeQueue.slice(0, BATCH_SIZE);
+        const remainingQueue = scrapeQueue.slice(BATCH_SIZE);
+
         const results = await Promise.all(batchUrls.map(async (url) => {
           try {
             const res = await apiRequest('POST', '/api/scrape/sitemap', { url });
@@ -440,10 +448,10 @@ export default function Home() {
           }
         }));
 
-        let newResults = [...(scrapingProject.results || [])];
+        let newResults = [...(fullScrapingProject.results || [])];
         let newQueue = [...remainingQueue];
-        let newProcessed = [...(scrapingProject.processed || []), ...batchUrls];
-        let newErrors = [...(scrapingProject.errors || [])];
+        let newProcessed = [...(fullScrapingProject.processed || []), ...batchUrls];
+        let newErrors = [...(fullScrapingProject.errors || [])];
         let sitemapsProcessed = 0;
         let newSitemapsFound = 0;
 
@@ -483,9 +491,9 @@ export default function Home() {
             results: newResults,
             errors: newErrors,
             stats: {
-              ...scrapingProject.stats!,
-              processedSitemaps: (scrapingProject.stats?.processedSitemaps || 0) + sitemapsProcessed,
-              totalSitemaps: (scrapingProject.stats?.totalSitemaps || 0) + newSitemapsFound,
+              ...fullScrapingProject.stats!,
+              processedSitemaps: (fullScrapingProject.stats?.processedSitemaps || 0) + sitemapsProcessed,
+              totalSitemaps: (fullScrapingProject.stats?.totalSitemaps || 0) + newSitemapsFound,
               totalUrls: newResults.length,
               totalImages: newResults.reduce((acc, curr) => acc + (curr.images?.length || 0), 0),
             },
@@ -519,10 +527,18 @@ export default function Home() {
 
       processingRef.current = true;
       lastActivityRef.current = Date.now();
-      const batchUrls = (crawlingProject.queue || []).slice(0, BATCH_SIZE);
-      const remainingQueue = (crawlingProject.queue || []).slice(BATCH_SIZE);
       
       try {
+        // IMPORTANT: The project list endpoint returns "lite" projects WITHOUT
+        // results/processed arrays. Merging against the lite object would
+        // overwrite all previously crawled URLs with just the current batch
+        // (this froze the UI at "URLs found: 10"). Fetch the full project first.
+        const detailRes = await apiRequest('GET', `/api/projects/${crawlingProject.id}`);
+        const fullCrawlProject: Project = await detailRes.json();
+        const crawlQueue = fullCrawlProject.queue || [];
+        const batchUrls = crawlQueue.slice(0, BATCH_SIZE);
+        const remainingQueue = crawlQueue.slice(BATCH_SIZE);
+
         // Crawl pages and discover internal links
         const res = await apiRequest('POST', '/api/scrape/crawl', { 
           urls: batchUrls,
@@ -530,10 +546,10 @@ export default function Home() {
         });
         const { results } = await res.json();
 
-        let newResults = [...(crawlingProject.results || [])];
+        let newResults = [...(fullCrawlProject.results || [])];
         let newQueue = [...remainingQueue];
-        let newProcessed = [...(crawlingProject.processed || []), ...batchUrls];
-        let newErrors = [...(crawlingProject.errors || [])];
+        let newProcessed = [...(fullCrawlProject.processed || []), ...batchUrls];
+        let newErrors = [...(fullCrawlProject.errors || [])];
         
         const existingLocs = new Set(newResults.map(r => r.loc));
         const existingProcessed = new Set(newProcessed);
@@ -585,7 +601,7 @@ export default function Home() {
             results: newResults,
             errors: newErrors,
             stats: {
-              ...crawlingProject.stats!,
+              ...fullCrawlProject.stats!,
               totalUrls: newResults.length,
               totalImages: newResults.reduce((acc, curr) => acc + (curr.images?.length || 0), 0),
               totalVideos: newResults.reduce((acc, curr) => acc + (curr.videos?.length || 0), 0),

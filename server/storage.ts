@@ -96,7 +96,7 @@ export class DatabaseStorage implements IStorage {
   async getProjectLite(id: number): Promise<any | undefined> {
     const result = await db.execute(sql`
       SELECT 
-        id, domain, display_name, status, queue, errors, stats, 
+        id, domain, display_name, status, queue, processed, errors, stats, 
         project_settings, last_exported_at, exported_chunk_hashes,
         last_scraped, created_at,
         jsonb_array_length(COALESCE(chunks, '[]'::jsonb)) as chunk_count,
@@ -131,6 +131,7 @@ export class DatabaseStorage implements IStorage {
       displayName: row.display_name,
       status: row.status || 'idle',
       queue: row.queue || [],
+      processed: row.processed || [],
       errors: row.errors || [],
       stats: row.stats || null,
       projectSettings: row.project_settings || null,

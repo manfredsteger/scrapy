@@ -778,12 +778,25 @@ export default function Home() {
             },
           });
           
-          // Update caches for UI display
+          // Update caches for UI display. IMPORTANT: merge into the existing
+          // cache entries instead of replacing them. `contentScrapingProject`
+          // comes from the "lite" list endpoint (no results/scrapedData/
+          // scrapedCount) - writing it into the detail cache wholesale made
+          // the Scraped counter flash to 0 and the results list disappear
+          // until the next refetch.
           queryClient.setQueryData(['/api/projects'], (old: Project[] | undefined) => {
             if (!old) return old;
-            return old.map(p => p.id === contentScrapingProject.id ? updatedProject : p);
+            return old.map(p => p.id === contentScrapingProject.id
+              ? { ...p, queue: remainingQueue, errors: newErrors, stats: updatedProject.stats }
+              : p);
           });
-          queryClient.setQueryData(['/api/projects', contentScrapingProject.id], updatedProject);
+          // Scraped counts are NOT touched here: the mutation's invalidation
+          // refetches list + detail, and those carry the server-authoritative
+          // counts/result flags. Adding a local delta on top would double-count.
+          queryClient.setQueryData(['/api/projects', contentScrapingProject.id], (old: Project | undefined) => {
+            if (!old) return old;
+            return { ...old, queue: remainingQueue, errors: newErrors, stats: updatedProject.stats };
+          });
         } catch (updateErr) {
           console.error('[ProcessStep] Failed to save batch results:', updateErr);
         }
@@ -820,12 +833,18 @@ export default function Home() {
             },
           });
           
-          // Update caches for UI display
+          // Merge into caches (see note above - never overwrite the detail
+          // cache with a lite list object)
           queryClient.setQueryData(['/api/projects'], (old: Project[] | undefined) => {
             if (!old) return old;
-            return old.map(p => p.id === contentScrapingProject.id ? updatedErrorProject : p);
+            return old.map(p => p.id === contentScrapingProject.id
+              ? { ...p, queue: remainingQueue, errors: updatedErrorProject.errors }
+              : p);
           });
-          queryClient.setQueryData(['/api/projects', contentScrapingProject.id], updatedErrorProject);
+          queryClient.setQueryData(['/api/projects', contentScrapingProject.id], (old: Project | undefined) => {
+            if (!old) return old;
+            return { ...old, queue: remainingQueue, errors: updatedErrorProject.errors };
+          });
         } catch (updateErr) {
           console.error('[ProcessStep] Failed to update queue after batch error:', updateErr);
         }

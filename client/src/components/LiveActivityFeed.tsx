@@ -72,7 +72,11 @@ export default function LiveActivityFeed({ feed, processedCount, pagesPerMinute,
         ) : (
           <ul className="divide-y divide-border/40">
             {feed.map((entry, idx) => (
-              <li key={`${entry.timestamp}-${idx}`} className="flex items-center gap-2 px-3 py-1 text-xs" data-testid={`activity-entry-${idx}`}>
+              <li
+                key={`${entry.url}-${entry.timestamp}`}
+                className="flex items-center gap-2 px-3 py-1 text-xs animate-in fade-in slide-in-from-top-1 duration-300"
+                data-testid={`activity-entry-${idx}`}
+              >
                 {entry.ok ? (
                   <CheckCircle className="w-3 h-3 shrink-0 text-emerald-500" />
                 ) : entry.message ? (

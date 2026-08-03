@@ -41,6 +41,13 @@ import type { Project, SitemapUrlEntry, ProjectSettings as ProjectSettingsType, 
 
 const BATCH_SIZE = 10;
 
+// Guards against "zombie" processing loops: the batch loop re-schedules itself
+// via setTimeout closures. After a hot update (or remount) the OLD closure
+// would keep running alongside the new one, doubling requests and writing
+// stale data into the query cache. Each mount bumps the generation; loops
+// from older generations stop themselves.
+let scrapeLoopGeneration = 0;
+
 export default function Home() {
   const [, navigate] = useLocation();
   const { language, setLanguage, t, isLoading: langLoading } = useLanguage();
@@ -90,6 +97,10 @@ export default function Home() {
   // requested pause/stop boundary (the batch is simply discarded and re-done on resume).
   const pauseRequestedRef = useRef<Set<number>>(new Set());
   const contentQueueRef = useRef<{projectId: number, queue: string[]} | null>(null);
+  const loopGenRef = useRef(0);
+  useEffect(() => {
+    loopGenRef.current = ++scrapeLoopGeneration;
+  }, []);
   // Live progress: rolling feed of recently processed URLs + session stats for rate/ETA
   const [liveFeed, setLiveFeed] = useState<LiveActivityEntry[]>([]);
   const [sessionStats, setSessionStats] = useState<{ projectId: number; startTime: number; processedCount: number } | null>(null);
@@ -422,6 +433,11 @@ export default function Home() {
   });
 
   const processStep = useCallback(async () => {
+    // Stale loop from a previous mount/hot-update? Stop silently.
+    if (loopGenRef.current !== scrapeLoopGeneration) {
+      console.log('[Process] Stale loop generation detected, stopping this loop');
+      return;
+    }
     if (processingRef.current) return;
     
     const scrapingProject = projects.find(p => p.status === 'scraping');

@@ -469,10 +469,11 @@ async function extractPdfText(buffer: Buffer): Promise<{ text: string; metadata:
     const { PDFParse } = await import('pdf-parse');
     const uint8 = new Uint8Array(buffer);
     const parser = new PDFParse(uint8);
-    await parser.load();
+    // `load` and `doc` are private in the pdf-parse typings but used intentionally here.
+    await (parser as any).load();
     const textResult = await parser.getText();
     const info = await parser.getInfo();
-    const numPages = parser.doc?.numPages || 0;
+    const numPages = (parser as any).doc?.numPages || 0;
 
     let fullText = '';
     if (textResult && textResult.pages && Array.isArray(textResult.pages)) {
@@ -5407,7 +5408,7 @@ export async function registerRoutes(
       
       // Collect all updates in memory first to avoid race conditions
       // Map: url -> { scrapedData?, errorStatus?, errorMessage? }
-      const urlUpdates = new Map<string, { scrapedData?: any; errorStatus?: string; errorMessage?: string }>();
+      const urlUpdates = new Map<string, { scrapedData?: any; hasScrapedData?: boolean; status?: string; errorStatus?: string; errorMessage?: string }>();
       
       const results = await Promise.all(urls.map(async (url) => {
         try {
@@ -7072,6 +7073,7 @@ export async function registerRoutes(
         if (clientDisconnected) break;
         const url = result.loc;
         const data = result.scrapedData;
+        if (!data) continue; // results are pre-filtered, but narrow the type for safety
 
         try {
           const pageDir = fileStorage.getProjectPageDir(projectId, project.domain, url);

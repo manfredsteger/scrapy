@@ -1338,7 +1338,7 @@ export default function Home() {
                           variant="default"
                           size="sm"
                           className="gap-2"
-                          onClick={() => setConvertDialog({ open: true, projectName: '' })}
+                          onClick={() => setConvertDialog({ open: true, projectName: '', deleteSinglePages: false })}
                           data-testid="button-convert-to-project"
                         >
                           <FolderPlus className="w-4 h-4" />

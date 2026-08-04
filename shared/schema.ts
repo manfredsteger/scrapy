@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, timestamp, jsonb, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, timestamp, jsonb, boolean, uniqueIndex, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -151,6 +151,23 @@ export const projects = pgTable("projects", {
   // counts (new/changed/removed). Null when no update run has been started.
   updateRun: jsonb("update_run").$type<z.infer<typeof updateRunSchema> | null>().default(null),
 });
+
+// Normalized crawl results: one row per discovered URL instead of one giant
+// jsonb array on the project row. Appends become cheap row inserts (no
+// TOAST rewrite of a multi-MB value per batch) and dedup is enforced by the
+// unique (project_id, loc) index. The legacy projects.results column is kept
+// empty ('[]') after migration and only exists for backward compatibility.
+export const projectResults = pgTable("project_results", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull(),
+  loc: text("loc").notNull(),
+  entry: jsonb("entry").$type<z.infer<typeof sitemapUrlEntrySchema>>().notNull(),
+}, (t) => [
+  uniqueIndex("project_results_project_loc_unique").on(t.projectId, t.loc),
+  index("project_results_project_idx").on(t.projectId),
+]);
+
+export type ProjectResultRow = typeof projectResults.$inferSelect;
 
 export const insertProjectSchema = createInsertSchema(projects).omit({ 
   id: true, 

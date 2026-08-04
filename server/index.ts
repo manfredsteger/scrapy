@@ -61,6 +61,16 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // One-time (idempotent) migration: move legacy monolithic projects.results
+  // jsonb arrays into the normalized project_results table.
+  try {
+    const { storage } = await import("./storage");
+    const migrated = await storage.migrateLegacyResults();
+    if (migrated > 0) log(`migrated ${migrated} project(s) to normalized results table`);
+  } catch (err) {
+    console.error("Legacy results migration failed:", err);
+  }
+
   await registerRoutes(httpServer, app);
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {

@@ -1,6 +1,6 @@
 import { db } from "./db";
-import { projects, settings, singlePages, ragPackExports, converterExports, type Project, type InsertProject, type Settings, type InsertSettings, type SinglePage, type InsertSinglePage, type RagPackExport, type InsertRagPackExport, type ConverterExport, type InsertConverterExport } from "@shared/schema";
-import { eq, desc, sql, and, lt } from "drizzle-orm";
+import { projects, projectResults, settings, singlePages, ragPackExports, converterExports, type Project, type InsertProject, type Settings, type InsertSettings, type SinglePage, type InsertSinglePage, type RagPackExport, type InsertRagPackExport, type ConverterExport, type InsertConverterExport } from "@shared/schema";
+import { eq, desc, sql, and, lt, asc, inArray } from "drizzle-orm";
 
 // Lightweight project type for list views (without large data fields)
 export interface ProjectLite {
@@ -64,9 +64,23 @@ export interface IStorage {
   deleteConverterExport(id: number): Promise<void>;
 }
 
+const RESULT_INSERT_BATCH = 200;
 export class DatabaseStorage implements IStorage {
   async getProjects(): Promise<Project[]> {
-    return await db.select().from(projects).orderBy(desc(projects.lastScraped));
+    const rows = await db.select().from(projects).orderBy(desc(projects.lastScraped));
+    if (rows.length === 0) return rows;
+    const ids = rows.map(r => r.id);
+    const entries = await db.select({ projectId: projectResults.projectId, entry: projectResults.entry })
+      .from(projectResults)
+      .where(inArray(projectResults.projectId, ids))
+      .orderBy(asc(projectResults.id));
+    const byProject = new Map<number, any[]>();
+    for (const e of entries) {
+      const list = byProject.get(e.projectId) || [];
+      list.push(e.entry);
+      byProject.set(e.projectId, list);
+    }
+    return rows.map(r => ({ ...r, results: byProject.get(r.id) || [] }));
   }
 
   // Optimized: Get project list with counts computed in SQL (no large data transfer)
@@ -75,14 +89,16 @@ export class DatabaseStorage implements IStorage {
       SELECT 
         id, domain, display_name, status, queue, errors, stats, 
         project_settings, last_scraped, created_at, version, scrape_lock, update_run,
-        jsonb_array_length(COALESCE(results, '[]'::jsonb)) as url_count,
-        (SELECT count(*) FROM jsonb_array_elements(COALESCE(results, '[]'::jsonb)) r 
-         WHERE (r->>'hasScrapedData')::boolean = true 
-            OR (r->'scrapedData' IS NOT NULL AND jsonb_typeof(r->'scrapedData') = 'object')) as scraped_count,
-        (SELECT count(*) FROM jsonb_array_elements(COALESCE(results, '[]'::jsonb)) r 
-         WHERE r->>'status' = 'failed'
-            OR r->>'errorStatus' IS NOT NULL 
-            OR (r->>'errorMessage' IS NOT NULL AND (r->>'hasScrapedData')::boolean IS NOT TRUE AND (r->'scrapedData' IS NULL OR jsonb_typeof(r->'scrapedData') != 'object'))) as failed_count
+        (SELECT count(*) FROM project_results pr WHERE pr.project_id = projects.id) as url_count,
+        (SELECT count(*) FROM project_results pr 
+         WHERE pr.project_id = projects.id
+           AND ((pr.entry->>'hasScrapedData')::boolean = true 
+            OR (pr.entry->'scrapedData' IS NOT NULL AND jsonb_typeof(pr.entry->'scrapedData') = 'object'))) as scraped_count,
+        (SELECT count(*) FROM project_results pr 
+         WHERE pr.project_id = projects.id
+           AND (pr.entry->>'status' = 'failed'
+            OR pr.entry->>'errorStatus' IS NOT NULL 
+            OR (pr.entry->>'errorMessage' IS NOT NULL AND (pr.entry->>'hasScrapedData')::boolean IS NOT TRUE AND (pr.entry->'scrapedData' IS NULL OR jsonb_typeof(pr.entry->'scrapedData') != 'object')))) as failed_count
       FROM projects 
       ORDER BY last_scraped DESC NULLS LAST
     `);
@@ -109,7 +125,8 @@ export class DatabaseStorage implements IStorage {
 
   async getProject(id: number): Promise<Project | undefined> {
     const [project] = await db.select().from(projects).where(eq(projects.id, id));
-    return project;
+    if (!project) return undefined;
+    return { ...project, results: await this.loadResults(db, id) };
   }
 
   // Optimized: Get single project with results stripped of scrapedData (computed in SQL)
@@ -124,21 +141,23 @@ export class DatabaseStorage implements IStorage {
         (
           SELECT jsonb_agg(
             jsonb_build_object(
-              'loc', r->>'loc',
-              'lastmod', r->>'lastmod',
-              'changefreq', r->>'changefreq',
-              'priority', r->>'priority',
-              'images', COALESCE(r->'images', '[]'::jsonb),
-              'videos', COALESCE(r->'videos', '[]'::jsonb),
-              'hasScrapedData', COALESCE((r->>'hasScrapedData')::boolean, r->'scrapedData' IS NOT NULL AND jsonb_typeof(r->'scrapedData') = 'object'),
-              'status', COALESCE(r->>'status', CASE WHEN (r->>'hasScrapedData')::boolean = true THEN 'scraped' WHEN r->>'errorMessage' IS NOT NULL THEN 'failed' ELSE 'pending' END),
+              'loc', pr.entry->>'loc',
+              'lastmod', pr.entry->>'lastmod',
+              'changefreq', pr.entry->>'changefreq',
+              'priority', pr.entry->>'priority',
+              'images', COALESCE(pr.entry->'images', '[]'::jsonb),
+              'videos', COALESCE(pr.entry->'videos', '[]'::jsonb),
+              'hasScrapedData', COALESCE((pr.entry->>'hasScrapedData')::boolean, pr.entry->'scrapedData' IS NOT NULL AND jsonb_typeof(pr.entry->'scrapedData') = 'object'),
+              'status', COALESCE(pr.entry->>'status', CASE WHEN (pr.entry->>'hasScrapedData')::boolean = true THEN 'scraped' WHEN pr.entry->>'errorMessage' IS NOT NULL THEN 'failed' ELSE 'pending' END),
               'pdfCount', 0,
-              'errorStatus', r->>'errorStatus',
-              'errorMessage', r->>'errorMessage',
-              'removedFromSource', COALESCE((r->>'removedFromSource')::boolean, false)
+              'errorStatus', pr.entry->>'errorStatus',
+              'errorMessage', pr.entry->>'errorMessage',
+              'removedFromSource', COALESCE((pr.entry->>'removedFromSource')::boolean, false)
             )
+            ORDER BY pr.id
           )
-          FROM jsonb_array_elements(COALESCE(results, '[]'::jsonb)) r
+          FROM project_results pr
+          WHERE pr.project_id = projects.id
         ) as results
       FROM projects 
       WHERE id = ${id}
@@ -172,11 +191,19 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createProject(insertProject: InsertProject): Promise<Project> {
-    const [project] = await db.insert(projects).values({
-      ...insertProject,
-      lastScraped: new Date(),
-    }).returning();
-    return project;
+    const { results: initialResults, ...rest } = insertProject as any;
+    return await db.transaction(async (tx) => {
+      const [project] = await tx.insert(projects).values({
+        ...rest,
+        results: [], // legacy column stays empty; rows live in project_results
+        lastScraped: new Date(),
+      }).returning();
+      const entries = Array.isArray(initialResults) ? initialResults : [];
+      if (entries.length > 0) {
+        await this.insertResultRows(tx, project.id, entries);
+      }
+      return { ...project, results: entries };
+    });
   }
 
   // Updates a project, always incrementing its version. The optional guard makes
@@ -203,11 +230,23 @@ export class DatabaseStorage implements IStorage {
         OR ${projects.scrapeLock}->>'owner' = ${guard.enforceLockOwner}
       )`);
     }
-    const [project] = await db.update(projects)
-      .set({ ...updates, lastScraped: new Date(), version: sql`${projects.version} + 1` })
-      .where(and(...conditions))
-      .returning();
-    return project;
+    // Results live in the normalized project_results table now. Strip them
+    // from the project-row update and replace the rows only after the guarded
+    // UPDATE succeeded (same transaction, so CAS/lock failures change nothing).
+    const { results: newResults, ...rowUpdates } = updates as any;
+    const hasResultsUpdate = 'results' in (updates as any);
+    return await db.transaction(async (tx) => {
+      const [project] = await tx.update(projects)
+        .set({ ...rowUpdates, lastScraped: new Date(), version: sql`${projects.version} + 1` })
+        .where(and(...conditions))
+        .returning();
+      if (!project) return undefined;
+      if (hasResultsUpdate) {
+        await this.replaceResultRows(tx, id, Array.isArray(newResults) ? newResults : []);
+        return { ...project, results: Array.isArray(newResults) ? newResults : [] };
+      }
+      return { ...project, results: await this.loadResults(tx, id) };
+    });
   }
 
   // Lightweight settings/status load — avoids pulling the multi-MB
@@ -235,8 +274,9 @@ export class DatabaseStorage implements IStorage {
         id, status, domain, queue, crawl_depths, processed, errors, stats,
         project_settings, version, scrape_lock, update_run,
         (
-          SELECT COALESCE(jsonb_agg(r->>'loc'), '[]'::jsonb)
-          FROM jsonb_array_elements(COALESCE(results, '[]'::jsonb)) r
+          SELECT COALESCE(jsonb_agg(pr.loc ORDER BY pr.id), '[]'::jsonb)
+          FROM project_results pr
+          WHERE pr.project_id = projects.id
         ) AS result_locs
       FROM projects
       WHERE id = ${id}
@@ -279,94 +319,80 @@ export class DatabaseStorage implements IStorage {
   ): Promise<{ version: number } | undefined> {
     const now = Date.now();
     const processedJson = JSON.stringify(delta.processedAppend);
-    const resultsJson = JSON.stringify(delta.resultsAppend);
-    const result = await db.execute(sql`
-      WITH cur AS (
-        SELECT
-          COALESCE(processed, '[]'::jsonb) AS processed,
-          COALESCE(results, '[]'::jsonb) AS results
-        FROM projects
-        WHERE id = ${id}
-        FOR UPDATE
-      ),
-      -- Dedupe the appends: drop entries already persisted (retried/replayed
-      -- deltas) and duplicates within the batch itself, keeping first occurrence.
-      filtered AS (
-        SELECT
-          (
+    return await db.transaction(async (tx) => {
+      // Guarded UPDATE of the small per-project fields. New results are NOT
+      // appended to the monolithic jsonb anymore — they become individual rows
+      // below, so postgres never rewrites a multi-MB TOAST value per batch.
+      // The processed append is deduped in SQL against the stored array and
+      // within the batch itself (retried/replayed deltas must be idempotent);
+      // results dedup is handled by the unique (project_id, loc) index.
+      const result = await tx.execute(sql`
+        UPDATE projects SET
+          queue = ${JSON.stringify(delta.queue)}::jsonb,
+          crawl_depths = ${JSON.stringify(delta.crawlDepths)}::jsonb,
+          processed = COALESCE(processed, '[]'::jsonb) || (
             SELECT COALESCE(jsonb_agg(t.e ORDER BY t.ord), '[]'::jsonb)
             FROM jsonb_array_elements(${processedJson}::jsonb) WITH ORDINALITY AS t(e, ord)
-            WHERE NOT cur.processed @> jsonb_build_array(t.e)
+            WHERE NOT COALESCE(projects.processed, '[]'::jsonb) @> jsonb_build_array(t.e)
               AND t.ord = (
                 SELECT min(t2.ord)
                 FROM jsonb_array_elements(${processedJson}::jsonb) WITH ORDINALITY AS t2(e, ord)
                 WHERE t2.e = t.e
               )
-          ) AS processed_new,
-          (
-            SELECT COALESCE(jsonb_agg(r.e ORDER BY r.ord), '[]'::jsonb)
-            FROM jsonb_array_elements(${resultsJson}::jsonb) WITH ORDINALITY AS r(e, ord)
-            WHERE NOT EXISTS (
-                SELECT 1 FROM jsonb_array_elements(cur.results) x
-                WHERE x->>'loc' = r.e->>'loc'
-              )
-              AND r.ord = (
-                SELECT min(r2.ord)
-                FROM jsonb_array_elements(${resultsJson}::jsonb) WITH ORDINALITY AS r2(e, ord)
-                WHERE r2.e->>'loc' = r.e->>'loc'
-              )
-          ) AS results_new
-        FROM cur
-      )
-      UPDATE projects SET
-        queue = ${JSON.stringify(delta.queue)}::jsonb,
-        crawl_depths = ${JSON.stringify(delta.crawlDepths)}::jsonb,
-        processed = cur.processed || filtered.processed_new,
-        results = cur.results || filtered.results_new,
-        errors = COALESCE(errors, '[]'::jsonb) || ${JSON.stringify(delta.errorsAppend)}::jsonb,
-        -- totalUrls is computed authoritatively from the post-append results
-        -- length, so client-side stat drift can never accumulate.
-        stats = jsonb_set(
-          ${JSON.stringify(delta.stats)}::jsonb,
+          ),
+          errors = COALESCE(errors, '[]'::jsonb) || ${JSON.stringify(delta.errorsAppend)}::jsonb,
+          stats = ${JSON.stringify(delta.stats)}::jsonb,
+          scrape_lock = ${JSON.stringify(delta.scrapeLock)}::jsonb,
+          last_scraped = NOW(),
+          version = version + 1
+        WHERE id = ${id}
+          AND version = ${guard.expectedVersion}
+          AND (
+            scrape_lock IS NULL
+            OR jsonb_typeof(scrape_lock) = 'null'
+            OR COALESCE((scrape_lock->>'expiresAt')::bigint, 0) <= ${now}
+            OR scrape_lock->>'owner' = ${guard.enforceLockOwner}
+          )
+        RETURNING version
+      `);
+      if (result.rows.length === 0) return undefined;
+      const version = parseInt((result.rows[0] as any).version);
+
+      // Append-only inserts; the unique (project_id, loc) index dedups
+      // against existing rows and concurrent writers.
+      if (delta.resultsAppend.length > 0) {
+        await this.insertResultRows(tx, id, delta.resultsAppend);
+      }
+
+      // totalUrls is computed authoritatively from the row count, so
+      // client-side stat drift can never accumulate.
+      await tx.execute(sql`
+        UPDATE projects SET stats = jsonb_set(
+          COALESCE(stats, '{}'::jsonb),
           '{totalUrls}',
-          to_jsonb(jsonb_array_length(cur.results || filtered.results_new))
-        ),
-        scrape_lock = ${JSON.stringify(delta.scrapeLock)}::jsonb,
-        last_scraped = NOW(),
-        version = version + 1
-      FROM cur, filtered
-      WHERE id = ${id}
-        AND version = ${guard.expectedVersion}
-        AND (
-          scrape_lock IS NULL
-          OR jsonb_typeof(scrape_lock) = 'null'
-          OR COALESCE((scrape_lock->>'expiresAt')::bigint, 0) <= ${now}
-          OR scrape_lock->>'owner' = ${guard.enforceLockOwner}
+          to_jsonb((SELECT count(*) FROM project_results WHERE project_id = ${id}))
         )
-      RETURNING projects.version
-    `);
-    if (result.rows.length === 0) return undefined;
-    return { version: parseInt((result.rows[0] as any).version) };
+        WHERE id = ${id}
+      `);
+
+      return { version };
+    });
   }
 
   async deleteProject(id: number): Promise<void> {
-    await db.delete(projects).where(eq(projects.id, id));
+    await db.transaction(async (tx) => {
+      await tx.delete(projectResults).where(eq(projectResults.projectId, id));
+      await tx.delete(projects).where(eq(projects.id, id));
+    });
   }
 
   // Get scraped data for a single URL in a project (lazy loading for content preview)
   async getProjectUrlScrapedData(projectId: number, urlLoc: string): Promise<any | null> {
-    const result = await db.execute(sql`
-      SELECT r.value as url_entry
-      FROM projects p,
-           jsonb_array_elements(COALESCE(p.results, '[]'::jsonb)) r
-      WHERE p.id = ${projectId}
-        AND r.value->>'loc' = ${urlLoc}
-      LIMIT 1
-    `);
-    
-    if (result.rows.length === 0) return null;
-    const row = result.rows[0] as any;
-    return row.url_entry;
+    const [row] = await db.select({ entry: projectResults.entry })
+      .from(projectResults)
+      .where(and(eq(projectResults.projectId, projectId), eq(projectResults.loc, urlLoc)))
+      .limit(1);
+    return row ? row.entry : null;
   }
 
   async getSetting(key: string): Promise<Settings | undefined> {
@@ -471,6 +497,74 @@ export class DatabaseStorage implements IStorage {
 
   async deleteConverterExport(id: number): Promise<void> {
     await db.delete(converterExports).where(eq(converterExports.id, id));
+  }
+
+  // ---- Normalized results helpers -------------------------------------
+
+  // Load a project's full results array from the normalized table (insertion order).
+  private async loadResults(dbOrTx: any, projectId: number): Promise<any[]> {
+    const rows = await dbOrTx.select({ entry: projectResults.entry })
+      .from(projectResults)
+      .where(eq(projectResults.projectId, projectId))
+      .orderBy(asc(projectResults.id));
+    return rows.map((r: any) => r.entry);
+  }
+
+  // Insert result entries as rows. Dedup within the given array (last wins)
+  // and against existing rows via ON CONFLICT DO NOTHING.
+  private async insertResultRows(dbOrTx: any, projectId: number, entries: any[]): Promise<void> {
+    const byLoc = new Map<string, any>();
+    for (const e of entries) {
+      if (e && typeof e.loc === 'string' && e.loc.length > 0) byLoc.set(e.loc, e);
+    }
+    const deduped = Array.from(byLoc.values());
+    for (let i = 0; i < deduped.length; i += RESULT_INSERT_BATCH) {
+      const batch = deduped.slice(i, i + RESULT_INSERT_BATCH);
+      await dbOrTx.insert(projectResults)
+        .values(batch.map(e => ({ projectId, loc: e.loc, entry: e })))
+        .onConflictDoNothing({ target: [projectResults.projectId, projectResults.loc] });
+    }
+  }
+
+  // Replace all result rows of a project (used by wholesale writes like
+  // PUT /api/projects/:id and update-diff merges).
+  private async replaceResultRows(dbOrTx: any, projectId: number, entries: any[]): Promise<void> {
+    await dbOrTx.delete(projectResults).where(eq(projectResults.projectId, projectId));
+    await this.insertResultRows(dbOrTx, projectId, entries);
+  }
+
+  // One-time migration: move any legacy monolithic projects.results jsonb
+  // arrays into the normalized project_results table, then blank the column.
+  // Idempotent and safe to run on every startup.
+  async migrateLegacyResults(): Promise<number> {
+    const legacy = await db.execute(sql`
+      SELECT id FROM projects
+      WHERE jsonb_array_length(COALESCE(results, '[]'::jsonb)) > 0
+    `);
+    let migrated = 0;
+    for (const row of legacy.rows as any[]) {
+      const id = row.id;
+      await db.transaction(async (tx) => {
+        // Preserve original array order; keep the first occurrence per loc.
+        await tx.execute(sql`
+          INSERT INTO project_results (project_id, loc, entry)
+          SELECT ${id}, s.loc, s.r
+          FROM (
+            SELECT DISTINCT ON (t.r->>'loc') t.r->>'loc' AS loc, t.r AS r, t.ord AS ord
+            FROM projects p,
+                 jsonb_array_elements(p.results) WITH ORDINALITY AS t(r, ord)
+            WHERE p.id = ${id} AND t.r->>'loc' IS NOT NULL
+            ORDER BY t.r->>'loc', t.ord
+          ) s
+          ORDER BY s.ord
+          ON CONFLICT (project_id, loc) DO NOTHING
+        `);
+        await tx.execute(sql`UPDATE projects SET results = '[]'::jsonb WHERE id = ${id}`);
+      });
+      migrated++;
+      console.log(`[ResultsMigration] Project ${id}: legacy results moved to project_results`);
+    }
+    return migrated;
   }
 }
 

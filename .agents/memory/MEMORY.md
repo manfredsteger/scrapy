@@ -1,3 +1,4 @@
 - [Lite project endpoints vs. client merges](lite-project-endpoints.md) — list/detail APIs strip results/processed/scrapedData; client read-modify-write loops must fetch full data or lose it.
 - [Incremental project update](incremental-update.md) — removal is a reversible flag, never a delete; abort diffs on incomplete discovery; pin jsonb insert types via .extend().
+- [Normalized crawl results](normalized-results.md) — results live in project_results rows (unique project_id+loc), not projects.results jsonb; only write via the storage layer.
 - [Project write concurrency](project-write-concurrency.md) — scrape progress writes must be atomically guarded (lease + version) in the UPDATE itself; treat conflicts as "discard batch and refetch".

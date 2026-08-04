@@ -625,7 +625,14 @@ export default function Home() {
         // against reachable URLs (flags removed pages, queues new ones).
         if ((crawlingProject as any).updateRun?.phase === 'discovery') {
           try {
-            const res = await apiRequest('POST', `/api/projects/${crawlingProject.id}/finish-update`, { lockOwner: TAB_ID });
+            // Raw fetch: apiRequest throws on non-OK, but we need the status
+            // code to distinguish terminal failures from transient conflicts.
+            const res = await fetch(`/api/projects/${crawlingProject.id}/finish-update`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ lockOwner: TAB_ID }),
+              credentials: 'include',
+            });
             const data = await res.json().catch(() => ({}));
             if (res.ok && data.summary) {
               const s = data.summary;
@@ -850,7 +857,10 @@ export default function Home() {
           console.log(`[ProcessStep] Scheduling next batch in 1s, ${queueLength} remaining`);
           // Schedule first, then release lock
           setTimeout(() => {
-            processStep();
+            processStep().catch(err => {
+              console.error('[Process] Step failed, will retry:', err);
+              processingRef.current = false;
+            });
           }, 1000);
           // Release lock only after timer is set
           processingRef.current = false;
@@ -1057,7 +1067,14 @@ export default function Home() {
     const active = projects.find(p => p.status === 'scraping' || p.status === 'content_scraping' || p.status === 'crawling');
     if (active && !processingRef.current) {
       const delay = active.status === 'crawling' ? 800 : (active.status === 'scraping' ? 500 : 1000);
-      const timer = setTimeout(processStep, delay);
+      // Never let a transient request failure (e.g. 502 during a server
+      // restart) escape as an unhandled rejection — log and retry next tick.
+      const timer = setTimeout(() => {
+        processStep().catch(err => {
+          console.error('[Process] Step failed, will retry:', err);
+          processingRef.current = false;
+        });
+      }, delay);
       return () => clearTimeout(timer);
     }
   }, [projects, processStep]);
@@ -1080,7 +1097,10 @@ export default function Home() {
       ) {
         console.log(`[Process] Lock on project ${fresh.id} expired, taking over processing`);
         lockNotifiedRef.current.delete(fresh.id);
-        processStep();
+        processStep().catch(err => {
+          console.error('[Process] Step failed, will retry:', err);
+          processingRef.current = false;
+        });
       }
     }, 30000);
     return () => clearInterval(timer);

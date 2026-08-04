@@ -1300,6 +1300,24 @@ export default function Home() {
     return () => clearInterval(timer);
   }, [projects, refetchProjects, processStep]);
 
+  // When the detail view is open and the active project's lock is held by
+  // another tab, schedule a one-shot timer that fires the moment the lock TTL
+  // elapses.  The state bump forces a re-render so `isLockedByOtherTab` (which
+  // calls Date.now() inline) re-evaluates to false and the banner disappears
+  // automatically — without waiting for the next manual refetch or poll cycle.
+  const [, setLockExpiredTick] = useState(0);
+  useEffect(() => {
+    if (!activeProject) return;
+    const lock = activeProject.scrapeLock as { owner: string; expiresAt: number } | null | undefined;
+    if (!lock || lock.owner === TAB_ID) return;
+    const msUntilExpiry = lock.expiresAt - Date.now();
+    if (msUntilExpiry <= 0) return; // already expired — banner already hidden
+    const timer = setTimeout(() => {
+      setLockExpiredTick(n => n + 1);
+    }, msUntilExpiry);
+    return () => clearTimeout(timer);
+  }, [activeProject]);
+
   const startContentScrape = useCallback(async () => {
     if (!activeProject) return;
     

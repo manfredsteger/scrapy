@@ -278,23 +278,63 @@ export class DatabaseStorage implements IStorage {
     guard: { expectedVersion: number; enforceLockOwner: string },
   ): Promise<{ version: number } | undefined> {
     const now = Date.now();
+    const processedJson = JSON.stringify(delta.processedAppend);
+    const resultsJson = JSON.stringify(delta.resultsAppend);
     const result = await db.execute(sql`
+      WITH cur AS (
+        SELECT
+          COALESCE(processed, '[]'::jsonb) AS processed,
+          COALESCE(results, '[]'::jsonb) AS results
+        FROM projects
+        WHERE id = ${id}
+        FOR UPDATE
+      ),
+      -- Dedupe the appends: drop entries already persisted (retried/replayed
+      -- deltas) and duplicates within the batch itself, keeping first occurrence.
+      filtered AS (
+        SELECT
+          (
+            SELECT COALESCE(jsonb_agg(t.e ORDER BY t.ord), '[]'::jsonb)
+            FROM jsonb_array_elements(${processedJson}::jsonb) WITH ORDINALITY AS t(e, ord)
+            WHERE NOT cur.processed @> jsonb_build_array(t.e)
+              AND t.ord = (
+                SELECT min(t2.ord)
+                FROM jsonb_array_elements(${processedJson}::jsonb) WITH ORDINALITY AS t2(e, ord)
+                WHERE t2.e = t.e
+              )
+          ) AS processed_new,
+          (
+            SELECT COALESCE(jsonb_agg(r.e ORDER BY r.ord), '[]'::jsonb)
+            FROM jsonb_array_elements(${resultsJson}::jsonb) WITH ORDINALITY AS r(e, ord)
+            WHERE NOT EXISTS (
+                SELECT 1 FROM jsonb_array_elements(cur.results) x
+                WHERE x->>'loc' = r.e->>'loc'
+              )
+              AND r.ord = (
+                SELECT min(r2.ord)
+                FROM jsonb_array_elements(${resultsJson}::jsonb) WITH ORDINALITY AS r2(e, ord)
+                WHERE r2.e->>'loc' = r.e->>'loc'
+              )
+          ) AS results_new
+        FROM cur
+      )
       UPDATE projects SET
         queue = ${JSON.stringify(delta.queue)}::jsonb,
         crawl_depths = ${JSON.stringify(delta.crawlDepths)}::jsonb,
-        processed = COALESCE(processed, '[]'::jsonb) || ${JSON.stringify(delta.processedAppend)}::jsonb,
-        results = COALESCE(results, '[]'::jsonb) || ${JSON.stringify(delta.resultsAppend)}::jsonb,
+        processed = cur.processed || filtered.processed_new,
+        results = cur.results || filtered.results_new,
         errors = COALESCE(errors, '[]'::jsonb) || ${JSON.stringify(delta.errorsAppend)}::jsonb,
         -- totalUrls is computed authoritatively from the post-append results
         -- length, so client-side stat drift can never accumulate.
         stats = jsonb_set(
           ${JSON.stringify(delta.stats)}::jsonb,
           '{totalUrls}',
-          to_jsonb(jsonb_array_length(COALESCE(results, '[]'::jsonb) || ${JSON.stringify(delta.resultsAppend)}::jsonb))
+          to_jsonb(jsonb_array_length(cur.results || filtered.results_new))
         ),
         scrape_lock = ${JSON.stringify(delta.scrapeLock)}::jsonb,
         last_scraped = NOW(),
         version = version + 1
+      FROM cur, filtered
       WHERE id = ${id}
         AND version = ${guard.expectedVersion}
         AND (
@@ -303,7 +343,7 @@ export class DatabaseStorage implements IStorage {
           OR COALESCE((scrape_lock->>'expiresAt')::bigint, 0) <= ${now}
           OR scrape_lock->>'owner' = ${guard.enforceLockOwner}
         )
-      RETURNING version
+      RETURNING projects.version
     `);
     if (result.rows.length === 0) return undefined;
     return { version: parseInt((result.rows[0] as any).version) };

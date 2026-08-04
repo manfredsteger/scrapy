@@ -324,6 +324,8 @@ export const translations = {
     summariesCount: 'Zusammenfassungen',
     categories: 'Kategorien',
     entities: 'Entitäten',
+    activeSettingsParallel: 'parallel',
+    activeSettingsDelay: 'Delay',
   },
   en: {
     appTitle: 'MapScraper Pro',
@@ -648,6 +650,8 @@ export const translations = {
     summariesCount: 'Summaries',
     categories: 'Categories',
     entities: 'Entities',
+    activeSettingsParallel: 'parallel',
+    activeSettingsDelay: 'Delay',
   },
 } as const;
 

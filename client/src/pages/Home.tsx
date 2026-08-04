@@ -2232,6 +2232,9 @@ export default function Home() {
                           {isPaused && (
                             <Badge variant="secondary" className="text-[10px]">{t('paused')}</Badge>
                           )}
+                          <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-full" data-testid="active-settings-badge">
+                            ⚡ {activeProject?.projectSettings?.scraping?.parallelRequests ?? 10} {t('activeSettingsParallel')} · {activeProject?.projectSettings?.scraping?.delayMs ?? 500}ms {t('activeSettingsDelay')}
+                          </span>
                         </div>
                         <div className="flex items-center gap-3 text-xs text-muted-foreground">
                           <span>{t('urlsFound')}: {urlCount}</span>

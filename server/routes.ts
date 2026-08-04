@@ -7558,6 +7558,36 @@ export async function registerRoutes(
     }
   });
 
+  // Force-take the scrape lock from another tab. The caller explicitly requests
+  // ownership of a project that is currently locked by a different TAB_ID.
+  // Unlike normal progress writes this does NOT require CAS or lock-owner check —
+  // the whole point is to break a stale lock.
+  app.post('/api/projects/:id/take-lock', async (req, res) => {
+    try {
+      const projectId = Number(req.params.id);
+      const { lockOwner } = req.body as { lockOwner?: string };
+      if (!lockOwner) return res.status(400).json({ message: 'lockOwner required' });
+
+      const project = await storage.getProject(projectId);
+      if (!project) return res.status(404).json({ message: 'Project not found' });
+
+      const ACTIVE_STATUSES = ['scraping', 'crawling', 'content_scraping'];
+      if (!ACTIVE_STATUSES.includes(project.status)) {
+        return res.status(409).json({ message: 'Project is not actively scraping' });
+      }
+
+      // Unconditional lock overwrite — no version CAS, no lock-owner guard.
+      const updated = await storage.updateProject(projectId, {
+        scrapeLock: { owner: lockOwner, expiresAt: Date.now() + 70000 },
+      });
+
+      console.log(`[TakeLock] Project ${projectId} lock taken by ${lockOwner}`);
+      res.json(updated);
+    } catch (err) {
+      res.status(500).json({ message: (err as Error).message });
+    }
+  });
+
   app.get('/api/projects/:id/pdfs', async (req, res) => {
     try {
       const projectId = Number(req.params.id);

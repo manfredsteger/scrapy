@@ -105,6 +105,8 @@ export default function Home() {
   const [selectedSinglePages, setSelectedSinglePages] = useState<Set<number>>(new Set());
   const [selectionMode, setSelectionMode] = useState(false);
   const [convertDialog, setConvertDialog] = useState<{ open: boolean; projectName: string; deleteSinglePages: boolean }>({ open: false, projectName: '', deleteSinglePages: false });
+  // Lock-takeover: true while the POST /take-lock request is in flight
+  const [isTakingLock, setIsTakingLock] = useState(false);
   // Rate-limit rollback modal: shown after automatic parallelRequests rollback
   const [rateLimitModal, setRateLimitModal] = useState<{
     open: boolean;
@@ -477,6 +479,30 @@ export default function Home() {
       });
     }
   }, [toast, t]);
+
+  // Force-take the scrape lock from another tab. Used by the "Übernehmen" button.
+  const takeLock = useCallback(async (projectId: number) => {
+    setIsTakingLock(true);
+    try {
+      const res = await apiRequest('POST', `/api/projects/${projectId}/take-lock`, { lockOwner: TAB_ID });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error((data as any).message || 'Failed to take lock');
+      }
+      lockNotifiedRef.current.delete(projectId);
+      await refetchProjects();
+      // Kick off the processing loop immediately now that this tab owns the lock.
+      processStepRef.current().catch(err => {
+        console.error('[TakeLock] processStep failed:', err);
+        processingRef.current = false;
+      });
+      toast({ title: t('takeLockSuccess') || 'Verarbeitung übernommen' });
+    } catch (err) {
+      toast({ title: t('error'), description: (err as Error).message, variant: 'destructive' });
+    } finally {
+      setIsTakingLock(false);
+    }
+  }, [t, toast, refetchProjects]);
 
   // A concurrent write (other tab or server action) won the race: discard this
   // batch, refresh from the server, and let the owner keep going.
@@ -1168,9 +1194,15 @@ export default function Home() {
   // While another tab owns the scrape lock, poll periodically so this tab
   // notices an expired lock (e.g. the owning tab was closed) without needing
   // window focus, and seamlessly takes over processing.
+  // Poll every 30 s while the lock is still valid; speed up to 5 s once the
+  // client-side TTL shows the lock has expired so the gap between expiry and
+  // automatic takeover stays short.
   useEffect(() => {
     const active = projects.find(p => p.status === 'scraping' || p.status === 'content_scraping' || p.status === 'crawling');
     if (!active || !isLockedByOtherTab(active)) return;
+    const lockExpiresAt = (active.scrapeLock as any)?.expiresAt ?? 0;
+    const lockExpiredClientSide = lockExpiresAt < Date.now();
+    const pollMs = lockExpiredClientSide ? 5000 : 30000;
     const timer = setInterval(async () => {
       if (processingRef.current) return;
       const result = await refetchProjects();
@@ -1188,7 +1220,7 @@ export default function Home() {
           processingRef.current = false;
         });
       }
-    }, 30000);
+    }, pollMs);
     return () => clearInterval(timer);
   }, [projects, refetchProjects, processStep]);
 
@@ -2096,6 +2128,32 @@ export default function Home() {
                   )}
                 </div>
               </div>
+
+              {isProcessing && isLockedByOtherTab(activeProject) && (
+                <div className="border border-amber-500/30 bg-amber-500/10 rounded-xl p-4 flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
+                    <p className="text-sm text-foreground">
+                      {t('takeLockBannerDesc') || 'Wird in einem anderen Tab verarbeitet.'}
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="shrink-0 gap-2"
+                    disabled={isTakingLock}
+                    onClick={() => activeProject && takeLock(activeProject.id)}
+                    data-testid="take-lock-button"
+                  >
+                    {isTakingLock ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Play className="w-4 h-4" />
+                    )}
+                    {t('takeLockButton') || 'Übernehmen'}
+                  </Button>
+                </div>
+              )}
 
               {hasActiveProcess && (
                 <div className={`border rounded-xl p-4 ${isPaused ? 'bg-muted border-border' : 'bg-primary/10 border-primary/20'}`}>

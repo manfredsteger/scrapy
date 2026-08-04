@@ -7634,16 +7634,34 @@ export async function registerRoutes(
     }
   });
 
-  // Delta progress write for the crawl loop: the client sends only the batch's
-  // new results/processed/errors plus the recomputed queue/depths; the server
-  // appends atomically in SQL. Replaces the old full-array PUT, whose payload
-  // grew quadratically with project size.
+  // Delta progress write for the crawl AND sitemap loops: the client sends
+  // only the batch's new results/processed/errors plus the recomputed
+  // queue/depths; the server appends atomically in SQL. Replaces the old
+  // full-array PUT, whose payload grew quadratically with project size.
   app.post('/api/projects/:id/crawl-progress', async (req, res) => {
     try {
       const projectId = Number(req.params.id);
+      // Sitemap entries carry richer, sometimes-null metadata (lastmod,
+      // image captions, video fields) — accept the full shared entry shape
+      // so the sitemap loop can reuse this endpoint without losing data.
       const mediaEntry = z.object({
         loc: z.string(),
         title: z.string().optional().default(''),
+        caption: z.string().optional(),
+        geoLocation: z.string().optional(),
+        license: z.string().optional(),
+      });
+      const videoEntry = z.object({
+        thumbnailLoc: z.string().optional(),
+        title: z.string().optional(),
+        description: z.string().optional(),
+        contentLoc: z.string().optional(),
+        playerLoc: z.string().optional(),
+        duration: z.string().optional(),
+        viewCount: z.string().optional(),
+        publicationDate: z.string().optional(),
+        rating: z.string().optional(),
+        loc: z.string().optional(),
       });
       const body = z.object({
         lockOwner: z.string(),
@@ -7653,11 +7671,11 @@ export async function registerRoutes(
         processedAppend: z.array(z.string()),
         resultsAppend: z.array(z.object({
           loc: z.string(),
-          lastmod: z.string().optional(),
-          changefreq: z.string().optional(),
-          priority: z.string().optional(),
+          lastmod: z.string().nullish(),
+          changefreq: z.string().nullish(),
+          priority: z.string().nullish(),
           images: z.array(mediaEntry).default([]),
-          videos: z.array(mediaEntry).default([]),
+          videos: z.array(videoEntry).default([]),
         })),
         errorsAppend: z.array(z.object({
           url: z.string(),

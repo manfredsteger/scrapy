@@ -551,20 +551,29 @@ export default function Home() {
       lastActivityRef.current = Date.now();
       
       try {
-        // IMPORTANT: The project list endpoint returns "lite" projects WITHOUT
-        // results/processed arrays. Merging against the lite object would
-        // overwrite all previously discovered URLs with just the current batch.
-        // Fetch the full project first and merge against that.
-        const detailRes = await apiRequest('GET', `/api/projects/${scrapingProject.id}`);
-        const fullScrapingProject: Project = await detailRes.json();
+        // PERFORMANCE: Like the crawl loop, use the lightweight crawl-state
+        // endpoint instead of the full project detail. On large projects the
+        // full detail (results incl. images/videos/scrapedData) reaches tens
+        // of MB per batch; the sitemap loop only needs result LOCs for dedup.
+        const detailRes = await apiRequest('GET', `/api/projects/${scrapingProject.id}/crawl-state`);
+        const scrapeState: {
+          queue: string[];
+          crawlDepths: Record<string, number>;
+          processed: string[];
+          stats: any;
+          projectSettings: ProjectSettingsType | null;
+          version: number;
+          scrapeLock: { owner: string; expiresAt: number } | null;
+          resultLocs: string[];
+        } = await detailRes.json();
         // Re-check with fresh data: another tab may have grabbed the lock meanwhile
-        if (isLockedByOtherTab(fullScrapingProject)) {
+        if (isLockedByOtherTab(scrapeState)) {
           notifyLockedByOtherTab(scrapingProject.id);
           return;
         }
-        const scrapeQueue = fullScrapingProject.queue || [];
+        const scrapeQueue = scrapeState.queue || [];
         const scrapeBatchSize = Math.min(
-          Math.max(1, fullScrapingProject.projectSettings?.scraping?.parallelRequests ?? 10),
+          Math.max(1, scrapeState.projectSettings?.scraping?.parallelRequests ?? 10),
           MAX_BATCH_SIZE,
         );
         const batchUrls = scrapeQueue.slice(0, scrapeBatchSize);
@@ -579,27 +588,39 @@ export default function Home() {
           }
         }));
 
-        let newResults = [...(fullScrapingProject.results || [])];
+        // Delta-based merge: only the batch's NEW results/errors/processed are
+        // collected and sent to the server, which appends them in SQL. The
+        // full arrays never travel to the browser or back.
+        const resultsAppend: SitemapUrlEntry[] = [];
+        const errorsAppend: Array<{ url: string; message: string; timestamp: string }> = [];
+        const processedAppend = [...batchUrls];
         let newQueue = [...remainingQueue];
-        let newProcessed = [...(fullScrapingProject.processed || []), ...batchUrls];
-        let newErrors = [...(fullScrapingProject.errors || [])];
         let sitemapsProcessed = 0;
         let newSitemapsFound = 0;
+
+        const existingLocs = new Set(scrapeState.resultLocs || []);
+        const existingProcessed = new Set([...(scrapeState.processed || []), ...processedAppend]);
+        const existingQueue = new Set(newQueue);
 
         results.forEach(res => {
           sitemapsProcessed++;
           if (res.data) {
             const { urls, subSitemaps } = res.data;
-            const existingLocs = new Set(newResults.map(r => r.loc));
-            const uniqueNewUrls = urls.filter((u: SitemapUrlEntry) => !existingLocs.has(u.loc));
-            newResults = [...newResults, ...uniqueNewUrls];
-            const filteredSub = subSitemaps.filter((s: string) => 
-              !newProcessed.includes(s) && !newQueue.includes(s)
-            );
-            newQueue = [...newQueue, ...filteredSub];
-            newSitemapsFound += filteredSub.length;
+            urls.forEach((u: SitemapUrlEntry) => {
+              if (!existingLocs.has(u.loc)) {
+                resultsAppend.push(u);
+                existingLocs.add(u.loc);
+              }
+            });
+            subSitemaps.forEach((s: string) => {
+              if (!existingProcessed.has(s) && !existingQueue.has(s)) {
+                newQueue.push(s);
+                existingQueue.add(s);
+                newSitemapsFound++;
+              }
+            });
           } else if (res.error) {
-            newErrors.push({ 
+            errorsAppend.push({ 
               url: res.url, 
               message: res.error, 
               timestamp: new Date().toISOString() 
@@ -622,23 +643,31 @@ export default function Home() {
         })));
         
         try {
-          await updateProjectMutation.mutateAsync({
-            id: scrapingProject.id,
-            expectedVersion: fullScrapingProject.version,
-            updates: {
-              queue: newQueue,
-              processed: newProcessed,
-              results: newResults,
-              errors: newErrors,
-              stats: {
-                ...fullScrapingProject.stats!,
-                processedSitemaps: (fullScrapingProject.stats?.processedSitemaps || 0) + sitemapsProcessed,
-                totalSitemaps: (fullScrapingProject.stats?.totalSitemaps || 0) + newSitemapsFound,
-                totalUrls: newResults.length,
-                totalImages: newResults.reduce((acc, curr) => acc + (curr.images?.length || 0), 0),
-              },
+          // Stats are updated incrementally — the client no longer holds the
+          // full results array, so totals are prior stats + this batch's delta.
+          // totalUrls is recomputed authoritatively on the server.
+          const priorResultCount = (scrapeState.resultLocs || []).length;
+          const batchImages = resultsAppend.reduce((acc, curr) => acc + (curr.images?.length || 0), 0);
+          const batchVideos = resultsAppend.reduce((acc, curr) => acc + ((curr as any).videos?.length || 0), 0);
+
+          await apiRequest('POST', `/api/projects/${scrapingProject.id}/crawl-progress`, {
+            lockOwner: TAB_ID,
+            expectedVersion: scrapeState.version,
+            queue: newQueue,
+            crawlDepths: scrapeState.crawlDepths || {},
+            processedAppend,
+            resultsAppend,
+            errorsAppend,
+            stats: {
+              ...(scrapeState.stats || {}),
+              processedSitemaps: (scrapeState.stats?.processedSitemaps || 0) + sitemapsProcessed,
+              totalSitemaps: (scrapeState.stats?.totalSitemaps || 0) + newSitemapsFound,
+              totalUrls: priorResultCount + resultsAppend.length,
+              totalImages: (scrapeState.stats?.totalImages || 0) + batchImages,
+              totalVideos: (scrapeState.stats?.totalVideos || 0) + batchVideos,
             },
           });
+          queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
         } catch (err) {
           if (isConflictError(err)) {
             handleWriteConflict(scrapingProject.id);

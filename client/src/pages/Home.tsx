@@ -40,7 +40,10 @@ import { apiRequest, queryClient } from '@/lib/queryClient';
 import type { Project, SitemapUrlEntry, ProjectSettings as ProjectSettingsType, SinglePage } from '@shared/schema';
 import { addDiscoveredLinks } from '@shared/crawl-depth';
 
-const BATCH_SIZE = 10;
+// Maximum batch size hard cap (server also enforces MAX_CONCURRENCY = 50)
+const MAX_BATCH_SIZE = 50;
+// Minimum inter-batch delay in ms (prevents runaway tight loops)
+const MIN_BATCH_DELAY_MS = 200;
 // Safety cap for crawl discovery: stop adding new URLs to the frontier once the
 // total of discovered + queued URLs reaches this bound, so parameterized links
 // (pagination, filters) can never grow the crawl without limit.
@@ -102,6 +105,14 @@ export default function Home() {
   const [selectedSinglePages, setSelectedSinglePages] = useState<Set<number>>(new Set());
   const [selectionMode, setSelectionMode] = useState(false);
   const [convertDialog, setConvertDialog] = useState<{ open: boolean; projectName: string; deleteSinglePages: boolean }>({ open: false, projectName: '', deleteSinglePages: false });
+  // Rate-limit rollback modal: shown after automatic parallelRequests rollback
+  const [rateLimitModal, setRateLimitModal] = useState<{
+    open: boolean;
+    projectId: number;
+    fromValue: number;
+    toValue: number;
+    customValue: number;
+  } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const processingRef = useRef(false);
   const abortedProjectsRef = useRef<Set<number>>(new Set());
@@ -110,6 +121,9 @@ export default function Home() {
   // requested pause/stop boundary (the batch is simply discarded and re-done on resume).
   const pauseRequestedRef = useRef<Set<number>>(new Set());
   const contentQueueRef = useRef<{projectId: number, queue: string[]} | null>(null);
+  // Always points to the latest processStep closure so that scheduled
+  // callbacks (setTimeout inside scheduleNextBatch) never call a stale version.
+  const processStepRef = useRef<() => Promise<void>>(async () => {});
   const loopGenRef = useRef(0);
   useEffect(() => {
     loopGenRef.current = ++scrapeLoopGeneration;
@@ -521,8 +535,12 @@ export default function Home() {
           return;
         }
         const scrapeQueue = fullScrapingProject.queue || [];
-        const batchUrls = scrapeQueue.slice(0, BATCH_SIZE);
-        const remainingQueue = scrapeQueue.slice(BATCH_SIZE);
+        const scrapeBatchSize = Math.min(
+          Math.max(1, fullScrapingProject.projectSettings?.scraping?.parallelRequests ?? 10),
+          MAX_BATCH_SIZE,
+        );
+        const batchUrls = scrapeQueue.slice(0, scrapeBatchSize);
+        const remainingQueue = scrapeQueue.slice(scrapeBatchSize);
 
         const results = await Promise.all(batchUrls.map(async (url) => {
           try {
@@ -690,8 +708,12 @@ export default function Home() {
           return;
         }
         const crawlQueue = fullCrawlProject.queue || [];
-        const batchUrls = crawlQueue.slice(0, BATCH_SIZE);
-        const remainingQueue = crawlQueue.slice(BATCH_SIZE);
+        const crawlBatchSize = Math.min(
+          Math.max(1, fullCrawlProject.projectSettings?.scraping?.parallelRequests ?? 10),
+          MAX_BATCH_SIZE,
+        );
+        const batchUrls = crawlQueue.slice(0, crawlBatchSize);
+        const remainingQueue = crawlQueue.slice(crawlBatchSize);
 
         // Depth tracking: enforce the project's maxDepth setting. URLs without
         // a recorded depth (e.g. projects created before depth tracking) count
@@ -843,8 +865,19 @@ export default function Home() {
 
       processingRef.current = true;
       lastActivityRef.current = Date.now();
-      const batchUrls = currentQueue.slice(0, BATCH_SIZE);
-      const remainingQueue = currentQueue.slice(BATCH_SIZE);
+
+      // Read settings fresh each batch so in-flight setting changes take effect
+      const contentBatchSize = Math.min(
+        Math.max(1, contentScrapingProject.projectSettings?.scraping?.parallelRequests ?? 10),
+        MAX_BATCH_SIZE,
+      );
+      const contentDelayMs = Math.max(
+        MIN_BATCH_DELAY_MS,
+        contentScrapingProject.projectSettings?.scraping?.delayMs ?? 1000,
+      );
+
+      const batchUrls = currentQueue.slice(0, contentBatchSize);
+      const remainingQueue = currentQueue.slice(contentBatchSize);
       
       // Update ref immediately - this is the source of truth for next batch
       contentQueueRef.current.queue = remainingQueue;
@@ -854,14 +887,17 @@ export default function Home() {
       const scheduleNextBatch = (queueLength: number) => {
         lastActivityRef.current = Date.now();
         if (queueLength > 0) {
-          console.log(`[ProcessStep] Scheduling next batch in 1s, ${queueLength} remaining`);
+          console.log(`[ProcessStep] Scheduling next batch in ${contentDelayMs}ms, ${queueLength} remaining`);
           // Schedule first, then release lock
           setTimeout(() => {
-            processStep().catch(err => {
+            // Use the ref so we always call the latest processStep closure
+            // (with the freshest projects state), not the one captured when
+            // this scheduleNextBatch was created.
+            processStepRef.current().catch(err => {
               console.error('[Process] Step failed, will retry:', err);
               processingRef.current = false;
             });
-          }, 1000);
+          }, contentDelayMs);
           // Release lock only after timer is set
           processingRef.current = false;
         } else {
@@ -891,8 +927,9 @@ export default function Home() {
           }
           throw err;
         }
-        const { results, version: batchVersion } = await res.json();
-        console.log(`[ProcessStep] Batch completed, ${results.length} results`);
+        const batchResponse = await res.json();
+        const { results, version: batchVersion, rateLimitDetected, suggestedParallelRequests } = batchResponse;
+        console.log(`[ProcessStep] Batch completed, ${results.length} results${rateLimitDetected ? ' [RATE LIMITED]' : ''}`);
 
         // Server saves scrapedData directly - we only track errors and stats
         let newErrors = [...(contentScrapingProject.errors || [])];
@@ -986,6 +1023,44 @@ export default function Home() {
           console.error('[ProcessStep] Failed to save batch results:', updateErr);
         }
         
+        // Auto-rollback when the server signals throttling — done AFTER the
+        // queue/stats write so the rollback mutation doesn't invalidate batchVersion.
+        // Uses no expectedVersion (settings are not progress-critical) so it
+        // can never conflict with the batch CAS above.
+        if (rateLimitDetected) {
+          const currentParallel = contentScrapingProject.projectSettings?.scraping?.parallelRequests ?? 10;
+          const rolledBackTo = suggestedParallelRequests ?? Math.max(1, Math.floor(currentParallel / 2));
+          if (rolledBackTo < currentParallel) {
+            console.warn(`[RateLimit] Rolling back parallelRequests from ${currentParallel} to ${rolledBackTo}`);
+            const newSettings = {
+              ...(contentScrapingProject.projectSettings ?? {}),
+              scraping: {
+                ...(contentScrapingProject.projectSettings?.scraping ?? {}),
+                parallelRequests: rolledBackTo,
+              },
+            };
+            let rollbackPersisted = false;
+            try {
+              await updateProjectMutation.mutateAsync({
+                id: contentScrapingProject.id,
+                // No expectedVersion — settings rollback must not conflict with
+                // the batch progress write that just succeeded above.
+                updates: { projectSettings: newSettings as any },
+              });
+              rollbackPersisted = true;
+            } catch (rollbackErr) {
+              console.error('[RateLimit] Failed to persist parallelRequests rollback:', rollbackErr);
+            }
+            if (rollbackPersisted) setRateLimitModal({
+              open: true,
+              projectId: contentScrapingProject.id,
+              fromValue: currentParallel,
+              toValue: rolledBackTo,
+              customValue: rolledBackTo,
+            });
+          }
+        }
+
         // Always schedule next batch regardless of mutation success
         scheduleNextBatch(remainingQueue.length);
       } catch (err) {
@@ -1044,7 +1119,10 @@ export default function Home() {
         scheduleNextBatch(remainingQueue.length);
       }
     }
-  }, [projects, updateProjectMutation, recordActivity, notifyLockedByOtherTab, handleWriteConflict]);
+  }, [projects, updateProjectMutation, recordActivity, notifyLockedByOtherTab, handleWriteConflict, setRateLimitModal]);
+  // Keep ref current every render so setTimeout callbacks inside processStep
+  // always invoke the latest closure (with fresh projects/settings state).
+  processStepRef.current = processStep;
 
   // Track last activity time for stuck detection
   const lastActivityRef = useRef<number>(Date.now());
@@ -1066,7 +1144,15 @@ export default function Home() {
   useEffect(() => {
     const active = projects.find(p => p.status === 'scraping' || p.status === 'content_scraping' || p.status === 'crawling');
     if (active && !processingRef.current) {
-      const delay = active.status === 'crawling' ? 800 : (active.status === 'scraping' ? 500 : 1000);
+      // Use delayMs from project settings for all three modes so the setting
+      // takes effect immediately on save (including mid-crawl and mid-scraping).
+      // Content scraping uses its own scheduleNextBatch logic; the useEffect
+      // here only fires between batches when processingRef is released.
+      const settingsDelay = active.projectSettings?.scraping?.delayMs;
+      const defaultDelay = active.status === 'crawling' ? 800 : (active.status === 'scraping' ? 500 : 1000);
+      const delay = settingsDelay != null
+        ? Math.max(MIN_BATCH_DELAY_MS, settingsDelay)
+        : defaultDelay;
       // Never let a transient request failure (e.g. 502 during a server
       // restart) escape as an unhandled rejection — log and retry next tick.
       const timer = setTimeout(() => {
@@ -2441,6 +2527,63 @@ export default function Home() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Rate-limit rollback modal */}
+      {rateLimitModal && (
+        <Dialog open={rateLimitModal.open} onOpenChange={(open) => !open && setRateLimitModal(null)}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-amber-400">
+                <AlertTriangle className="w-5 h-5" />
+                {t('rateLimitRollbackTitle')}
+              </DialogTitle>
+            </DialogHeader>
+            <div className="space-y-3 py-1">
+              <p className="text-sm text-muted-foreground">
+                {t('rateLimitRollbackDesc')
+                  .replace('{from}', String(rateLimitModal.fromValue))
+                  .replace('{to}', String(rateLimitModal.toValue))}
+              </p>
+              <p className="text-sm text-muted-foreground">{t('rateLimitRollbackHint')}</p>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={rateLimitModal.customValue}
+                  onChange={(e) => setRateLimitModal(prev => prev ? { ...prev, customValue: Math.max(1, Math.min(50, parseInt(e.target.value) || 1)) } : null)}
+                  className="w-24"
+                />
+                <Button
+                  size="sm"
+                  onClick={async () => {
+                    if (!rateLimitModal) return;
+                    const newSettings = {
+                      ...(projects.find(p => p.id === rateLimitModal.projectId)?.projectSettings ?? {}),
+                      scraping: {
+                        ...(projects.find(p => p.id === rateLimitModal.projectId)?.projectSettings?.scraping ?? {}),
+                        parallelRequests: rateLimitModal.customValue,
+                      },
+                    };
+                    await updateProjectMutation.mutateAsync({
+                      id: rateLimitModal.projectId,
+                      updates: { projectSettings: newSettings as any },
+                    });
+                    setRateLimitModal(null);
+                  }}
+                >
+                  {t('rateLimitApply')}
+                </Button>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setRateLimitModal(null)}>
+                {t('close')}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   );

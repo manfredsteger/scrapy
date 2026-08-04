@@ -20,7 +20,9 @@ import { normalizeCrawlUrl } from './crawl-url';
 import { diffSitemapUpdate, diffCrawlFinish } from './update-diff';
 import multer from 'multer';
 
-const CONCURRENCY = 10;
+// Hard cap on server-side concurrency per batch (safety valve; actual value
+// comes from projectSettings.scraping.parallelRequests).
+const MAX_CONCURRENCY = 50;
 
 async function loadResultsWithFilesystem(
   results: any[],
@@ -155,6 +157,16 @@ class RateLimiter {
   getCurrentDelay(): number {
     return this.currentDelay;
   }
+
+  // Returns true when the server has significantly pushed back — either via
+  // explicit 429s or repeated fetch errors causing the delay to at least
+  // double from baseline.
+  // Returns true when the batch produced significant throttling signals.
+  // Works even when automatic delay adjustment is disabled — a 429 is always
+  // a rate-limit regardless of whether the user wants auto-backoff.
+  isRateLimited(): boolean {
+    return this.consecutiveErrors >= 2 || this.currentDelay >= this.baseDelay * 2;
+  }
 }
 
 // Proxy Rotator class for cycling through proxies
@@ -278,7 +290,7 @@ interface FetchOptions {
 async function fetchWithRateLimitAndProxy(
   url: string,
   options: FetchOptions = {}
-): Promise<{ text: string; statusCode: number; usedProxy?: string }> {
+): Promise<{ text: string; statusCode: number; usedProxy?: string; had429: boolean }> {
   const { rateLimiter, proxyRotator, timeout = 15000, retries = 2 } = options;
   
   // Wait for rate limit before making request
@@ -291,6 +303,10 @@ async function fetchWithRateLimitAndProxy(
   
   let lastError: Error | null = null;
   let attemptCount = 0;
+  // Track whether ANY attempt received an HTTP 429 response, even if a
+  // subsequent proxy retry succeeded. Callers use this to signal the client
+  // for rollback independently of final request success.
+  let had429 = false;
   
   // Try with proxies first if enabled, then fallback to direct
   const proxyInfo = proxyRotator?.isEnabled() ? proxyRotator.getNextProxy() : null;
@@ -328,6 +344,7 @@ async function fetchWithRateLimitAndProxy(
       
       // Handle rate limiting (429)
       if (response.status === 429) {
+        had429 = true; // Remember even if a later proxy retry succeeds
         rateLimiter?.onRateLimit();
         
         // Check for Retry-After header
@@ -365,7 +382,8 @@ async function fetchWithRateLimitAndProxy(
       return { 
         text, 
         statusCode: response.status, 
-        usedProxy: currentProxyInfo?.proxyConfig.url 
+        usedProxy: currentProxyInfo?.proxyConfig.url,
+        had429,
       };
       
     } catch (err) {
@@ -5701,7 +5719,6 @@ export async function registerRoutes(
   app.post(api.scrape.fetchContent.path, async (req, res) => {
     try {
       const input = api.scrape.fetchContent.input.parse(req.body);
-      const urls = input.urls.slice(0, CONCURRENCY);
       const projectId = input.projectId;
       const lockOwner = input.lockOwner;
       
@@ -5726,6 +5743,14 @@ export async function registerRoutes(
         });
       }
       
+      // Effective concurrency: respect parallelRequests from project settings,
+      // capped at MAX_CONCURRENCY for safety.
+      const effectiveConcurrency = Math.min(
+        project.projectSettings?.scraping?.parallelRequests ?? 10,
+        MAX_CONCURRENCY,
+      );
+      const urls = input.urls.slice(0, effectiveConcurrency);
+
       // Get project settings for rate limiting/proxy support
       let rateLimiter: RateLimiter | undefined;
       let proxyRotator: ProxyRotator | undefined;
@@ -5744,6 +5769,11 @@ export async function registerRoutes(
       // Page dirs newly created by THIS batch - removed again if the guarded
       // DB persistence below is rejected, so no orphan files become visible.
       const newPageDirs: string[] = [];
+
+      // Tracks whether ANY URL in this batch received an HTTP 429 response,
+      // even if a proxy retry later succeeded.  Set atomically via array push
+      // from parallel promises so no lock is needed.
+      const batch429Signals: boolean[] = [];
       
       const results = await Promise.all(urls.map(async (url) => {
         try {
@@ -5753,10 +5783,11 @@ export async function registerRoutes(
             return { url, success: false, error: 'Skipped: non-HTML content (PDF, image, etc.)', skipped: true };
           }
           
-          const { text: html, usedProxy } = await fetchWithRateLimitAndProxy(url, {
+          const { text: html, usedProxy, had429: fetch429 } = await fetchWithRateLimitAndProxy(url, {
             rateLimiter,
             proxyRotator,
           });
+          if (fetch429) batch429Signals.push(true);
           const data = scrapePageContent(html, url, extractStructuredDataFlag);
           
           // Store update in memory - will be applied in batch
@@ -5904,11 +5935,31 @@ export async function registerRoutes(
       } catch {}
 
       const rateLimitState = rateLimiter?.getState();
-      
+      // A 429 was seen in this batch if:
+      //  (a) fetchWithRateLimitAndProxy set had429 on a successful-proxy-retry result, OR
+      //  (b) the final attempt threw and the error string says "429" (no proxy left to retry)
+      // This is intentionally independent of whether the request ultimately succeeded,
+      // so that proxy-retry success never masks a real rate-limit signal.
+      const batchHad429FromFetch = batch429Signals.length > 0;
+      const batchHad429FromError = results.some(
+        (r: { error?: string | null }) =>
+          typeof r.error === 'string' && r.error.includes('429'),
+      );
+      // Only confirmed HTTP 429 responses trigger the client rollback.
+      // Generic fetch/network errors do NOT — they are handled by the normal
+      // error path and should not reduce the user's configured parallelism.
+      const rateLimitDetected = batchHad429FromFetch || batchHad429FromError;
+
       res.json({ 
         results,
         version: savedVersion,
         rateLimitState,
+        // Signal to the client that the server is throttling.  The client
+        // should roll back parallelRequests to avoid a silent stuck loop.
+        rateLimitDetected,
+        suggestedParallelRequests: rateLimitDetected
+          ? Math.max(1, Math.floor(effectiveConcurrency / 2))
+          : undefined,
         proxyInfo: proxyRotator ? {
           enabled: proxyRotator.isEnabled(),
           totalProxies: proxyRotator.getProxyCount(),
@@ -5930,7 +5981,7 @@ export async function registerRoutes(
   app.post(api.scrape.crawl.path, async (req, res) => {
     try {
       const input = api.scrape.crawl.input.parse(req.body);
-      const urls = input.urls.slice(0, CONCURRENCY);
+      const urls = input.urls.slice(0, MAX_CONCURRENCY);
       const domain = input.domain.replace(/^https?:\/\//, '').split('/')[0];
       // (link normalization lives in server/crawl-url.ts)
       

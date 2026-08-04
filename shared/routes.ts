@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { insertProjectSchema, sitemapUrlEntrySchema, scrapingErrorSchema, scrapingStatsSchema } from './schema';
+import { insertProjectSchema, sitemapUrlEntrySchema, scrapingErrorSchema, scrapingStatsSchema, projectSettingsSchema } from './schema';
 
 export const errorSchemas = {
   validation: z.object({
@@ -81,6 +81,8 @@ export const api = {
         results: z.array(sitemapUrlEntrySchema).optional(),
         errors: z.array(scrapingErrorSchema).optional(),
         stats: scrapingStatsSchema.optional(),
+        // Project-level configuration (concurrency, delays, proxies, etc.)
+        projectSettings: projectSettingsSchema.optional(),
         // Optimistic concurrency: reject the write if the stored version differs.
         expectedVersion: z.number().optional(),
         // Identifies the browser tab/session performing the write (scrape lock owner).
@@ -188,6 +190,10 @@ export const api = {
             totalProxies: z.number(),
             availableProxies: z.number(),
           }).optional(),
+          // Set when the server detected HTTP 429 throttling in this batch.
+          // The client should roll back parallelRequests and show a modal.
+          rateLimitDetected: z.boolean().optional(),
+          suggestedParallelRequests: z.number().optional(),
         }),
         400: errorSchemas.validation,
       },

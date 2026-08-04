@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Globe, Trash2, ChevronRight, Pencil, Check, X, Loader2, RefreshCw } from 'lucide-react';
+import { Globe, Trash2, ChevronRight, Pencil, Check, X, Loader2, RefreshCw, Lock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import type { Project } from '@shared/schema';
@@ -17,10 +17,12 @@ interface ProjectCardProps {
   onDelete: () => void;
   onRename: (newName: string) => void;
   onUpdate?: () => void;
+  isLockedByOtherTab?: boolean;
+  onTakeLock?: () => void;
   t: (key: any) => string;
 }
 
-export default function ProjectCard({ project, onSelect, onDelete, onRename, onUpdate, t }: ProjectCardProps) {
+export default function ProjectCard({ project, onSelect, onDelete, onRename, onUpdate, isLockedByOtherTab, onTakeLock, t }: ProjectCardProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(project.displayName || project.domain);
 
@@ -157,6 +159,26 @@ export default function ProjectCard({ project, onSelect, onDelete, onRename, onU
           </p>
         </div>
       </div>
+
+      {isLockedByOtherTab && (
+        <div className="mb-3 flex items-center justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2" onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center gap-2 text-amber-400">
+            <Lock className="w-3.5 h-3.5 shrink-0" />
+            <span className="text-xs font-medium">{t('takeLockBannerDesc') || 'Wird in einem anderen Tab verarbeitet.'}</span>
+          </div>
+          {onTakeLock && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 shrink-0 border-amber-500/50 text-amber-400 hover:bg-amber-500/20 hover:text-amber-300 text-xs px-2"
+              onClick={onTakeLock}
+              data-testid={`take-lock-card-${project.id}`}
+            >
+              {t('takeLockButton') || 'Übernehmen'}
+            </Button>
+          )}
+        </div>
+      )}
 
       <div className="flex items-center justify-between text-sm text-primary font-medium pt-3 border-t border-border">
         <span>{t('detailedView')}</span>

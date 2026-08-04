@@ -1748,6 +1748,8 @@ export default function Home() {
                         });
                       }}
                       onUpdate={() => startUpdate(project.id)}
+                      isLockedByOtherTab={isLockedByOtherTab(project)}
+                      onTakeLock={() => takeLock(project.id)}
                       t={t}
                     />
                   ))}

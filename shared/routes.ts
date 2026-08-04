@@ -204,6 +204,7 @@ export const api = {
       input: z.object({ 
         urls: z.array(z.string()),
         domain: z.string(),
+        projectId: z.number().optional(),
       }),
       responses: {
         200: z.object({
@@ -213,6 +214,8 @@ export const api = {
             data: z.any().nullable(),
             error: z.string().nullable(),
           })),
+          rateLimitDetected: z.boolean().optional(),
+          suggestedParallelRequests: z.number().optional(),
         }),
         400: errorSchemas.validation,
       },

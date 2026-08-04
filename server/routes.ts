@@ -5981,13 +5981,57 @@ export async function registerRoutes(
   app.post(api.scrape.crawl.path, async (req, res) => {
     try {
       const input = api.scrape.crawl.input.parse(req.body);
-      const urls = input.urls.slice(0, MAX_CONCURRENCY);
       const domain = input.domain.replace(/^https?:\/\//, '').split('/')[0];
       // (link normalization lives in server/crawl-url.ts)
-      
+
+      // Load project settings for rate limiting (if projectId provided)
+      let rateLimiter: RateLimiter | undefined;
+      let proxyRotator: ProxyRotator | undefined;
+      // Start with the hard server cap; tighten to the project's parallelRequests
+      // after loading settings so direct/malicious callers can't bypass the limit.
+      let effectiveConcurrency = MAX_CONCURRENCY;
+      if (input.projectId) {
+        const crawlProject = await storage.getProject(input.projectId);
+        if (crawlProject) {
+          const crawlSettings: ProjectSettings = crawlProject.projectSettings || getDefaultSettings();
+          const rlSettings = crawlSettings.scraping.rateLimiting;
+          rateLimiter = new RateLimiter(rlSettings);
+          const proxyList = crawlSettings.scraping.proxies || [];
+          const rotateEnabled = crawlSettings.scraping.rotateProxies || false;
+          if (proxyList.length > 0) {
+            proxyRotator = new ProxyRotator(proxyList, rotateEnabled);
+          }
+          effectiveConcurrency = Math.min(
+            Math.max(1, crawlSettings.scraping.parallelRequests ?? 10),
+            MAX_CONCURRENCY,
+          );
+        }
+      }
+
+      // Cap the batch to effectiveConcurrency — enforced server-side so that
+      // both the client-driven loop and any direct callers respect the setting.
+      const urls = input.urls.slice(0, effectiveConcurrency);
+
+      // Track 429 signals across the batch (mirrors content endpoint logic)
+      const crawlBatch429Signals: boolean[] = [];
+
       const results = await Promise.all(urls.map(async (url) => {
         try {
-          const html = await fetchWithTimeout(url);
+          let html: string;
+          let had429 = false;
+          if (rateLimiter) {
+            const fetchResult = await fetchWithRateLimitAndProxy(url, {
+              rateLimiter,
+              proxyRotator,
+              timeout: 15000,
+              retries: proxyRotator ? 2 : 1,
+            });
+            html = fetchResult.text;
+            had429 = fetchResult.had429;
+          } else {
+            html = await fetchWithTimeout(url);
+          }
+          if (had429) crawlBatch429Signals.push(true);
           const dom = new JSDOM(html);
           const doc = dom.window.document;
           
@@ -6061,11 +6105,28 @@ export async function registerRoutes(
             error: null 
           };
         } catch (err) {
-          return { url, links: [], data: null, error: (err as Error).message };
+          const errMsg = (err as Error).message;
+          // Also track 429s that ended in a thrown error
+          if (errMsg.includes('429')) crawlBatch429Signals.push(true);
+          return { url, links: [], data: null, error: errMsg };
         }
       }));
-      
-      res.json({ results });
+
+      // Determine rate-limit signal (mirrors content endpoint logic)
+      const crawlHad429FromFetch = crawlBatch429Signals.length > 0;
+      const crawlHad429FromError = results.some(
+        (r: { error?: string | null }) =>
+          typeof r.error === 'string' && r.error.includes('429'),
+      );
+      const rateLimitDetected = crawlHad429FromFetch || crawlHad429FromError;
+
+      res.json({
+        results,
+        rateLimitDetected,
+        suggestedParallelRequests: rateLimitDetected
+          ? Math.max(1, Math.floor(effectiveConcurrency / 2))
+          : undefined,
+      });
     } catch (err) {
       if (err instanceof z.ZodError) {
         return res.status(400).json({

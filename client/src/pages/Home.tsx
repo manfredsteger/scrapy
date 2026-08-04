@@ -750,13 +750,25 @@ export default function Home() {
         // Crawl pages and discover internal links
         const res = await apiRequest('POST', '/api/scrape/crawl', { 
           urls: batchUrls,
-          domain: crawlingProject.domain 
+          domain: crawlingProject.domain,
+          projectId: crawlingProject.id,
         });
-        const { results } = await res.json();
+        const { results, rateLimitDetected, suggestedParallelRequests } = await res.json();
+
+        // Reconcile progress: the server may have trimmed the batch to its
+        // effective concurrency limit. Only mark URLs the server actually
+        // attempted as processed; put any trimmed URLs back at the front of the
+        // queue so they are retried in the next batch.
+        const serverProcessedSet = new Set(results.map((r: { url: string }) => r.url));
+        const untrimmedUrls = batchUrls.filter((u: string) => !serverProcessedSet.has(u));
 
         let newResults = [...(fullCrawlProject.results || [])];
-        let newQueue = [...remainingQueue];
-        let newProcessed = [...(fullCrawlProject.processed || []), ...batchUrls];
+        // Prepend untrimmed URLs so they are the very next to be crawled.
+        let newQueue = [...untrimmedUrls, ...remainingQueue];
+        let newProcessed = [
+          ...(fullCrawlProject.processed || []),
+          ...batchUrls.filter((u: string) => serverProcessedSet.has(u)),
+        ];
         let newErrors = [...(fullCrawlProject.errors || [])];
         
         const existingLocs = new Set(newResults.map(r => r.loc));
@@ -816,11 +828,15 @@ export default function Home() {
           timestamp: Date.now(),
         })));
 
+        let progressVersion: number | undefined;
         try {
-          // Depths of processed URLs are no longer needed - drop them to keep the map bounded
-          batchUrls.forEach((u: string) => { delete newCrawlDepths[u]; });
+          // Only drop depths for URLs the server actually processed; untrimmed
+          // URLs stay in the queue with their depth intact.
+          batchUrls
+            .filter((u: string) => serverProcessedSet.has(u))
+            .forEach((u: string) => { delete newCrawlDepths[u]; });
 
-          await updateProjectMutation.mutateAsync({
+          const progressResult = await updateProjectMutation.mutateAsync({
             id: crawlingProject.id,
             expectedVersion: fullCrawlProject.version,
             updates: {
@@ -837,12 +853,70 @@ export default function Home() {
               },
             },
           });
+          progressVersion = (progressResult as any)?.version;
         } catch (err) {
           if (isConflictError(err)) {
             handleWriteConflict(crawlingProject.id);
             return;
           }
           throw err;
+        }
+
+        // Auto-rollback when the server signals throttling — done AFTER the
+        // progress write so the rollback mutation doesn't conflict with it.
+        // All calculations are based on freshly fetched project settings so
+        // concurrent user changes are never overwritten.
+        if (rateLimitDetected) {
+          // Must fetch fresh state: using stale fullCrawlProject settings would
+          // CAS-succeed but silently overwrite any settings the user changed
+          // during the in-flight request.
+          let freshVersion: number | undefined;
+          let freshSettings: ProjectSettingsType | undefined;
+          try {
+            const freshRes = await apiRequest('GET', `/api/projects/${crawlingProject.id}`);
+            const freshProject: Project = await freshRes.json();
+            freshVersion = (freshProject as any).version;
+            freshSettings = freshProject.projectSettings ?? undefined;
+          } catch {
+            // If refetch fails we cannot safely CAS — skip rollback entirely
+            // to avoid clobbering unknown concurrent changes.
+          }
+
+          if (freshVersion !== undefined && freshSettings !== undefined) {
+            const currentParallel = freshSettings?.scraping?.parallelRequests ?? 10;
+            const rolledBackTo = suggestedParallelRequests ?? Math.max(1, Math.floor(currentParallel / 2));
+            if (rolledBackTo < currentParallel) {
+              console.warn(`[RateLimit/Crawl] Rolling back parallelRequests from ${currentParallel} to ${rolledBackTo}`);
+              const newSettings = {
+                ...freshSettings,
+                scraping: {
+                  ...freshSettings.scraping,
+                  parallelRequests: rolledBackTo,
+                },
+              };
+              let rollbackPersisted = false;
+              try {
+                await updateProjectMutation.mutateAsync({
+                  id: crawlingProject.id,
+                  expectedVersion: freshVersion,
+                  updates: { projectSettings: newSettings as any },
+                });
+                rollbackPersisted = true;
+              } catch (rollbackErr) {
+                if (!isConflictError(rollbackErr)) {
+                  console.error('[RateLimit/Crawl] Failed to persist parallelRequests rollback:', rollbackErr);
+                }
+                // On conflict another tab already updated settings — skip modal
+              }
+              if (rollbackPersisted) setRateLimitModal({
+                open: true,
+                projectId: crawlingProject.id,
+                fromValue: currentParallel,
+                toValue: rolledBackTo,
+                customValue: rolledBackTo,
+              });
+            }
+          }
         }
       } finally {
         processingRef.current = false;

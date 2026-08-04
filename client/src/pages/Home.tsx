@@ -19,6 +19,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import Sidebar from '@/components/Sidebar';
+import LockTakeoverBanner from '@/components/LockTakeoverBanner';
+import { isLockedByOtherTab as isLockedByOtherTabUtil } from '@/utils/lock-utils';
 import Header from '@/components/Header';
 import StatsCards from '@/components/StatsCards';
 import UrlList from '@/components/UrlList';
@@ -2206,29 +2208,12 @@ export default function Home() {
               </div>
 
               {isProcessing && isLockedByOtherTab(activeProject) && (
-                <div className="border border-amber-500/30 bg-amber-500/10 rounded-xl p-4 flex items-center justify-between gap-4">
-                  <div className="flex items-center gap-3">
-                    <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
-                    <p className="text-sm text-foreground">
-                      {t('takeLockBannerDesc') || 'Wird in einem anderen Tab verarbeitet.'}
-                    </p>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="shrink-0 gap-2"
-                    disabled={isTakingLock}
-                    onClick={() => activeProject && takeLock(activeProject.id)}
-                    data-testid="take-lock-button"
-                  >
-                    {isTakingLock ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <Play className="w-4 h-4" />
-                    )}
-                    {t('takeLockButton') || 'Übernehmen'}
-                  </Button>
-                </div>
+                <LockTakeoverBanner
+                  isTakingLock={isTakingLock}
+                  description={t('takeLockBannerDesc') || 'Wird in einem anderen Tab verarbeitet.'}
+                  buttonLabel={t('takeLockButton') || 'Übernehmen'}
+                  onTakeLock={() => activeProject && takeLock(activeProject.id)}
+                />
               )}
 
               {hasActiveProcess && (
@@ -2731,6 +2716,5 @@ function isConflictError(err: unknown): boolean {
 }
 
 function isLockedByOtherTab(project: { scrapeLock?: { owner: string; expiresAt: number } | null } | undefined): boolean {
-  const lock = project?.scrapeLock;
-  return !!(lock && lock.owner !== TAB_ID && lock.expiresAt > Date.now());
+  return isLockedByOtherTabUtil(project, TAB_ID);
 }

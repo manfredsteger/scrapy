@@ -51,12 +51,27 @@ const MIN_BATCH_DELAY_MS = 200;
 // (pagination, filters) can never grow the crawl without limit.
 const MAX_CRAWL_URLS = 20000;
 
+// The tab identity must survive Vite hot updates and full page reloads of the
+// SAME tab — otherwise every code update (HMR after a merge/edit) regenerates
+// the ID, the stored scrape lock still names the old ID, and the tab falsely
+// sees itself as "another tab" (phantom takeovers). sessionStorage is per-tab
+// and per-session: distinct across real tabs, stable across reloads/HMR.
 const TAB_ID = (() => {
+  const STORAGE_KEY = 'mapscraper-tab-id';
   try {
-    return crypto.randomUUID();
+    const existing = sessionStorage.getItem(STORAGE_KEY);
+    if (existing) return existing;
+  } catch {}
+  let id: string;
+  try {
+    id = crypto.randomUUID();
   } catch {
-    return `tab-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    id = `tab-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
+  try {
+    sessionStorage.setItem(STORAGE_KEY, id);
+  } catch {}
+  return id;
 })();
 
 // Guards against "zombie" processing loops: the batch loop re-schedules itself

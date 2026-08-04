@@ -81,6 +81,11 @@ const TAB_ID = (() => {
 // from older generations stop themselves.
 let scrapeLoopGeneration = 0;
 
+// Maximum number of projects this tab processes in parallel. Per-domain rate
+// limits are the real bottleneck, so a few concurrent projects (different
+// domains) speed things up without overloading the browser or server.
+const MAX_PARALLEL_PROJECTS = 3;
+
 export default function Home() {
   const [, navigate] = useLocation();
   const { language, setLanguage, t, isLoading: langLoading } = useLanguage();
@@ -133,13 +138,50 @@ export default function Home() {
     customValue: number;
   } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const processingRef = useRef(false);
+  // Per-project mutex: IDs of projects whose batch is currently in flight in
+  // this tab. Replaces the old single global boolean so several projects can
+  // be processed in parallel (capped by MAX_PARALLEL_PROJECTS).
+  const processingProjectsRef = useRef<Set<number>>(new Set());
   const abortedProjectsRef = useRef<Set<number>>(new Set());
   // Projects for which pause/stop was requested in this tab. In-flight batches
   // check this after their network call so they don't persist results past the
   // requested pause/stop boundary (the batch is simply discarded and re-done on resume).
   const pauseRequestedRef = useRef<Set<number>>(new Set());
-  const contentQueueRef = useRef<{projectId: number, queue: string[]} | null>(null);
+  // Per-project extraction queue (source of truth between content batches).
+  const contentQueueRef = useRef<Map<number, string[]>>(new Map());
+  // Per-project earliest time the next batch may start (enforces the
+  // project's delayMs setting independently for each parallel project).
+  const nextEligibleAtRef = useRef<Map<number, number>>(new Map());
+  // Per-project pending kick timers so we never stack duplicate timers
+  // (value = timeout handle so it can be cancelled on cleanup).
+  const pendingKickRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
+  // Per-project last activity timestamp for stuck detection.
+  const lastActivityRef = useRef<Map<number, number>>(new Map());
+  // Per-project timestamp of the last dispatch, used for fair (least-recently
+  // -served first) scheduling so projects beyond the concurrency cap are never
+  // starved by the fixed list order.
+  const lastDispatchedAtRef = useRef<Map<number, number>>(new Map());
+  // Per-project step generation. Bumped whenever a project's processing is
+  // externally reset (takeover, restart, delete, watchdog). An in-flight
+  // batch that observes a bumped generation discards its results instead of
+  // persisting them — clearing a mutex alone is not cancellation.
+  const stepGenRef = useRef<Map<number, number>>(new Map());
+
+  // Centralized cleanup for a project's client-side scheduling state.
+  // Bumps the generation (cancels in-flight persistence), cancels pending
+  // kick timers, and drops all per-project map entries.
+  const clearProjectScheduling = useCallback((projectId: number) => {
+    stepGenRef.current.set(projectId, (stepGenRef.current.get(projectId) ?? 0) + 1);
+    const kickTimer = pendingKickRef.current.get(projectId);
+    if (kickTimer !== undefined) {
+      clearTimeout(kickTimer);
+      pendingKickRef.current.delete(projectId);
+    }
+    contentQueueRef.current.delete(projectId);
+    nextEligibleAtRef.current.delete(projectId);
+    lastActivityRef.current.delete(projectId);
+    lastDispatchedAtRef.current.delete(projectId);
+  }, []);
   // Always points to the latest processStep closure so that scheduled
   // callbacks (setTimeout inside scheduleNextBatch) never call a stale version.
   const processStepRef = useRef<() => Promise<void>>(async () => {});
@@ -147,18 +189,27 @@ export default function Home() {
   useEffect(() => {
     loopGenRef.current = ++scrapeLoopGeneration;
   }, []);
-  // Live progress: rolling feed of recently processed URLs + session stats for rate/ETA
-  const [liveFeed, setLiveFeed] = useState<LiveActivityEntry[]>([]);
-  const [sessionStats, setSessionStats] = useState<{ projectId: number; startTime: number; processedCount: number } | null>(null);
+  // Live progress: per-project rolling feed of recently processed URLs +
+  // per-project session stats for rate/ETA. Keyed by project ID so parallel
+  // projects don't clobber each other's displays.
+  const [liveFeed, setLiveFeed] = useState<Record<number, LiveActivityEntry[]>>({});
+  const [sessionStats, setSessionStats] = useState<Record<number, { startTime: number; processedCount: number }>>({});
 
   const recordActivity = useCallback((projectId: number, entries: LiveActivityEntry[]) => {
     if (entries.length === 0) return;
-    setLiveFeed(prev => [...entries, ...prev].slice(0, 30));
-    setSessionStats(prev =>
-      prev && prev.projectId === projectId
-        ? { ...prev, processedCount: prev.processedCount + entries.length }
-        : { projectId, startTime: Date.now(), processedCount: entries.length }
-    );
+    setLiveFeed(prev => ({
+      ...prev,
+      [projectId]: [...entries, ...(prev[projectId] || [])].slice(0, 30),
+    }));
+    setSessionStats(prev => {
+      const existing = prev[projectId];
+      return {
+        ...prev,
+        [projectId]: existing
+          ? { ...existing, processedCount: existing.processedCount + entries.length }
+          : { startTime: Date.now(), processedCount: entries.length },
+      };
+    });
   }, []);
 
   const { data: projects = [], isLoading, refetch: refetchProjects } = useQuery<Project[]>({
@@ -362,7 +413,10 @@ export default function Home() {
     mutationFn: async (id: number) => {
       // CRITICAL: Mark project as aborted IMMEDIATELY to stop all active processing
       abortedProjectsRef.current.add(id);
-      processingRef.current = false; // Stop any current processing loop
+      // Cancel this project's processing chain: bump its generation and drop
+      // all scheduling state. The running slot is NOT force-cleared — the
+      // in-flight step's .finally() releases it once the step settles.
+      clearProjectScheduling(id);
       
       console.log(`[Delete] Project ${id} marked as aborted, stopping all processing`);
       
@@ -507,11 +561,13 @@ export default function Home() {
         throw new Error((data as any).message || 'Failed to take lock');
       }
       lockNotifiedRef.current.delete(projectId);
+      // Cancel any in-flight step (bumps generation) and clear scheduling
+      // state; the running slot is released by the old step's .finally().
+      clearProjectScheduling(projectId);
       await refetchProjects();
       // Kick off the processing loop immediately now that this tab owns the lock.
       processStepRef.current().catch(err => {
         console.error('[TakeLock] processStep failed:', err);
-        processingRef.current = false;
       });
       toast({ title: t('takeLockSuccess') || 'Verarbeitung übernommen' });
     } catch (err) {
@@ -519,7 +575,7 @@ export default function Home() {
     } finally {
       setIsTakingLock(false);
     }
-  }, [t, toast, refetchProjects]);
+  }, [t, toast, refetchProjects, clearProjectScheduling]);
 
   // A concurrent write (other tab or server action) won the race: discard this
   // batch, refresh from the server, and let the owner keep going.
@@ -530,15 +586,28 @@ export default function Home() {
     queryClient.invalidateQueries({ queryKey: ['/api/projects', projectId] });
   }, [notifyLockedByOtherTab]);
 
-  const processStep = useCallback(async () => {
-    // Stale loop from a previous mount/hot-update? Stop silently.
-    if (loopGenRef.current !== scrapeLoopGeneration) {
-      console.log('[Process] Stale loop generation detected, stopping this loop');
-      return;
-    }
-    if (processingRef.current) return;
-    
-    const scrapingProject = projects.find(p => p.status === 'scraping');
+  // Sets the project's next eligible time and schedules a re-dispatch after
+  // its per-project delay (deduped so timers never stack per project).
+  const scheduleProjectKick = useCallback((projectId: number, delayMs: number) => {
+    nextEligibleAtRef.current.set(projectId, Date.now() + delayMs);
+    if (pendingKickRef.current.has(projectId)) return;
+    const timer = setTimeout(() => {
+      pendingKickRef.current.delete(projectId);
+      processStepRef.current().catch(err => {
+        console.error('[Process] Step failed, will retry:', err);
+      });
+    }, delayMs);
+    pendingKickRef.current.set(projectId, timer);
+  }, []);
+
+  // Processes ONE batch for ONE project. Only called by the dispatcher
+  // (processStep) below, which guarantees per-project mutual exclusion via
+  // processingProjectsRef.
+  const processProjectStep = useCallback(async (project: Project, gen: number) => {
+    // True when this step was externally reset (takeover, restart, delete,
+    // watchdog) while a network call was in flight — discard, don't persist.
+    const isStaleGen = () => (stepGenRef.current.get(project.id) ?? 0) !== gen;
+    const scrapingProject = project.status === 'scraping' ? project : null;
     if (scrapingProject) {
       // Check if project was marked for deletion - stop immediately
       if (abortedProjectsRef.current.has(scrapingProject.id)) {
@@ -562,9 +631,8 @@ export default function Home() {
         return;
       }
 
-      processingRef.current = true;
-      lastActivityRef.current = Date.now();
-      
+      lastActivityRef.current.set(scrapingProject.id, Date.now());
+
       try {
         // PERFORMANCE: Like the crawl loop, use the lightweight crawl-state
         // endpoint instead of the full project detail. On large projects the
@@ -644,9 +712,8 @@ export default function Home() {
         });
 
         // Check again if project was aborted or paused/stopped during API call
-        if (abortedProjectsRef.current.has(scrapingProject.id) || pauseRequestedRef.current.has(scrapingProject.id)) {
-          console.log(`[Process] Project ${scrapingProject.id} was aborted/paused during processing, not saving results`);
-          processingRef.current = false;
+        if (abortedProjectsRef.current.has(scrapingProject.id) || pauseRequestedRef.current.has(scrapingProject.id) || isStaleGen()) {
+          console.log(`[Process] Project ${scrapingProject.id} was aborted/paused/reset during processing, not saving results`);
           return;
         }
 
@@ -683,6 +750,12 @@ export default function Home() {
             },
           });
           queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
+          // Self-schedule the next batch with the project's own delay so
+          // parallel projects each keep their configured pace.
+          scheduleProjectKick(scrapingProject.id, Math.max(
+            MIN_BATCH_DELAY_MS,
+            scrapeState.projectSettings?.scraping?.delayMs ?? 500,
+          ));
         } catch (err) {
           if (isConflictError(err)) {
             handleWriteConflict(scrapingProject.id);
@@ -691,13 +764,13 @@ export default function Home() {
           throw err;
         }
       } finally {
-        processingRef.current = false;
+        lastActivityRef.current.set(scrapingProject.id, Date.now());
       }
       return;
     }
 
     // Handle crawling mode - crawl pages to discover URLs
-    const crawlingProject = projects.find(p => p.status === 'crawling');
+    const crawlingProject = project.status === 'crawling' ? project : null;
     if (crawlingProject) {
       // Check if project was marked for deletion - stop immediately
       if (abortedProjectsRef.current.has(crawlingProject.id)) {
@@ -764,9 +837,8 @@ export default function Home() {
         return;
       }
 
-      processingRef.current = true;
-      lastActivityRef.current = Date.now();
-      
+      lastActivityRef.current.set(crawlingProject.id, Date.now());
+
       try {
         // PERFORMANCE: Use the lightweight crawl-state endpoint instead of the
         // full project detail. On large crawls the full detail (results incl.
@@ -868,9 +940,8 @@ export default function Home() {
         });
 
         // Check again if project was aborted or paused/stopped during API call
-        if (abortedProjectsRef.current.has(crawlingProject.id) || pauseRequestedRef.current.has(crawlingProject.id)) {
-          console.log(`[Process] Crawling project ${crawlingProject.id} was aborted/paused during processing, not saving results`);
-          processingRef.current = false;
+        if (abortedProjectsRef.current.has(crawlingProject.id) || pauseRequestedRef.current.has(crawlingProject.id) || isStaleGen()) {
+          console.log(`[Process] Crawling project ${crawlingProject.id} was aborted/paused/reset during processing, not saving results`);
           return;
         }
 
@@ -910,6 +981,12 @@ export default function Home() {
           const progressData = await progressRes.json();
           progressVersion = progressData?.version;
           queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
+          // Self-schedule the next batch with the project's own delay so
+          // parallel projects each keep their configured pace.
+          scheduleProjectKick(crawlingProject.id, Math.max(
+            MIN_BATCH_DELAY_MS,
+            crawlState.projectSettings?.scraping?.delayMs ?? 800,
+          ));
         } catch (err) {
           if (isConflictError(err)) {
             handleWriteConflict(crawlingProject.id);
@@ -975,17 +1052,17 @@ export default function Home() {
           }
         }
       } finally {
-        processingRef.current = false;
+        lastActivityRef.current.set(crawlingProject.id, Date.now());
       }
       return;
     }
 
-    const contentScrapingProject = projects.find(p => p.status === 'content_scraping');
+    const contentScrapingProject = project.status === 'content_scraping' ? project : null;
     if (contentScrapingProject) {
       // Check if project was marked for deletion - stop immediately
       if (abortedProjectsRef.current.has(contentScrapingProject.id)) {
         console.log(`[Process] Content scraping project ${contentScrapingProject.id} was aborted, skipping`);
-        contentQueueRef.current = null;
+        contentQueueRef.current.delete(contentScrapingProject.id);
         return;
       }
       // Another tab is actively processing this project - don't take over
@@ -994,20 +1071,17 @@ export default function Home() {
         return;
       }
       
-      // Initialize queue ref if not set or different project
-      if (!contentQueueRef.current || contentQueueRef.current.projectId !== contentScrapingProject.id) {
-        contentQueueRef.current = {
-          projectId: contentScrapingProject.id,
-          queue: [...(contentScrapingProject.queue || [])]
-        };
-        console.log(`[ProcessStep] Initialized queue ref with ${contentQueueRef.current.queue.length} URLs`);
+      // Initialize this project's queue entry if not set yet
+      if (!contentQueueRef.current.has(contentScrapingProject.id)) {
+        contentQueueRef.current.set(contentScrapingProject.id, [...(contentScrapingProject.queue || [])]);
+        console.log(`[ProcessStep] Initialized queue ref for project ${contentScrapingProject.id} with ${contentQueueRef.current.get(contentScrapingProject.id)!.length} URLs`);
       }
-      
+
       // Use the ref queue, not the stale project queue
-      const currentQueue = contentQueueRef.current.queue;
-      
+      const currentQueue = contentQueueRef.current.get(contentScrapingProject.id)!;
+
       if (currentQueue.length === 0) {
-        contentQueueRef.current = null;
+        contentQueueRef.current.delete(contentScrapingProject.id);
         await updateProjectMutation.mutateAsync({ 
           id: contentScrapingProject.id, 
           updates: { 
@@ -1019,8 +1093,7 @@ export default function Home() {
         return;
       }
 
-      processingRef.current = true;
-      lastActivityRef.current = Date.now();
+      lastActivityRef.current.set(contentScrapingProject.id, Date.now());
 
       // Read settings fresh each batch so in-flight setting changes take effect
       const contentBatchSize = Math.min(
@@ -1036,30 +1109,19 @@ export default function Home() {
       const remainingQueue = currentQueue.slice(contentBatchSize);
       
       // Update ref immediately - this is the source of truth for next batch
-      contentQueueRef.current.queue = remainingQueue;
-      
+      contentQueueRef.current.set(contentScrapingProject.id, remainingQueue);
+
       // Helper to schedule next batch - centralized logic
-      // Keep processingRef true until after scheduling to prevent overlapping calls
       const scheduleNextBatch = (queueLength: number) => {
-        lastActivityRef.current = Date.now();
+        lastActivityRef.current.set(contentScrapingProject.id, Date.now());
         if (queueLength > 0) {
           console.log(`[ProcessStep] Scheduling next batch in ${contentDelayMs}ms, ${queueLength} remaining`);
-          // Schedule first, then release lock
-          setTimeout(() => {
-            // Use the ref so we always call the latest processStep closure
-            // (with the freshest projects state), not the one captured when
-            // this scheduleNextBatch was created.
-            processStepRef.current().catch(err => {
-              console.error('[Process] Step failed, will retry:', err);
-              processingRef.current = false;
-            });
-          }, contentDelayMs);
-          // Release lock only after timer is set
-          processingRef.current = false;
+          scheduleProjectKick(contentScrapingProject.id, contentDelayMs);
         } else {
           console.log('[ProcessStep] Queue empty, extraction complete');
-          contentQueueRef.current = null;
-          processingRef.current = false;
+          contentQueueRef.current.delete(contentScrapingProject.id);
+          // Kick once more so the queue-empty branch flips the project to idle.
+          scheduleProjectKick(contentScrapingProject.id, MIN_BATCH_DELAY_MS);
         }
       };
 
@@ -1077,8 +1139,7 @@ export default function Home() {
           if (isConflictError(err)) {
             // Another tab owns the extraction - discard and stop this tab's loop
             handleWriteConflict(contentScrapingProject.id);
-            contentQueueRef.current = null;
-            processingRef.current = false;
+            contentQueueRef.current.delete(contentScrapingProject.id);
             return;
           }
           throw err;
@@ -1107,16 +1168,14 @@ export default function Home() {
         // past the boundary and don't schedule the next batch
         if (pauseRequestedRef.current.has(contentScrapingProject.id)) {
           console.log(`[Process] Content scraping project ${contentScrapingProject.id} was paused/stopped during processing, not saving batch`);
-          contentQueueRef.current = null;
-          processingRef.current = false;
+          contentQueueRef.current.delete(contentScrapingProject.id);
           return;
         }
-        // Check again if project was aborted during API call
-        if (abortedProjectsRef.current.has(contentScrapingProject.id)) {
-          console.log(`[Process] Content scraping project ${contentScrapingProject.id} was aborted during processing, not saving results`);
-          contentQueueRef.current = null;
-          processingRef.current = false;
-          // Don't schedule next batch - project was aborted
+        // Check again if project was aborted or externally reset during API call
+        if (abortedProjectsRef.current.has(contentScrapingProject.id) || isStaleGen()) {
+          console.log(`[Process] Content scraping project ${contentScrapingProject.id} was aborted/reset during processing, not saving results`);
+          if (!isStaleGen()) contentQueueRef.current.delete(contentScrapingProject.id);
+          // Don't schedule next batch - project was aborted/reset
           return;
         }
 
@@ -1172,8 +1231,7 @@ export default function Home() {
         } catch (updateErr) {
           if (isConflictError(updateErr)) {
             handleWriteConflict(contentScrapingProject.id);
-            contentQueueRef.current = null;
-            processingRef.current = false;
+            contentQueueRef.current.delete(contentScrapingProject.id);
             return;
           }
           console.error('[ProcessStep] Failed to save batch results:', updateErr);
@@ -1264,8 +1322,7 @@ export default function Home() {
         } catch (updateErr) {
           if (isConflictError(updateErr)) {
             handleWriteConflict(contentScrapingProject.id);
-            contentQueueRef.current = null;
-            processingRef.current = false;
+            contentQueueRef.current.delete(contentScrapingProject.id);
             return;
           }
           console.error('[ProcessStep] Failed to update queue after batch error:', updateErr);
@@ -1275,22 +1332,81 @@ export default function Home() {
         scheduleNextBatch(remainingQueue.length);
       }
     }
-  }, [projects, updateProjectMutation, recordActivity, notifyLockedByOtherTab, handleWriteConflict, setRateLimitModal]);
+  }, [updateProjectMutation, recordActivity, notifyLockedByOtherTab, handleWriteConflict, setRateLimitModal, scheduleProjectKick, toast, t]);
+
+  // Dispatcher: starts one batch per eligible active project, up to
+  // MAX_PARALLEL_PROJECTS concurrently. Per-project mutual exclusion is
+  // guaranteed by adding the ID to processingProjectsRef synchronously
+  // BEFORE the async step starts.
+  const processStep = useCallback(async () => {
+    // Stale loop from a previous mount/hot-update? Stop silently.
+    if (loopGenRef.current !== scrapeLoopGeneration) {
+      console.log('[Process] Stale loop generation detected, stopping this loop');
+      return;
+    }
+    const running = processingProjectsRef.current;
+    // Fair admission: serve the least-recently-dispatched project first so a
+    // fourth (or later) active project is never starved by list order while
+    // the first three keep re-dispatching themselves.
+    const actives = projects
+      .filter(p => p.status === 'scraping' || p.status === 'crawling' || p.status === 'content_scraping')
+      .sort((a, b) =>
+        (lastDispatchedAtRef.current.get(a.id) ?? 0) - (lastDispatchedAtRef.current.get(b.id) ?? 0)
+      );
+    for (const project of actives) {
+      if (running.size >= MAX_PARALLEL_PROJECTS) break;
+      if (running.has(project.id)) continue;
+      if (abortedProjectsRef.current.has(project.id)) continue;
+      // Respect the project's own delay between batches. If it isn't
+      // eligible yet, make sure a kick timer exists so it resumes on time.
+      const wait = (nextEligibleAtRef.current.get(project.id) ?? 0) - Date.now();
+      if (wait > 0) {
+        if (!pendingKickRef.current.has(project.id)) {
+          const timer = setTimeout(() => {
+            pendingKickRef.current.delete(project.id);
+            processStepRef.current().catch(err => {
+              console.error('[Process] Step failed, will retry:', err);
+            });
+          }, wait);
+          pendingKickRef.current.set(project.id, timer);
+        }
+        continue;
+      }
+      running.add(project.id);
+      lastActivityRef.current.set(project.id, Date.now());
+      lastDispatchedAtRef.current.set(project.id, Date.now());
+      const gen = stepGenRef.current.get(project.id) ?? 0;
+      processProjectStep(project, gen)
+        .catch(err => {
+          console.error(`[Process] Step failed for project ${project.id}, will retry:`, err);
+        })
+        .finally(() => {
+          running.delete(project.id);
+          // A slot was freed — re-dispatch so a project that was waiting on
+          // capacity (not on its delay) gets admitted immediately.
+          processStepRef.current().catch(err => {
+            console.error('[Process] Step failed, will retry:', err);
+          });
+        });
+    }
+  }, [projects, processProjectStep]);
   // Keep ref current every render so setTimeout callbacks inside processStep
   // always invoke the latest closure (with fresh projects/settings state).
   processStepRef.current = processStep;
 
-  // Track last activity time for stuck detection
-  const lastActivityRef = useRef<number>(Date.now());
-  
-  // Reset processingRef only if genuinely stuck (no activity for 120 seconds)
+  // Reset a stuck project's processing slot if genuinely stuck
+  // (no activity for that project for 120 seconds)
   useEffect(() => {
     const checkInterval = setInterval(() => {
-      if (processingRef.current) {
-        const inactiveTime = Date.now() - lastActivityRef.current;
-        if (inactiveTime > 120000) { // 120 seconds of no activity
-          console.warn('Resetting stuck processingRef after 120s inactivity');
-          processingRef.current = false;
+      const now = Date.now();
+      for (const projectId of Array.from(processingProjectsRef.current)) {
+        const lastActivity = lastActivityRef.current.get(projectId) ?? 0;
+        if (now - lastActivity > 120000) { // 120 seconds of no activity
+          console.warn(`Resetting stuck processing slot for project ${projectId} after 120s inactivity`);
+          // Bump the generation so the hung step (if it ever resumes) discards
+          // its results instead of persisting alongside a newly dispatched one.
+          stepGenRef.current.set(projectId, (stepGenRef.current.get(projectId) ?? 0) + 1);
+          processingProjectsRef.current.delete(projectId);
         }
       }
     }, 10000); // Check every 10 seconds
@@ -1298,25 +1414,21 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const active = projects.find(p => p.status === 'scraping' || p.status === 'content_scraping' || p.status === 'crawling');
-    if (active && !processingRef.current) {
-      // Use delayMs from project settings for all three modes so the setting
-      // takes effect immediately on save (including mid-crawl and mid-scraping).
-      // Content scraping uses its own scheduleNextBatch logic; the useEffect
-      // here only fires between batches when processingRef is released.
-      const settingsDelay = active.projectSettings?.scraping?.delayMs;
-      const defaultDelay = active.status === 'crawling' ? 800 : (active.status === 'scraping' ? 500 : 1000);
-      const delay = settingsDelay != null
-        ? Math.max(MIN_BATCH_DELAY_MS, settingsDelay)
-        : defaultDelay;
+    const hasEligible = projects.some(
+      p => (p.status === 'scraping' || p.status === 'content_scraping' || p.status === 'crawling')
+        && !processingProjectsRef.current.has(p.id)
+    );
+    if (hasEligible) {
+      // Per-project delays (settings.delayMs) are enforced inside the
+      // dispatcher via nextEligibleAtRef, so this effect only needs a short
+      // debounce before dispatching.
       // Never let a transient request failure (e.g. 502 during a server
       // restart) escape as an unhandled rejection — log and retry next tick.
       const timer = setTimeout(() => {
         processStep().catch(err => {
           console.error('[Process] Step failed, will retry:', err);
-          processingRef.current = false;
         });
-      }, delay);
+      }, MIN_BATCH_DELAY_MS);
       return () => clearTimeout(timer);
     }
   }, [projects, processStep]);
@@ -1328,26 +1440,33 @@ export default function Home() {
   // client-side TTL shows the lock has expired so the gap between expiry and
   // automatic takeover stays short.
   useEffect(() => {
-    const active = projects.find(p => p.status === 'scraping' || p.status === 'content_scraping' || p.status === 'crawling');
-    if (!active || !isLockedByOtherTab(active)) return;
-    const lockExpiresAt = (active.scrapeLock as any)?.expiresAt ?? 0;
-    const lockExpiredClientSide = lockExpiresAt < Date.now();
-    const pollMs = lockExpiredClientSide ? 5000 : 30000;
+    const lockedActives = projects.filter(
+      p => (p.status === 'scraping' || p.status === 'content_scraping' || p.status === 'crawling')
+        && isLockedByOtherTab(p)
+    );
+    if (lockedActives.length === 0) return;
+    const anyExpiredClientSide = lockedActives.some(
+      p => ((p.scrapeLock as any)?.expiresAt ?? 0) < Date.now()
+    );
+    const pollMs = anyExpiredClientSide ? 5000 : 30000;
     const timer = setInterval(async () => {
-      if (processingRef.current) return;
       const result = await refetchProjects();
-      const fresh = result.data?.find(p => p.id === active.id);
-      if (
-        fresh &&
+      const lockedIds = new Set(lockedActives.map(p => p.id));
+      const takeoverReady = result.data?.some(fresh =>
+        lockedIds.has(fresh.id) &&
         (fresh.status === 'scraping' || fresh.status === 'content_scraping' || fresh.status === 'crawling') &&
         !isLockedByOtherTab(fresh) &&
-        !processingRef.current
-      ) {
-        console.log(`[Process] Lock on project ${fresh.id} expired, taking over processing`);
-        lockNotifiedRef.current.delete(fresh.id);
+        !processingProjectsRef.current.has(fresh.id)
+      );
+      if (takeoverReady) {
+        console.log('[Process] A lock expired, taking over processing');
+        result.data?.forEach(fresh => {
+          if (lockedIds.has(fresh.id) && !isLockedByOtherTab(fresh)) {
+            lockNotifiedRef.current.delete(fresh.id);
+          }
+        });
         processStep().catch(err => {
           console.error('[Process] Step failed, will retry:', err);
-          processingRef.current = false;
         });
       }
     }, pollMs);
@@ -1377,9 +1496,11 @@ export default function Home() {
     
     console.log(`[StartExtraction] Starting extraction for project ${activeProject.id}`);
     
-    // Reset processingRef to ensure the loop can start
-    processingRef.current = false;
-    
+    // Cancel any in-flight step for this project and clear its scheduling
+    // state so the extraction loop starts fresh (slot is released by the old
+    // step's .finally()).
+    clearProjectScheduling(activeProject.id);
+
     try {
       // Use dedicated server endpoint that calculates URLs server-side
       const res = await apiRequest('POST', `/api/projects/${activeProject.id}/start-extraction`, { lockOwner: TAB_ID });
@@ -1400,11 +1521,13 @@ export default function Home() {
         variant: 'destructive' 
       });
     }
-  }, [activeProject, toast, t, refetchProjects]);
+  }, [activeProject, toast, t, refetchProjects, clearProjectScheduling]);
 
   // Incremental update: re-discover URLs, then scrape only new/changed pages
   const startUpdate = useCallback(async (projectId: number) => {
-    processingRef.current = false;
+    // Cancel any in-flight step and clear scheduling state (slot is released
+    // by the old step's .finally()).
+    clearProjectScheduling(projectId);
     try {
       const res = await apiRequest('POST', `/api/projects/${projectId}/start-update`, { lockOwner: TAB_ID });
       const data = await res.json();
@@ -1432,7 +1555,7 @@ export default function Home() {
         variant: 'destructive',
       });
     }
-  }, [toast, t, refetchProjects]);
+  }, [toast, t, refetchProjects, clearProjectScheduling]);
 
   const [isSyncingErrors, setIsSyncingErrors] = useState(false);
   const [processAction, setProcessAction] = useState<'pause' | 'resume' | 'stop' | null>(null);
@@ -1466,7 +1589,7 @@ export default function Home() {
     } finally {
       setIsSyncingErrors(false);
     }
-  }, [activeProject, toast, t, refetchProjects]);
+  }, [activeProject, toast, t, refetchProjects, clearProjectScheduling]);
 
   const stopProcess = useCallback(async () => {
     if (!activeProject || processAction) return;
@@ -1642,9 +1765,8 @@ export default function Home() {
       // Use queue-based calculation: progress = (total - remaining) / total
       // Use contentQueueRef for live updates during active processing
       const total = (activeProject as any)?.urlCount ?? (activeProject.results || []).length;
-      const remaining = (contentQueueRef.current?.projectId === activeProject.id)
-        ? contentQueueRef.current.queue.length
-        : (activeProject.queue?.length || 0);
+      const remaining = contentQueueRef.current.get(activeProject.id)?.length
+        ?? (activeProject.queue?.length || 0);
       const processed = total - remaining;
       return total === 0 ? 0 : Math.min(100, Math.round((processed / total) * 100));
     }
@@ -1655,9 +1777,9 @@ export default function Home() {
   const isPaused = activeProject?.status === 'paused' || activeProject?.status === 'content_paused' || activeProject?.status === 'crawl_paused';
   const hasActiveProcess = isProcessing || isPaused;
   // Use contentQueueRef for live updates during active processing, fallback to project queue
-  const remainingUrls = (activeProject?.status === 'content_scraping' && contentQueueRef.current?.projectId === activeProject?.id)
-    ? contentQueueRef.current.queue.length
-    : (activeProject?.queue?.length || 0);
+  const remainingUrls = (activeProject?.status === 'content_scraping'
+    ? contentQueueRef.current.get(activeProject.id)?.length
+    : undefined) ?? (activeProject?.queue?.length || 0);
   // Use API-computed counts when available (more reliable), fallback to client-side calculation
   const scrapedCount = (activeProject as any)?.scrapedCount ?? (activeProject?.results || []).filter(r => r.scrapedData || r.hasScrapedData).length;
   const failedCount = (activeProject as any)?.failedCount ?? (activeProject?.results || []).filter((r: any) => r.errorStatus === 'failed' || r.errorStatus === 'skipped').length;
@@ -1674,15 +1796,16 @@ export default function Home() {
 
   // Live rate / ETA from the current session (since page load / process start)
   const liveRateStats = useMemo(() => {
-    if (!sessionStats || sessionStats.projectId !== activeProject?.id) {
+    const projectStats = activeProject?.id != null ? sessionStats[activeProject.id] : undefined;
+    if (!projectStats) {
       return { pagesPerMinute: null as number | null, etaMs: null as number | null };
     }
-    const elapsedMs = Date.now() - sessionStats.startTime;
+    const elapsedMs = Date.now() - projectStats.startTime;
     // Need a few seconds of data before the rate is meaningful
-    if (elapsedMs < 5000 || sessionStats.processedCount === 0) {
+    if (elapsedMs < 5000 || projectStats.processedCount === 0) {
       return { pagesPerMinute: null, etaMs: null };
     }
-    const pagesPerMinute = sessionStats.processedCount / (elapsedMs / 60000);
+    const pagesPerMinute = projectStats.processedCount / (elapsedMs / 60000);
     // During crawl discovery the queue keeps growing, so a completion ETA would
     // be misleading - suppress it and only show the processing rate.
     const isCrawlDiscovery = activeProject?.status === 'crawling' || activeProject?.status === 'crawl_paused';
@@ -2383,8 +2506,8 @@ export default function Home() {
                       </div>
                       {!isPaused && (
                         <LiveActivityFeed
-                          feed={liveFeed}
-                          processedCount={sessionStats?.projectId === activeProject?.id ? sessionStats.processedCount : 0}
+                          feed={(activeProject?.id != null ? liveFeed[activeProject.id] : undefined) || []}
+                          processedCount={(activeProject?.id != null ? sessionStats[activeProject.id]?.processedCount : 0) ?? 0}
                           pagesPerMinute={liveRateStats.pagesPerMinute}
                           etaMs={liveRateStats.etaMs}
                           t={t}

@@ -27,6 +27,21 @@ export interface IStorage {
   getProjectsLite(): Promise<ProjectLite[]>;
   getProject(id: number): Promise<Project | undefined>;
   getProjectLite(id: number): Promise<any | undefined>;
+  getProjectSettingsOnly(id: number): Promise<{ status: string; projectSettings: any | null; scrapeLock: { owner: string; expiresAt: number } | null } | undefined>;
+  getProjectCrawlState(id: number): Promise<any | undefined>;
+  appendCrawlProgress(
+    id: number,
+    delta: {
+      queue: string[];
+      crawlDepths: Record<string, number>;
+      processedAppend: string[];
+      resultsAppend: any[];
+      errorsAppend: any[];
+      stats: any;
+      scrapeLock: { owner: string; expiresAt: number };
+    },
+    guard: { expectedVersion: number; enforceLockOwner: string },
+  ): Promise<{ version: number } | undefined>;
   createProject(project: InsertProject): Promise<Project>;
   updateProject(id: number, updates: Partial<InsertProject> & { scrapeLock?: { owner: string; expiresAt: number } | null }, guard?: { expectedVersion?: number; enforceLockOwner?: string }): Promise<Project | undefined>;
   deleteProject(id: number): Promise<void>;
@@ -193,6 +208,105 @@ export class DatabaseStorage implements IStorage {
       .where(and(...conditions))
       .returning();
     return project;
+  }
+
+  // Lightweight settings/status load — avoids pulling the multi-MB
+  // queue/processed/results jsonb columns when an endpoint only needs
+  // settings (e.g. per-batch rate-limit configuration).
+  async getProjectSettingsOnly(id: number): Promise<{ status: string; projectSettings: any | null; scrapeLock: { owner: string; expiresAt: number } | null } | undefined> {
+    const result = await db.execute(sql`
+      SELECT status, project_settings, scrape_lock FROM projects WHERE id = ${id}
+    `);
+    if (result.rows.length === 0) return undefined;
+    const row = result.rows[0] as any;
+    return {
+      status: row.status || 'idle',
+      projectSettings: row.project_settings || null,
+      scrapeLock: row.scrape_lock || null,
+    };
+  }
+
+  // Crawl-loop state without the heavy results payload. The crawl loop only
+  // needs result LOCs for dedup — not images/videos/scrapedData. On large
+  // projects this shrinks the per-batch read from tens of MB to a few hundred KB.
+  async getProjectCrawlState(id: number): Promise<any | undefined> {
+    const result = await db.execute(sql`
+      SELECT
+        id, status, domain, queue, crawl_depths, processed, errors, stats,
+        project_settings, version, scrape_lock, update_run,
+        (
+          SELECT COALESCE(jsonb_agg(r->>'loc'), '[]'::jsonb)
+          FROM jsonb_array_elements(COALESCE(results, '[]'::jsonb)) r
+        ) AS result_locs
+      FROM projects
+      WHERE id = ${id}
+    `);
+    if (result.rows.length === 0) return undefined;
+    const row = result.rows[0] as any;
+    return {
+      id: row.id,
+      status: row.status || 'idle',
+      domain: row.domain,
+      queue: row.queue || [],
+      crawlDepths: row.crawl_depths || {},
+      processed: row.processed || [],
+      errors: row.errors || [],
+      stats: row.stats || null,
+      projectSettings: row.project_settings || null,
+      version: parseInt(row.version) || 0,
+      scrapeLock: row.scrape_lock || null,
+      updateRun: row.update_run || null,
+      resultLocs: row.result_locs || [],
+    };
+  }
+
+  // Atomic delta write for crawl progress: appends new results/processed/errors
+  // in SQL instead of the client re-uploading the full arrays (which grows
+  // quadratically with project size). CAS (expectedVersion) and lock-lease
+  // enforcement live in the UPDATE's WHERE clause, exactly like updateProject.
+  async appendCrawlProgress(
+    id: number,
+    delta: {
+      queue: string[];
+      crawlDepths: Record<string, number>;
+      processedAppend: string[];
+      resultsAppend: any[];
+      errorsAppend: any[];
+      stats: any;
+      scrapeLock: { owner: string; expiresAt: number };
+    },
+    guard: { expectedVersion: number; enforceLockOwner: string },
+  ): Promise<{ version: number } | undefined> {
+    const now = Date.now();
+    const result = await db.execute(sql`
+      UPDATE projects SET
+        queue = ${JSON.stringify(delta.queue)}::jsonb,
+        crawl_depths = ${JSON.stringify(delta.crawlDepths)}::jsonb,
+        processed = COALESCE(processed, '[]'::jsonb) || ${JSON.stringify(delta.processedAppend)}::jsonb,
+        results = COALESCE(results, '[]'::jsonb) || ${JSON.stringify(delta.resultsAppend)}::jsonb,
+        errors = COALESCE(errors, '[]'::jsonb) || ${JSON.stringify(delta.errorsAppend)}::jsonb,
+        -- totalUrls is computed authoritatively from the post-append results
+        -- length, so client-side stat drift can never accumulate.
+        stats = jsonb_set(
+          ${JSON.stringify(delta.stats)}::jsonb,
+          '{totalUrls}',
+          to_jsonb(jsonb_array_length(COALESCE(results, '[]'::jsonb) || ${JSON.stringify(delta.resultsAppend)}::jsonb))
+        ),
+        scrape_lock = ${JSON.stringify(delta.scrapeLock)}::jsonb,
+        last_scraped = NOW(),
+        version = version + 1
+      WHERE id = ${id}
+        AND version = ${guard.expectedVersion}
+        AND (
+          scrape_lock IS NULL
+          OR jsonb_typeof(scrape_lock) = 'null'
+          OR COALESCE((scrape_lock->>'expiresAt')::bigint, 0) <= ${now}
+          OR scrape_lock->>'owner' = ${guard.enforceLockOwner}
+        )
+      RETURNING version
+    `);
+    if (result.rows.length === 0) return undefined;
+    return { version: parseInt((result.rows[0] as any).version) };
   }
 
   async deleteProject(id: number): Promise<void> {

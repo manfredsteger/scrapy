@@ -724,20 +724,29 @@ export default function Home() {
       lastActivityRef.current = Date.now();
       
       try {
-        // IMPORTANT: The project list endpoint returns "lite" projects WITHOUT
-        // results/processed arrays. Merging against the lite object would
-        // overwrite all previously crawled URLs with just the current batch
-        // (this froze the UI at "URLs found: 10"). Fetch the full project first.
-        const detailRes = await apiRequest('GET', `/api/projects/${crawlingProject.id}`);
-        const fullCrawlProject: Project = await detailRes.json();
+        // PERFORMANCE: Use the lightweight crawl-state endpoint instead of the
+        // full project detail. On large crawls the full detail (results incl.
+        // images/videos) reaches tens of MB and made every 10-URL batch take
+        // ~45 s. The crawl loop only needs result LOCs for dedup.
+        const detailRes = await apiRequest('GET', `/api/projects/${crawlingProject.id}/crawl-state`);
+        const crawlState: {
+          queue: string[];
+          crawlDepths: Record<string, number>;
+          processed: string[];
+          stats: any;
+          projectSettings: ProjectSettingsType | null;
+          version: number;
+          scrapeLock: { owner: string; expiresAt: number } | null;
+          resultLocs: string[];
+        } = await detailRes.json();
         // Re-check with fresh data: another tab may have grabbed the lock meanwhile
-        if (isLockedByOtherTab(fullCrawlProject)) {
+        if (isLockedByOtherTab(crawlState)) {
           notifyLockedByOtherTab(crawlingProject.id);
           return;
         }
-        const crawlQueue = fullCrawlProject.queue || [];
+        const crawlQueue = crawlState.queue || [];
         const crawlBatchSize = Math.min(
-          Math.max(1, fullCrawlProject.projectSettings?.scraping?.parallelRequests ?? 10),
+          Math.max(1, crawlState.projectSettings?.scraping?.parallelRequests ?? 10),
           MAX_BATCH_SIZE,
         );
         const batchUrls = crawlQueue.slice(0, crawlBatchSize);
@@ -746,8 +755,8 @@ export default function Home() {
         // Depth tracking: enforce the project's maxDepth setting. URLs without
         // a recorded depth (e.g. projects created before depth tracking) count
         // as depth 0, so existing crawls keep their previous behavior.
-        const maxDepth = fullCrawlProject.projectSettings?.scraping?.maxDepth ?? 5;
-        const newCrawlDepths: Record<string, number> = { ...(fullCrawlProject.crawlDepths || {}) };
+        const maxDepth = crawlState.projectSettings?.scraping?.maxDepth ?? 5;
+        const newCrawlDepths: Record<string, number> = { ...(crawlState.crawlDepths || {}) };
 
         // Crawl pages and discover internal links
         const res = await apiRequest('POST', '/api/scrape/crawl', { 
@@ -764,28 +773,26 @@ export default function Home() {
         const serverProcessedSet = new Set(results.map((r: { url: string }) => r.url));
         const untrimmedUrls = batchUrls.filter((u: string) => !serverProcessedSet.has(u));
 
-        let newResults = [...(fullCrawlProject.results || [])];
+        // Delta-based merge: only the batch's NEW results/errors/processed are
+        // collected and sent to the server, which appends them in SQL. The
+        // full arrays never travel to the browser or back.
+        const resultsAppend: Array<{ loc: string; images: any[]; videos: any[] }> = [];
+        const errorsAppend: Array<{ url: string; message: string; timestamp: string }> = [];
+        const processedAppend = batchUrls.filter((u: string) => serverProcessedSet.has(u));
         // Prepend untrimmed URLs so they are the very next to be crawled.
         let newQueue = [...untrimmedUrls, ...remainingQueue];
-        let newProcessed = [
-          ...(fullCrawlProject.processed || []),
-          ...batchUrls.filter((u: string) => serverProcessedSet.has(u)),
-        ];
-        let newErrors = [...(fullCrawlProject.errors || [])];
-        
-        const existingLocs = new Set(newResults.map(r => r.loc));
-        const existingProcessed = new Set(newProcessed);
+
+        const priorResultCount = (crawlState.resultLocs || []).length;
+        const existingLocs = new Set(crawlState.resultLocs || []);
+        const existingProcessed = new Set([...(crawlState.processed || []), ...processedAppend]);
         const existingQueue = new Set(newQueue);
 
         results.forEach((r: { url: string; links: string[]; data: any; error: string | null }) => {
           if (r.data) {
             // Add this URL as a result
             if (!existingLocs.has(r.url)) {
-              newResults.push({
+              resultsAppend.push({
                 loc: r.url,
-                lastmod: undefined,
-                changefreq: undefined,
-                priority: undefined,
                 images: r.data.images || [],
                 videos: r.data.videos || [],
               });
@@ -797,7 +804,7 @@ export default function Home() {
               {
                 queue: newQueue,
                 depths: newCrawlDepths,
-                resultCount: newResults.length,
+                resultCount: priorResultCount + resultsAppend.length,
                 existingLocs,
                 existingProcessed,
                 existingQueue,
@@ -808,7 +815,7 @@ export default function Home() {
               MAX_CRAWL_URLS,
             );
           } else if (r.error) {
-            newErrors.push({ 
+            errorsAppend.push({ 
               url: r.url, 
               message: r.error, 
               timestamp: new Date().toISOString() 
@@ -834,28 +841,31 @@ export default function Home() {
         try {
           // Only drop depths for URLs the server actually processed; untrimmed
           // URLs stay in the queue with their depth intact.
-          batchUrls
-            .filter((u: string) => serverProcessedSet.has(u))
-            .forEach((u: string) => { delete newCrawlDepths[u]; });
+          processedAppend.forEach((u: string) => { delete newCrawlDepths[u]; });
 
-          const progressResult = await updateProjectMutation.mutateAsync({
-            id: crawlingProject.id,
-            expectedVersion: fullCrawlProject.version,
-            updates: {
-              queue: newQueue,
-              crawlDepths: newCrawlDepths,
-              processed: newProcessed,
-              results: newResults,
-              errors: newErrors,
-              stats: {
-                ...fullCrawlProject.stats!,
-                totalUrls: newResults.length,
-                totalImages: newResults.reduce((acc, curr) => acc + (curr.images?.length || 0), 0),
-                totalVideos: newResults.reduce((acc, curr) => acc + (curr.videos?.length || 0), 0),
-              },
+          // Stats are updated incrementally — the client no longer holds the
+          // full results array, so totals are prior stats + this batch's delta.
+          const batchImages = resultsAppend.reduce((acc, curr) => acc + (curr.images?.length || 0), 0);
+          const batchVideos = resultsAppend.reduce((acc, curr) => acc + (curr.videos?.length || 0), 0);
+
+          const progressRes = await apiRequest('POST', `/api/projects/${crawlingProject.id}/crawl-progress`, {
+            lockOwner: TAB_ID,
+            expectedVersion: crawlState.version,
+            queue: newQueue,
+            crawlDepths: newCrawlDepths,
+            processedAppend,
+            resultsAppend,
+            errorsAppend,
+            stats: {
+              ...(crawlState.stats || {}),
+              totalUrls: priorResultCount + resultsAppend.length,
+              totalImages: (crawlState.stats?.totalImages || 0) + batchImages,
+              totalVideos: (crawlState.stats?.totalVideos || 0) + batchVideos,
             },
           });
-          progressVersion = (progressResult as any)?.version;
+          const progressData = await progressRes.json();
+          progressVersion = progressData?.version;
+          queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
         } catch (err) {
           if (isConflictError(err)) {
             handleWriteConflict(crawlingProject.id);
@@ -869,15 +879,15 @@ export default function Home() {
         // All calculations are based on freshly fetched project settings so
         // concurrent user changes are never overwritten.
         if (rateLimitDetected) {
-          // Must fetch fresh state: using stale fullCrawlProject settings would
-          // CAS-succeed but silently overwrite any settings the user changed
-          // during the in-flight request.
+          // Must fetch fresh state: using stale settings would CAS-succeed but
+          // silently overwrite any settings the user changed during the
+          // in-flight request. Use the lightweight crawl-state endpoint.
           let freshVersion: number | undefined;
           let freshSettings: ProjectSettingsType | undefined;
           try {
-            const freshRes = await apiRequest('GET', `/api/projects/${crawlingProject.id}`);
-            const freshProject: Project = await freshRes.json();
-            freshVersion = (freshProject as any).version;
+            const freshRes = await apiRequest('GET', `/api/projects/${crawlingProject.id}/crawl-state`);
+            const freshProject = await freshRes.json();
+            freshVersion = freshProject.version;
             freshSettings = freshProject.projectSettings ?? undefined;
           } catch {
             // If refetch fails we cannot safely CAS — skip rollback entirely

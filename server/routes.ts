@@ -5991,7 +5991,9 @@ export async function registerRoutes(
       // after loading settings so direct/malicious callers can't bypass the limit.
       let effectiveConcurrency = MAX_CONCURRENCY;
       if (input.projectId) {
-        const crawlProject = await storage.getProject(input.projectId);
+        // Settings-only load: the full project row can be tens of MB on large
+        // crawls; loading it per batch added seconds of latency to every batch.
+        const crawlProject = await storage.getProjectSettingsOnly(input.projectId);
         if (crawlProject) {
           const crawlSettings: ProjectSettings = crawlProject.projectSettings || getDefaultSettings();
           const rlSettings = crawlSettings.scraping.rateLimiting;
@@ -7615,6 +7617,81 @@ export async function registerRoutes(
       res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
       res.send(fileBuffer);
     } catch (err) {
+      res.status(500).json({ message: (err as Error).message });
+    }
+  });
+
+  // Lightweight crawl-loop state: everything the client crawl loop needs per
+  // batch WITHOUT the heavy results array (only the LOCs for dedup). On large
+  // projects this shrinks the per-batch read from tens of MB to a few hundred KB.
+  app.get('/api/projects/:id/crawl-state', async (req, res) => {
+    try {
+      const state = await storage.getProjectCrawlState(Number(req.params.id));
+      if (!state) return res.status(404).json({ message: 'Project not found' });
+      res.json(state);
+    } catch (err) {
+      res.status(500).json({ message: (err as Error).message });
+    }
+  });
+
+  // Delta progress write for the crawl loop: the client sends only the batch's
+  // new results/processed/errors plus the recomputed queue/depths; the server
+  // appends atomically in SQL. Replaces the old full-array PUT, whose payload
+  // grew quadratically with project size.
+  app.post('/api/projects/:id/crawl-progress', async (req, res) => {
+    try {
+      const projectId = Number(req.params.id);
+      const mediaEntry = z.object({
+        loc: z.string(),
+        title: z.string().optional().default(''),
+      });
+      const body = z.object({
+        lockOwner: z.string(),
+        expectedVersion: z.number(),
+        queue: z.array(z.string()),
+        crawlDepths: z.record(z.number()),
+        processedAppend: z.array(z.string()),
+        resultsAppend: z.array(z.object({
+          loc: z.string(),
+          lastmod: z.string().optional(),
+          changefreq: z.string().optional(),
+          priority: z.string().optional(),
+          images: z.array(mediaEntry).default([]),
+          videos: z.array(mediaEntry).default([]),
+        })),
+        errorsAppend: z.array(z.object({
+          url: z.string(),
+          message: z.string(),
+          timestamp: z.string(),
+        })),
+        stats: z.object({
+          totalUrls: z.number(),
+          totalImages: z.number(),
+          totalVideos: z.number(),
+        }).passthrough(),
+      }).parse(req.body);
+
+      const updated = await storage.appendCrawlProgress(projectId, {
+        queue: body.queue,
+        crawlDepths: body.crawlDepths,
+        processedAppend: body.processedAppend,
+        resultsAppend: body.resultsAppend,
+        errorsAppend: body.errorsAppend,
+        stats: body.stats,
+        scrapeLock: { owner: body.lockOwner, expiresAt: Date.now() + 70000 },
+      }, { expectedVersion: body.expectedVersion, enforceLockOwner: body.lockOwner });
+
+      if (!updated) {
+        // Distinguish not-found from CAS/lock conflict for the client
+        const exists = await storage.getProjectSettingsOnly(projectId);
+        if (!exists) return res.status(404).json({ message: 'Project not found' });
+        return res.status(409).json({ message: 'Write conflict: version or lock mismatch', reason: 'conflict' });
+      }
+      res.json({ version: updated.version });
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        return res.status(400).json({ message: 'Invalid input', errors: err.errors });
+      }
       res.status(500).json({ message: (err as Error).message });
     }
   });

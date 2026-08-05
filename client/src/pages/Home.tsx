@@ -1491,10 +1491,12 @@ export default function Home() {
     return () => clearTimeout(timer);
   }, [activeProject]);
 
+  const [isStartingExtraction, setIsStartingExtraction] = useState(false);
   const startContentScrape = useCallback(async () => {
-    if (!activeProject) return;
+    if (!activeProject || isStartingExtraction) return;
     
     console.log(`[StartExtraction] Starting extraction for project ${activeProject.id}`);
+    setIsStartingExtraction(true);
     
     // Cancel any in-flight step for this project and clear its scheduling
     // state so the extraction loop starts fresh (slot is released by the old
@@ -1520,8 +1522,13 @@ export default function Home() {
         description: err instanceof Error ? err.message : 'Failed to start extraction', 
         variant: 'destructive' 
       });
+    } finally {
+      // Once the project refetches into an active-process status, this
+      // section unmounts entirely; resetting here only matters for the
+      // failure path where the button reappears.
+      setIsStartingExtraction(false);
     }
-  }, [activeProject, toast, t, refetchProjects, clearProjectScheduling]);
+  }, [activeProject, isStartingExtraction, toast, t, refetchProjects, clearProjectScheduling]);
 
   // Incremental update: re-discover URLs, then scrape only new/changed pages
   const startUpdate = useCallback(async (projectId: number) => {
@@ -2545,8 +2552,12 @@ export default function Home() {
                           Sync Errors
                         </Button>
                       )}
-                      <Button onClick={startContentScrape} className="gap-2" data-testid="start-extraction-button">
-                        <Play className="w-4 h-4" />
+                      <Button onClick={startContentScrape} disabled={isStartingExtraction} className="gap-2" data-testid="start-extraction-button">
+                        {isStartingExtraction ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Play className="w-4 h-4" />
+                        )}
                         {t('startExtraction')}
                       </Button>
                     </div>

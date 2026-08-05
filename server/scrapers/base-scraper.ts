@@ -1,5 +1,7 @@
 import { JSDOM } from "jsdom";
 import type { ScrapedElement, StructuredData } from "@shared/schema";
+import { normalizeCrawlUrl } from "../crawl-url";
+import { decodeResponse } from "../utils/decode-response";
 
 export interface ScraperResult {
   url: string;
@@ -67,7 +69,7 @@ export abstract class BaseScraper {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
 
-      return await response.text();
+      return await decodeResponse(response);
     } finally {
       clearTimeout(timeoutId);
     }
@@ -167,20 +169,13 @@ export abstract class BaseScraper {
 
   protected extractLinks(doc: Document, baseUrl: string): string[] {
     const links: string[] = [];
-    
+
     doc.querySelectorAll('a[href]').forEach(a => {
       const href = a.getAttribute('href');
       if (!href) return;
-      if (href.startsWith('#') || href.startsWith('javascript:') || 
-          href.startsWith('mailto:') || href.startsWith('tel:')) return;
 
-      try {
-        const resolvedUrl = new URL(href, baseUrl).href;
-        if (!resolvedUrl.match(/\.(pdf|jpg|jpeg|png|gif|svg|css|js|zip|tar|gz|ico|woff|woff2|ttf|eot)$/i)) {
-          const cleanUrl = resolvedUrl.split('#')[0].split('?')[0];
-          if (cleanUrl) links.push(cleanUrl);
-        }
-      } catch {}
+      const cleanUrl = normalizeCrawlUrl(href, baseUrl, this.domain);
+      if (cleanUrl) links.push(cleanUrl);
     });
 
     return Array.from(new Set(links));

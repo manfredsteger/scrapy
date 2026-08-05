@@ -18,6 +18,7 @@ import * as fileStorage from './fileStorage';
 import { orderedElementsToMarkdown } from './markdownConverter';
 import { normalizeCrawlUrl } from './crawl-url';
 import { diffSitemapUpdate, diffCrawlFinish } from './update-diff';
+import { decodeResponse } from './utils/decode-response';
 import multer from 'multer';
 
 // Hard cap on server-side concurrency per batch (safety valve; actual value
@@ -1964,7 +1965,7 @@ async function fetchWithTimeout(url: string, timeout = 15000): Promise<string> {
       throw new Error(`HTTP ${response.status}`);
     }
     
-    return await response.text();
+    return await decodeResponse(response);
   } finally {
     clearTimeout(timeoutId);
   }

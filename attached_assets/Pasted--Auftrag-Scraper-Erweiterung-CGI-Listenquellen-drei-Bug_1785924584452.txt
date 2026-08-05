@@ -1,0 +1,504 @@
+# Auftrag: Scraper-Erweiterung „CGI-Listenquellen" + drei Bugfixes
+
+Du arbeitest im Repo `manfredsteger/scrapy` (TypeScript, Express + React,
+Drizzle, JSDOM, Vitest). Alle Zeilenangaben beziehen sich auf Commit `dedbbac`.
+
+Lies diesen Auftrag **vollständig**, bevor du die erste Datei änderst. Am Ende
+steht eine Definition-of-Done, an der du dich selbst prüfst.
+
+---
+
+## Kontext: was passiert ist
+
+Das Tool hat die Quelle `www.kita-bayern.de` gecrawlt und **372 von 606**
+Einrichtungen gefunden. Nürnberg (162) und Erlangen (64) fehlten zu 100 % —
+nicht weil die Seiten fehlen, sondern weil sie nur über ein parametrisiertes
+Perl-CGI erreichbar sind, dem ein reiner `<a href>`-Crawler nicht folgt.
+
+Bei der Ursachenanalyse wurden vier Defekte gefunden. Einer ist bereits behoben,
+drei sind offen. Zusätzlich fehlt eine Fähigkeit, die das Tool generell braucht.
+
+**Ändere nichts an `server/crawl-url.ts` `normalizeCrawlUrl` außer der in
+Aufgabe 5 genannten Ergänzung.** Die Funktion behält Query-Parameter bereits
+korrekt (verifiziert). Der alte Export stammt aus einem Lauf davor.
+
+---
+
+## Aufgabe 1 — Doppelte Link-Normalisierung beseitigen
+
+**Datei:** `server/scrapers/base-scraper.ts`, Methode `extractLinks` (Zeile 168–187)
+
+Zeile 180 lautet:
+
+```ts
+const cleanUrl = resolvedUrl.split('#')[0].split('?')[0];
+```
+
+Das `.split('?')[0]` wirft den Query-String weg. Genau dieser Fehler hat den
+Datenverlust verursacht — im alten Export hat **keine einzige** von 7.959 URLs
+einen Query-String, obwohl die Quelle die Nutzdaten ausschließlich über
+Query-Parameter ausliefert.
+
+`server/routes.ts:6045` benutzt bereits die korrekte Implementierung
+`normalizeCrawlUrl` aus `server/crawl-url.ts`. `extractLinks` ist ein zweiter,
+divergierender Pfad, der von `BaseScraper.crawl()` und damit von jedem
+Scraper-Plugin genutzt wird.
+
+**Zu tun:** `extractLinks` auf `normalizeCrawlUrl` umstellen. Die Methode
+braucht dafür die Domain — `this.domain` existiert bereits (Zeile 38).
+Danach darf es im Repo **nur noch eine** Link-Normalisierung geben.
+
+**Test:** `server/tests/` — ein Href mit Query-Parametern, durch `extractLinks`
+geschickt, behält die Parameter.
+
+---
+
+## Aufgabe 2 — Charset-korrektes Dekodieren
+
+**Dateien:**
+- `server/routes.ts:1950` (`fetchWithTimeout`)
+- `server/scrapers/base-scraper.ts:52` (`fetchPage`)
+- `server/utils/detector.ts:9` (`detectWebsiteType`)
+
+Alle drei lesen mit `await response.text()`. Das dekodiert in undici **immer**
+als UTF-8 und ignoriert den Charset-Parameter des HTTP-Headers.
+
+Diese Domain mischt zwei Encodings:
+
+| Seitentyp | Content-Type |
+|---|---|
+| CGI-Ergebnisliste `suche_merkliste.pl` | `text/html; charset=ISO-8859-1` |
+| Statische Detailseite `/bt/storchennest/index.html` | `text/html; charset=UTF-8` |
+
+Eine globale Encoding-Konstante ist damit ausgeschlossen — es muss **pro Antwort**
+entschieden werden.
+
+**Zu tun:** Eine gemeinsame Hilfsfunktion anlegen (z. B.
+`server/utils/decode-response.ts`) und in allen drei Pfaden verwenden:
+
+```ts
+export async function decodeResponse(response: Response): Promise<string> {
+  const buf = Buffer.from(await response.arrayBuffer());
+
+  // 1. Charset aus dem HTTP-Header — hat Vorrang
+  const ct = response.headers.get('content-type') ?? '';
+  let charset = /charset=["']?([\w-]+)/i.exec(ct)?.[1]?.toLowerCase();
+
+  // 2. Fallback: <meta charset> aus den ersten 2 KB
+  if (!charset) {
+    const head = buf.subarray(0, 2048).toString('latin1');
+    charset = /<meta[^>]+charset=["']?([\w-]+)/i.exec(head)?.[1]?.toLowerCase();
+  }
+
+  charset ??= 'utf-8';   // HTML5-Default
+
+  try {
+    return new TextDecoder(charset).decode(buf);
+  } catch {
+    return new TextDecoder('utf-8').decode(buf);   // unbekanntes Charset-Label
+  }
+}
+```
+
+**Wichtig — nicht umdrehen:** Der HTTP-Header schlägt das `<meta>`-Tag. Genau
+dieser Konflikt tritt hier auf: der Header sagt korrekt ISO-8859-1, das Markup
+behauptet an einer Stelle UTF-8. Wer dem Markup den Vorrang gibt, produziert
+kaputte Umlaute.
+
+**Test:** Latin-1-Fixture mit „Träger", „für", „Kindertagesstätte" → nach dem
+Dekodieren keine `�` und keine `Ã¤`-Sequenzen.
+
+---
+
+## Aufgabe 3 — Soft-404-Erkennung
+
+Die Quelle liefert Fehlerseiten mit **HTTP 200**:
+
+```
+GET https://www.kita-bayern.de/bt/suche1.html   →  HTTP 200, 1719 Bytes
+Body: <div class="error_online"><h2>Seite nicht gefunden</h2>
+```
+
+`fetchWithTimeout` wirft nur bei `!response.ok`. Damit landen inhaltsleere
+Fehlerseiten als gültige Treffer im Bestand. Im letzten Export sind 7.949 URLs
+als `status: "scraped"` mit `errorStatus: null` markiert — wie viele davon leer
+sind, ist derzeit **nicht messbar**. Das ist das eigentliche Problem: der Export
+behauptet eine Datenmenge, die er nicht belegen kann.
+
+**Zu tun:**
+
+1. Neuen Status `soft-404` einführen (zusätzlich zu `scraped`/`pending`), im
+   Result-Schema und im Export. Betroffene Einträge bekommen
+   `hasScrapedData: false`.
+2. Generische Prüfung, **konservativ** halten (ein zu scharfer Filter wirft
+   echte Seiten weg):
+   - Body < 4 KB **und**
+   - ein `<h1>`/`<h2>` matcht `/seite nicht gefunden|page not found|404|nicht verfügbar/i`
+3. Quellenspezifischer Hook als optionale Eigenschaft am Scraper:
+
+```ts
+softNotFound?(doc: Document, html: string): boolean;
+```
+
+   Implementierung für `cgi-list`:
+
+```ts
+softNotFound(doc) {
+  return doc.querySelector('.error_online') !== null
+      || /Seite nicht gefunden/i.test(doc.querySelector('h2')?.textContent ?? '');
+}
+```
+
+4. Im UI (`client/src/components/UrlList.tsx` und die Projekt-Statistik) muss
+   `soft-404` sichtbar sein und **darf nicht** in die Zahl der erfolgreich
+   gescrapten Seiten einfließen.
+
+---
+
+## Aufgabe 4 — Seed-URLs (die eigentliche Fähigkeitslücke)
+
+31 der 35 Kreis-Startseiten der Quelle antworten mit **302** direkt in die
+Ergebnisliste:
+
+```
+GET /bt/index.html
+→ 302 /cgi-bin/redaktion/suche_merkliste.pl?_Aktion=Suche&_Maske=_suche_allgemein&kreis=bt&_sort=strasse
+```
+
+Nur `er`, `fs`, `in`, `n` liefern eine eigene Landingpage; davon verlinken nur
+`n` und `er` die Suche im HTML. Reine Link-Discovery kann diese Quelle also
+prinzipiell nicht vollständig erschließen — **egal wie gut der Crawler ist.**
+Es braucht die Möglichkeit, Start-URLs zu deklarieren.
+
+**Zu tun:** `shared/schema.ts`, `projectSettingsSchema.scraping` (Zeile 218–236)
+erweitern:
+
+```ts
+// URLs, die ungeprüft in die Crawl-Queue gelegt werden, auch wenn sie von
+// keiner Seite verlinkt sind. Für Quellen, deren Inhalte nur über
+// parametrisierte Endpunkte erreichbar sind.
+seedUrls: z.array(z.string().url()).default([]),
+
+// Optional: Seeds aus einer Vorlage erzeugen, statt sie hart zu hinterlegen.
+seedTemplate: z.object({
+  urlTemplate: z.string(),           // '...?kreis={value}&...'
+  values: z.array(z.string()).optional(),
+  valuesFromSelect: z.object({
+    url: z.string(),
+    selectName: z.string(),
+    exclude: z.array(z.string()).default([]),
+  }).optional(),
+}).optional(),
+```
+
+Beim Start eines Crawls werden die Seeds vor der Discovery in die Queue gelegt.
+
+**Fallstrick bei `valuesFromSelect`:** Die `<option>`-Elemente dieser Quelle
+haben **kein `value`-Attribut** — der Wert steht im Textinhalt. Also
+`option.getAttribute('value') ?? option.textContent?.trim()` lesen, nicht
+`option.value` allein.
+
+Im Frontend (`client/src/components/ProjectSettings.tsx`) ein Textfeld
+„Start-URLs (eine pro Zeile)" ergänzen.
+
+---
+
+## Aufgabe 5 — Guardrail: Redaktionsmaske nicht anfassen
+
+Unter derselben Basis-URL liegt eine **Redaktionsmaske, die ohne Login
+ausgeliefert wird**: Suche nach interner `ID`, nach `traeger`, und ein Feld
+`freigabewarten` (= Einträge, die noch auf Freigabe warten). Solche Daten sind
+nicht veröffentlicht und dürfen nicht in den Bestand.
+
+Der Endpunkt ist **dual genutzt** — eine pauschale Sperre auf `suche.pl` würde
+öffentliche Inhalte mit wegwerfen:
+
+| Aufruf | Bedeutung |
+|---|---|
+| `suche.pl` ohne `_Maske` | Redaktionsmaske → **sperren** |
+| `suche.pl?_Maske=_suche_n2&kreis=n` | öffentliche Kartenansicht → erlauben |
+
+**Zu tun:** In `server/crawl-url.ts` ergänzen, analog zum bestehenden
+`view.php`/`mod.php`-Muster in Zeile 65–66:
+
+```ts
+// Backend-/Redaktionsmasken: derselbe Endpunkt ist ohne _Maske eine
+// Redaktionsansicht, mit _Maske die öffentliche Suche.
+if (pathname.endsWith('/suche.pl') && !urlObj.searchParams.has('_Maske')) return null;
+if (urlObj.searchParams.has('freigabewarten')) return null;
+```
+
+---
+
+## Aufgabe 6 — Neuer Scraper-Typ `cgi-list`
+
+### 6.1 Das Muster
+
+Verallgemeinert: eine Website, deren Nutzdaten nur über parametrisierte
+Formular-Endpunkte (CGI/PHP/ASP) erreichbar sind, die eine **Ergebnisliste**
+liefern, in der jede Zeile bereits einen vollständigen Datensatz enthält. Ein
+Parameter ist ein Aufzählungsschlüssel, dessen Wertebereich aus einem `<select>`
+derselben Seite ablesbar ist.
+
+Bau das als wiederverwendbaren Typ, **nicht** als Sonderfall für kita-bayern.de.
+Die quellenspezifischen Selektoren gehören in eine Konfiguration, nicht in den
+Code der Klasse.
+
+### 6.2 Registrierung
+
+Die Plugin-Architektur trägt das bereits. Vier Eingriffe:
+
+| Datei | Änderung |
+|---|---|
+| `server/scrapers/base-scraper.ts:22` | `WebsiteType` um `'cgi-list'` erweitern |
+| `server/scrapers/cgi-list-scraper.ts` | **neu** — `class CgiListScraper extends BaseScraper` |
+| `server/scrapers/index.ts:21–26` | Registry-Eintrag `'cgi-list': CgiListScraper` + Re-Export |
+| `server/utils/detector.ts` | `detectCgiList()` ergänzen, vor dem Generic-Fallback (Zeile 55) einhängen |
+
+`registerScraper()` (`index.ts:46`) existiert bereits — nicht anfassen.
+
+### 6.3 Detektion
+
+Bewusst eng halten, damit sie nicht auf beliebige PHP-Seiten anspringt:
+
+| Indikator | Gewicht |
+|---|---|
+| URL-Pfad enthält `/cgi-bin/` oder endet auf `.pl` | +0,3 |
+| URL hat ≥ 2 Query-Parameter | +0,2 |
+| Antwort enthält ≥ 5 `<tr>` mit identischer Attributsignatur | +0,3 |
+| Zeilen tragen ein `data-*`-Attribut mit Koordinatenmuster | +0,3 |
+
+Schwelle 0,7. Für kita-bayern.de ergibt das 1,0.
+
+### 6.4 Vertrag einhalten
+
+Der Scraper überschreibt `scrapePageContent(html, url)` und liefert die
+extrahierten Zeilen **zusätzlich** unter `structuredData.rows`. Der bestehende
+`ScraperResult`-Vertrag (`base-scraper.ts:4–13`) bleibt unverändert, damit
+Chunking, Export und `server/update-diff.ts` unberührt weiterlaufen.
+
+---
+
+## Aufgabe 7 — Quellendefinition kita-bayern.de
+
+### 7.1 Endpunkt
+
+```
+GET https://www.kita-bayern.de/cgi-bin/redaktion/suche_merkliste.pl
+    ?_Aktion=Suche&_Maske=_suche_allgemein&kreis=<KREIS>&_sort=strasse
+```
+
+- `_suche_allgemein` ist die kanonische Maske — das ist das Ziel, auf das die
+  Website selbst per 302 weiterleitet.
+- `_suche_n` und `_suche_n2` liefern **identische Zeilenmengen** (verifiziert:
+  bt 17, nm 48, n 162). Nicht zusätzlich abrufen, reine Duplikate.
+- `suche-n4.pl` ist die „Freie Plätze"-Maske, eine Teilmenge mit anderer
+  Semantik. Nicht für die Bestandserfassung verwenden.
+- **Keine Paginierung.** 162 Zeilen kommen in einer Antwort. Kein Pager, kein
+  Offset, kein Limit. Baue keine Paginierungslogik.
+- GET funktioniert, obwohl das Formular `method=post` deklariert. GET verwenden.
+
+### 7.2 Die 35 `kreis`-Werte
+
+```
+a  ab  ab-l  an  ba-l  bt  bt-l  don  er  erh  ffb  fo  fs  fue  fue-l  ho
+in  ku  lau  ll  m  mb  m-l  n  nm  paf  r  rh  sc  sr  sr-l  sta  toel  wue  wug
+```
+
+Diese sieben liefern derzeit **0 Zeilen**: `fs`, `in`, `paf`, `rh`, `sr-l`,
+`sta`, `wug`. Das ist gültig und **kein Fehler** — nicht als Fehlschlag werten,
+nicht retryen.
+
+### 7.3 Zeilenschema
+
+```html
+<tr valign="top"  data-latlon="latlon-49.92329-11.5975">
+  <td class="hidden-mobile">
+    <small>Albert-Einstein-Ring 53</small><br><small>(09 21) 51 37 30</small>
+  </td>
+  <td>
+    <a class="no-icon" href="/./bt/storchennest/index.html" target="_blank">Kath. Kindergarten  Am Storchennest</a><br>
+    <small>
+      <span class="hidden-desktop">…mobile Wiederholung von Adresse+Telefon…</span>
+      Tr&auml;ger: Katholische Gesamtkirchengemeinde Bayreuth<br/>
+      <p>&nbsp;<input type=checkbox name=_merkliste_sel_bt/storchennest value=1> Merkliste</p>
+    </small>
+  </td>
+  <td><small>Ja</small></td>   <!-- u3 -->
+  <td><small>Ja</small></td>   <!-- 3-6 -->
+  <td><small>Ja</small></td>   <!-- Schulkind -->
+</tr>
+```
+
+| Zielfeld | Herkunft |
+|---|---|
+| `sourceSlug` | `a[href]`, Muster `/./<kreis>/<slug>/index.html` → **Primärschlüssel** |
+| `name` | Textinhalt des `<a>`, Mehrfach-Leerzeichen kollabieren |
+| `traeger` | Text nach `Tr&auml;ger:` bis `<br` |
+| `phoneRaw` | zweites `<small>` in `td[0]` |
+| `ageU3`, `age3to6`, `ageSchool` | `td[2]`, `td[3]`, `td[4]` — `Ja`/`Nein` → boolean |
+
+**Achtung `<span class="hidden-desktop">`:** Adresse und Telefon stehen ein
+zweites Mal in `td[1]` (für die mobile Ansicht). Wer stumpf alle `<small>` der
+Zeile einsammelt, bekommt jede Nummer doppelt. Nur `td[0]` auswerten.
+
+**Achtung Whitespace:** `_suche_allgemein` schreibt **zwei** Leerzeichen
+(`<tr valign="top"  data-latlon=…`), `_suche_n` nur eines. Eine Regex auf das
+exakte Muster fällt still auf 0 Treffer. Nutze JSDOM (ist im Projekt) oder
+matche tolerant: `/<tr[^>]*\bdata-latlon="[^"]*"[^>]*>[\s\S]*?<\/tr>/g`
+
+### 7.4 JS-Marker — hier stehen PLZ und Ort
+
+Dieselbe Antwort enthält pro Einrichtung einen Leaflet-Block. **Der ist die
+wertvollere Quelle**, weil er die vollständige Adresse mit PLZ und Ort trägt,
+die in der Tabelle fehlt:
+
+```js
+var text = 'Albert-Einstein-Ring 53, 95448 Bayreuth';
+var link = '/./bt/storchennest/index.html';
+showFrontendMarker(49.92329 , 11.5975 , 'Kath. Kindergarten  Am Storchennest', text, link);
+```
+
+```ts
+/var text = '(.*?)';\s*var link = '(.*?)';\s*showFrontendMarker\(\s*([-\d.]+)\s*,\s*([-\d.]+)\s*,\s*'(.*?)'/gs
+```
+
+- Join zur Tabellenzeile über `link` (identisch mit dem `href` der Zeile).
+- `text` = `<Straße Hausnr>, <PLZ> <Ort>`; in 598 von 606 Fällen vollständig.
+- Koordinaten identisch mit `data-latlon`, aber in voller Präzision.
+- **Fallback nötig:** 6 Einrichtungen (alle in `nm`) haben eine Tabellenzeile
+  ohne JS-Marker → dort `data-latlon` verwenden.
+
+**Damit müssen die 606 Detailseiten für die Adresse nicht abgerufen werden.**
+
+### 7.5 Der Koordinaten-Fallstrick — bitte genau lesen
+
+```
+data-latlon="latlon-49.92329-11.5975"
+                   ^        ^
+                   |        └── Trennzeichen, KEIN Vorzeichen
+                   └── Präfix-Trennzeichen
+```
+
+Naiv als Vorzeichen geparst landen **alle** Einrichtungen bei −49/−11, also im
+Südatlantik vor Namibia — plausibel aussehend, ohne jeden Fehler. Korrekt:
+
+```ts
+const m = /data-latlon="latlon-(\d+\.\d+)-(\d+\.\d+)"/.exec(rowHtml);
+const lat = m ? parseFloat(m[1]) : null;   // 49.92329
+const lon = m ? parseFloat(m[2]) : null;   // 11.5975
+```
+
+Pflicht-Plausibilisierung: Bayern liegt in `lat 47.2…50.6`, `lon 8.9…13.9`.
+Im Referenzlauf lagen **0 von 603** außerhalb — jede Abweichung ist ein
+Parser-Fehler, kein Datenfehler. Logge sie als Warnung.
+
+### 7.6 Telefonzellen: mehrere Nummern mit Labels
+
+Vorkommende Formen:
+
+```
+(09 21) 51 37 30
+0921/99009020
+Büro (0981) 515903
+Büro: 0921-7454167, Krippe: 0921-7454168, KiGa: 0921-43922
+(0 92 08) 82 30 Krippe Spatzennest: 09208/580468
+(0 91 31) 60 48 50 oder 60 13 01
+k. A.
+```
+
+Regeln (im Referenzlauf 606/606 sauber verarbeitet):
+
+1. `k. A.`, `-`, `n. n.`, `siehe Website` sind **Platzhalter** → leeres Feld.
+   Betrifft 27 Einrichtungen.
+2. Die **Vorwahl steht immer vor** `(`, `/` oder `-`, sonst vor dem ersten
+   Leerraum. Damit sauber in Vorwahl + Rufnummer trennbar → Ausgabe `0921 513730`.
+3. Mehrere Nummern pro Zelle: der Text **vor** einer Nummer ist ihr Label
+   (`Büro`, `Krippe`, `KiGa`) → mappt direkt auf `phoneInfo`/`phoneInfo2…5`.
+4. Ist das Label `oder`/`bzw.`/`und`, ist es eine Aufzählung: kein Label, und die
+   Folgenummer **erbt die Vorwahl** der vorherigen. Ohne diese Regel entsteht
+   aus `(0 91 31) 60 48 50 oder 60 13 01` eine vorwahllose, unbrauchbare
+   zweite Nummer.
+
+Zielstruktur (entspricht dem Kitamap-Schema, spart nachgelagerte Arbeit):
+`phone`, `phoneInfo`, `phone2`, `phoneInfo2`, … bis `phone5`/`phoneInfo5`.
+Maximal 5 Slots; mehr → Warnung loggen, Rest verwerfen. Verteilung im
+Referenzlauf: 554× eine Nummer, 24× zwei, 1× drei.
+
+Zusätzlich `phoneRaw` unverändert mitführen — für die spätere manuelle Prüfung.
+
+### 7.7 E-Mails
+
+Die Liste enthält **keine** E-Mail-Adressen. Die stehen auf den statischen
+Detailseiten als `mailto:`-Links. Das ist ein **separater, nachgelagerter Lauf**
+über die 606 Slugs — **nicht** Teil dieser Aufgabe. Baue ihn nicht mit ein.
+
+### 7.8 Drosselung
+
+`projectSettings.scraping` für diese Quelle:
+
+- `parallelRequests: 2` (Default 10 ist für ein altes Perl-CGI deutlich zu viel)
+- `delayMs: 1000`
+
+35 Abfragen dauern damit rund eine Minute. Das ist völlig ausreichend — baue
+keine Optimierung ein.
+
+`robots.txt` der Quelle hat **keine** `User-agent`-Zeile und ist damit formal
+ungültig. Die gelisteten `Disallow`-Pfade (`/xxx/`, `/n<NNN>.htm`,
+`/f<NNN>.htm`) betreffen weder `/cgi-bin/redaktion/` noch `/<kreis>/<slug>/`.
+Respektiere sie trotzdem als quellenspezifische Blockliste.
+
+---
+
+## Definition of Done
+
+Prüfe jeden Punkt selbst und berichte das Ergebnis. Wenn ein Punkt nicht
+erfüllt ist, sag das **explizit**, statt ihn zu überspringen.
+
+**Funktional — ein Lauf gegen die Quelle liefert:**
+
+1. ≥ 600 distinkte `sourceSlug` über alle 35 Kreise.
+2. `kreis=n` ≥ 160 und `kreis=er` ≥ 60. **Das ist der direkte Regressionstest
+   gegen den ursprünglichen Fehler** — vorher waren beide 0.
+3. ≥ 99 % der Zeilen mit `latitude`/`longitude`, davon **100 %** innerhalb
+   `lat 47.2…50.6` / `lon 8.9…13.9`.
+4. ≥ 98 % der Zeilen mit `zipCode` **und** `city`. Bei 0 % wurde nur die
+   Tabelle geparst und der JS-Marker-Block übersehen.
+5. Kein `�` und keine `Ã¤`-Sequenz im Ergebnis; „Träger", „für",
+   „Kindertagesstätte", „Am Flößanger" korrekt.
+6. `bt/suche1.html` wird als `soft-404` klassifiziert, nicht als `scraped`.
+7. Keine abgerufene URL matcht `suche.pl` ohne `_Maske`.
+8. `fs`, `in`, `paf`, `rh`, `sr-l`, `sta`, `wug` liefern 0 Zeilen **ohne**
+   Fehlerstatus.
+
+**Code:**
+
+9. Es gibt genau **eine** Link-Normalisierung im Repo.
+10. Es gibt genau **eine** Stelle, die HTTP-Antworten dekodiert.
+11. `WebsiteType`, Registry und Detector kennen `cgi-list`; `ScraperResult`
+    ist unverändert.
+12. `npm run test` (Vitest) läuft grün, inkl. neuer Tests für:
+    Query-Erhalt in `extractLinks`, Latin-1-Dekodierung, Soft-404-Erkennung,
+    `data-latlon`-Parsing (Vorzeichenfalle!), Telefon-Mehrfachnummern.
+
+**Referenzabgleich:**
+
+13. Der Lauf muss `kita-bayern-basisliste.json` reproduzieren (606 Einträge,
+    liegt bei). Abweichungen sind Implementierungsfehler, nicht Datenfehler —
+    der Referenzlauf wurde gegen die Live-Quelle validiert.
+
+---
+
+## Arbeitsweise
+
+- Geh die Aufgaben **in dieser Reihenfolge** an. 1–3 sind Bugfixes, die
+  unabhängig vom Rest Wert haben; 4–7 bauen darauf auf.
+- Nach jedem Abschnitt: Tests laufen lassen, kurzen Zwischenstand melden.
+- **Frag nach, statt zu raten**, wenn eine Stelle im Repo anders aussieht als
+  hier beschrieben — das Repo kann sich seit `dedbbac` bewegt haben.
+- Wenn du einen Punkt für falsch hältst, sag das mit Begründung, bevor du
+  abweichst. Die Angaben hier sind gegen die Live-Quelle verifiziert, aber
+  der Code ist deine Realität.
+- Ändere **nichts** an der Chunking-, Export- oder Diff-Logik. Wenn eine
+  Änderung dort nötig scheint, ist das ein Signal, dass der `ScraperResult`-
+  Vertrag verletzt wurde — dann melden, nicht umbauen.

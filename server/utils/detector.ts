@@ -1,5 +1,6 @@
 import { JSDOM } from "jsdom";
 import type { WebsiteType, WebsiteDetectionResult } from "../scrapers/base-scraper";
+import { decodeResponse } from "./decode-response";
 
 export async function detectWebsiteType(url: string): Promise<WebsiteDetectionResult> {
   try {
@@ -20,7 +21,7 @@ export async function detectWebsiteType(url: string): Promise<WebsiteDetectionRe
       return { type: 'generic', confidence: 0.5, indicators: ['HTTP error, falling back to generic'] };
     }
 
-    const html = await response.text();
+    const html = await decodeResponse(response);
     const dom = new JSDOM(html);
     const doc = dom.window.document;
 

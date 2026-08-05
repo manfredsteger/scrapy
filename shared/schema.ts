@@ -83,6 +83,11 @@ export const sitemapUrlEntrySchema = z.object({
   // Set by incremental update when the URL is no longer present in the
   // source (sitemap/crawl). Content is kept but the page is flagged.
   removedFromSource: z.boolean().optional(),
+  // 'skipped': non-HTML content (PDF, image, ...). 'failed': fetch/parse threw.
+  // 'soft-404': HTTP 200 but the body is an error/not-found page — never
+  // counted as successfully scraped, hasScrapedData stays false for these.
+  errorStatus: z.enum(['skipped', 'failed', 'soft-404']).optional(),
+  errorMessage: z.string().optional(),
 });
 
 // State of an incremental update run ("Aktualisieren")
@@ -233,6 +238,22 @@ export const projectSettingsSchema = z.object({
     rotateProxies: z.boolean().default(false),
     // Structured data extraction
     extractStructuredData: z.boolean().default(true),
+    // URLs that get queued unconditionally when a crawl starts, even if no
+    // page links to them. For sources whose content is only reachable via
+    // parameterized endpoints (e.g. a CGI search form) that no crawler can
+    // discover by following <a href>.
+    seedUrls: z.array(z.string().url()).default([]),
+    // Optional: generate seed URLs from a template instead of listing them
+    // by hand (e.g. one URL per value of an enum parameter).
+    seedTemplate: z.object({
+      urlTemplate: z.string(), // e.g. '.../search.pl?kreis={value}&...'
+      values: z.array(z.string()).optional(),
+      valuesFromSelect: z.object({
+        url: z.string(),
+        selectName: z.string(),
+        exclude: z.array(z.string()).default([]),
+      }).optional(),
+    }).optional(),
   }).default({}),
   // Chunking Settings
   chunking: z.object({

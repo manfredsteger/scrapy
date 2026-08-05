@@ -16,6 +16,8 @@ Key Capabilities:
 
 Preferred communication: Simple, everyday language (German).
 
+Code organization: Keep files modular and reasonably small, split by feature/topic rather than growing a handful of giant files. When adding a new feature or scraper type, prefer a new, clearly-named file over appending to an already large file (e.g. `server/routes.ts`), so the file layout itself shows where each feature lives and stays easy to review/document.
+
 ## System Architecture
 
 ### High-Level Design

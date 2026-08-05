@@ -65,6 +65,13 @@ export function normalizeCrawlUrl(href: string, pageUrl: string, domain: string)
   if (pathname.endsWith('/view.php') && !urlObj.searchParams.has('id')) return null;
   if (pathname.endsWith('/mod.php') && !urlObj.searchParams.has('id')) return null;
 
+  // Skip CGI search-mask requests missing the internal editorial mask param
+  // (bare suche.pl calls are an internal-tooling entry point, not content).
+  if (pathname.endsWith('/suche.pl') && !urlObj.searchParams.has('_Maske')) return null;
+  // Skip editorial "awaiting release" pages — internal workflow state, not
+  // public content.
+  if (resolvedUrl.includes('freigabewarten')) return null;
+
   const kept: Array<[string, string]> = [];
   urlObj.searchParams.forEach((value, key) => {
     if (!TRACKING_PARAMS.has(key.toLowerCase())) kept.push([key, value]);

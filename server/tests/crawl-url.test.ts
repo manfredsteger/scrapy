@@ -26,6 +26,19 @@ describe('normalizeCrawlUrl', () => {
     expect(a).toBe('https://www.kitanetz.de/x.php?filter=a&filter=b');
   });
 
+  it('blocks bare suche.pl requests missing the internal editorial mask param', () => {
+    expect(normalizeCrawlUrl('/cgi-bin/suche.pl?kreis=n', PAGE, DOMAIN)).toBeNull();
+  });
+
+  it('keeps suche.pl requests that carry the _Maske param', () => {
+    const result = normalizeCrawlUrl('/cgi-bin/suche.pl?_Maske=_suche_allgemein&kreis=n', PAGE, DOMAIN);
+    expect(result).toBe('https://www.kitanetz.de/cgi-bin/suche.pl?_Maske=_suche_allgemein&kreis=n');
+  });
+
+  it('blocks editorial "awaiting release" pages', () => {
+    expect(normalizeCrawlUrl('/bt/freigabewarten/index.html', PAGE, DOMAIN)).toBeNull();
+  });
+
   it('keeps query params on non-PHP URLs too', () => {
     const result = normalizeCrawlUrl('/search?q=kita&page=2', PAGE, DOMAIN);
     expect(result).toBe('https://www.kitanetz.de/search?page=2&q=kita');

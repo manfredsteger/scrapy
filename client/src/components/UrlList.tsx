@@ -303,6 +303,18 @@ export default function UrlList({ urls, projectId, t, chunks = [], onRescrapeUrl
                           </span>
                         )}
                       </div>
+                    ) : (url as any).errorStatus === 'soft-404' ? (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-orange-500/10 text-orange-500 border border-orange-500/30 whitespace-nowrap cursor-help" data-testid="badge-soft-404">
+                            <AlertCircle className="w-3 h-3 shrink-0" />
+                            Soft-404
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" className="max-w-xs">
+                          <p className="text-xs">{(url as any).errorMessage || 'Seite antwortet mit HTTP 200, enthält aber eine Fehlerseite ("nicht gefunden") statt Inhalt.'}</p>
+                        </TooltipContent>
+                      </Tooltip>
                     ) : (url as any).errorStatus === 'failed' ? (
                       <Tooltip>
                         <TooltipTrigger asChild>

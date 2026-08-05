@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { X, Settings, Sliders, Brain, Cpu, Info, Plus, Trash2, Download, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
@@ -41,6 +42,7 @@ const defaultSettings: ProjectSettingsType = {
     proxies: [],
     rotateProxies: false,
     extractStructuredData: true,
+    seedUrls: [],
   },
   chunking: {
     targetTokens: 512,
@@ -362,6 +364,21 @@ export default function ProjectSettings({ settings, onSave, onClose, t }: Projec
                       data-testid="input-exclude-selectors"
                     />
                     <p className="text-xs text-muted-foreground">{t('excludeSelectorsInfo')}</p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="seedUrls">Start-URLs</Label>
+                    <Textarea
+                      id="seedUrls"
+                      value={(localSettings.scraping.seedUrls || []).join('\n')}
+                      onChange={(e) => updateScraping('seedUrls', e.target.value.split('\n').map(s => s.trim()).filter(Boolean))}
+                      placeholder={"https://example.de/suche.pl?_Maske=x&param=a\nhttps://example.de/suche.pl?_Maske=x&param=b"}
+                      rows={4}
+                      data-testid="textarea-seed-urls"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Wird beim Start eines Crawls immer in die Warteschlange aufgenommen, auch wenn keine Seite darauf verlinkt (z.B. CGI-Suchformulare). Eine URL pro Zeile.
+                    </p>
                   </div>
                 </CardContent>
               </Card>

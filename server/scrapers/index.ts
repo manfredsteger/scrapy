@@ -4,6 +4,7 @@ import { WikiJsScraper } from "./wikijs-scraper";
 import { WordPressScraper } from "./wordpress-scraper";
 import { MoodleScraper } from "./moodle-scraper";
 import { GenericScraper } from "./generic-scraper";
+import { CgiListScraper } from "./cgi-list-scraper";
 import { detectWebsiteType } from "../utils/detector";
 
 export { BaseScraper } from "./base-scraper";
@@ -12,6 +13,7 @@ export { WikiJsScraper } from "./wikijs-scraper";
 export { WordPressScraper } from "./wordpress-scraper";
 export { MoodleScraper } from "./moodle-scraper";
 export { GenericScraper } from "./generic-scraper";
+export { CgiListScraper } from "./cgi-list-scraper";
 export { detectWebsiteType } from "../utils/detector";
 
 export interface ScraperRegistry {
@@ -23,6 +25,7 @@ const scraperRegistry: ScraperRegistry = {
   wordpress: WordPressScraper,
   moodle: MoodleScraper,
   generic: GenericScraper,
+  'cgi-list': CgiListScraper,
 };
 
 export function createScraper(

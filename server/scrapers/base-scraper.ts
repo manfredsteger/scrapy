@@ -21,7 +21,7 @@ export interface ScraperOptions {
   timeout?: number;
 }
 
-export type WebsiteType = 'wikijs' | 'wordpress' | 'moodle' | 'generic';
+export type WebsiteType = 'wikijs' | 'wordpress' | 'moodle' | 'generic' | 'cgi-list';
 
 export interface WebsiteDetectionResult {
   type: WebsiteType;
@@ -50,6 +50,13 @@ export abstract class BaseScraper {
   abstract get type(): WebsiteType;
 
   abstract scrapePageContent(html: string, url: string): ScraperResult;
+
+  // Optional source-specific soft-404 check: some sources answer with
+  // HTTP 200 for pages that are really "not found". Override this when a
+  // source has a reliable error-page marker (a specific class, heading
+  // text, etc.) so it's more precise than the generic body-size+heading
+  // heuristic in server/content-extraction/soft-404.ts.
+  softNotFound?(doc: Document, html: string): boolean;
 
   async fetchPage(url: string): Promise<string> {
     const controller = new AbortController();

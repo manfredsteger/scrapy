@@ -25,6 +25,13 @@ export async function detectWebsiteType(url: string): Promise<WebsiteDetectionRe
     const dom = new JSDOM(html);
     const doc = dom.window.document;
 
+    // Check cgi-list first: it's a structural pattern (list endpoint), not a
+    // CMS, so it doesn't compete on the same "which CMS is this" indicators.
+    const cgiListResult = detectCgiList(doc, html, url);
+    if (cgiListResult.confidence >= 0.7) {
+      return cgiListResult;
+    }
+
     // Check Moodle first (it's very distinctive)
     const moodleResult = detectMoodle(doc, html);
     if (moodleResult.confidence >= 0.7) {
@@ -61,6 +68,63 @@ export async function detectWebsiteType(url: string): Promise<WebsiteDetectionRe
       indicators: [`Detection error: ${(error as Error).message}`] 
     };
   }
+}
+
+// Generic reusable pattern for CGI/PHP/ASP endpoints returning list pages
+// where each row is a full record (e.g. a search-result table driven by an
+// enum query parameter whose values come from a <select>). Not a CMS —
+// a structural/URL heuristic instead of content markers.
+export function detectCgiList(doc: Document, html: string, url: string): WebsiteDetectionResult {
+  const indicators: string[] = [];
+  let confidence = 0;
+
+  let parsedUrl: URL | null = null;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    // ignore, fall back to string checks below
+  }
+
+  if (/\/cgi-bin\//i.test(url) || /\.pl(\?|$)/i.test(url)) {
+    indicators.push('CGI-bin or .pl endpoint URL');
+    confidence += 0.3;
+  }
+
+  const paramCount = parsedUrl ? Array.from(parsedUrl.searchParams.keys()).length : 0;
+  if (paramCount >= 2) {
+    indicators.push(`${paramCount} query params`);
+    confidence += 0.2;
+  }
+
+  const rows = Array.from(doc.querySelectorAll('tr'));
+  if (rows.length >= 5) {
+    // "Identical attribute signature": same sorted list of attribute names
+    // shared across a majority of rows (values differ per record, names don't).
+    const signatures = new Map<string, number>();
+    for (const row of rows) {
+      const sig = Array.from(row.attributes).map(a => a.name).sort().join(',');
+      signatures.set(sig, (signatures.get(sig) || 0) + 1);
+    }
+    const maxShared = Math.max(...signatures.values());
+    if (maxShared >= 5) {
+      indicators.push(`${maxShared} <tr> rows share an identical attribute signature`);
+      confidence += 0.3;
+    }
+  }
+
+  const hasCoordinateData = rows.some(row =>
+    Array.from(row.attributes).some(a => /^data-.*(lat|lon|latlon|geo|coord)/i.test(a.name))
+  );
+  if (hasCoordinateData) {
+    indicators.push('Row-level data-* coordinate attribute detected');
+    confidence += 0.3;
+  }
+
+  return {
+    type: 'cgi-list',
+    confidence: Math.min(confidence, 1.0),
+    indicators,
+  };
 }
 
 function detectWikiJs(doc: Document, html: string): WebsiteDetectionResult {

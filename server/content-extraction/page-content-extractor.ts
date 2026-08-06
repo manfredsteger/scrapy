@@ -22,6 +22,12 @@ import { detectSoftNotFound } from "./soft-404";
 // Skip URLs that point to non-HTML content (PDFs, images, etc.)
 const SKIP_EXTENSIONS = new Set(['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.rar', '.tar', '.gz', '.7z', '.exe', '.dmg', '.iso', '.mp3', '.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.ogg', '.wav', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.webp', '.ico', '.tiff']);
 
+// Inline/text-level tags whose text should fold into surrounding loose text
+// when they appear directly inside a generic container, rather than being
+// dropped or treated as their own block. Deliberately excludes 'img' (has
+// its own case), block-level tags, and 'br' (no meaningful text).
+const INLINE_TEXT_TAGS = new Set(['a', 'span', 'b', 'strong', 'i', 'em', 'small', 'label', 'font', 'u', 'mark', 'abbr', 'time', 'sub', 'sup']);
+
 export function shouldSkipUrl(url: string): boolean {
   try {
     const parsedUrl = new URL(url);
@@ -703,12 +709,63 @@ export function scrapePageContent(html: string, url: string, extractStructuredDa
         } catch {}
       }
     } else {
-      // Recurse into child nodes
-      el.childNodes.forEach(child => processNode(child, depth + 1));
+      // Recurse into child nodes (see processChildNodes for how loose text
+      // between them is recovered instead of being dropped).
+      processChildNodes(el.childNodes, depth + 1);
     }
   }
 
-  mainContent.childNodes.forEach(child => processNode(child));
+  // Walks a NodeList, dispatching element children through processNode and
+  // folding "loose" text that sits directly inside a generic container
+  // (div/span/a/... or the page's top level) instead of a recognized block
+  // tag (p/h1-6/li/...). Older, non-semantic markup (e.g.
+  // `<div class="label">Email:</div><br><a>...</a>`, or bare text nodes
+  // sitting directly under <body>/<main> after invalid `<div>`-inside-`<p>`
+  // markup gets auto-corrected by HTML parsing) puts real content as bare
+  // text/inline nodes between siblings; since text nodes are otherwise
+  // ignored entirely (see nodeType === 3 early-return in processNode) and
+  // inline tags like <a>/<span> have no case of their own, that content used
+  // to be silently dropped, sometimes leaving a page with headings but none
+  // of its actual body text. Used both for the top-level mainContent walk
+  // and for recursion into generic containers, so loose text is recovered
+  // wherever it appears, not just one level deep.
+  function processChildNodes(nodes: NodeListOf<ChildNode> | ChildNode[], depth: number) {
+    let looseText: string[] = [];
+    const flushLooseText = () => {
+      const combined = looseText.join(' ').replace(/\s+/g, ' ').trim();
+      looseText = [];
+      if (combined.length > 1) {
+        orderedElements.push({ type: 'paragraph', content: combined });
+        totalWords += combined.split(/\s+/).length;
+      }
+    };
+    nodes.forEach(child => {
+      if (child.nodeType === 3) {
+        const text = child.textContent?.trim();
+        if (text) looseText.push(text);
+        return;
+      }
+      if (child.nodeType === 1) {
+        const childEl = child as Element;
+        const childTag = childEl.tagName?.toLowerCase();
+        if (childTag && INLINE_TEXT_TAGS.has(childTag) && !shouldSkipElement(childEl)) {
+          // Fold inline elements (links, spans, bold/italic, ...) into the
+          // current run of loose text instead of treating them as their own
+          // block, so "Email: " + <a>foo@bar.de</a> reads as one line.
+          const text = childEl.textContent?.trim();
+          if (text) looseText.push(text);
+          return;
+        }
+      }
+      // Any other element ends the current run of loose text and is
+      // processed through the normal dispatch (which may itself recurse).
+      flushLooseText();
+      processNode(child, depth);
+    });
+    flushLooseText();
+  }
+
+  processChildNodes(mainContent.childNodes, 0);
 
   if (orderedElements.length === 0) {
     doc.querySelectorAll('h1, h2, h3, h4, h5, h6, p').forEach(el => {
@@ -723,6 +780,15 @@ export function scrapePageContent(html: string, url: string, extractStructuredDa
         totalWords += text.split(/\s+/).length;
       }
     });
+  }
+
+  // A page that isn't a soft-404 but still ends up with no extracted
+  // content is otherwise indistinguishable from a genuinely successful
+  // scrape (hasScrapedData stays true downstream) — surface it in logs so a
+  // systematic extraction gap on a given site/template shows up quickly
+  // instead of silently shipping empty results.
+  if (orderedElements.length === 0 && !isSoftNotFound) {
+    console.warn(`[scrapePageContent] No content extracted for ${url} (empty page, or main-content selection failed to find any text)`);
   }
 
   // Extract PDF links from the page

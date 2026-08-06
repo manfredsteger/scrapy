@@ -3588,6 +3588,201 @@ export async function registerRoutes(
     }
   });
 
+  // Backfill helper: find pages that are marked as successfully scraped but
+  // whose saved content is empty/near-empty (e.g. because of a since-fixed
+  // extraction bug on that site's template) and requeue just those for
+  // re-scraping, instead of resetting the whole project. `minWordCount`
+  // (default 15) is intentionally low — this targets pages that extracted
+  // to essentially nothing, not pages that are merely short.
+  // Bounds how many rows a single /empty-scraped-pages call inspects on disk.
+  // A project can have 10k+ results; without a cap, one request would do a
+  // filesystem read per matching row, which does not scale. Callers page
+  // through larger projects with `offset`/`limit`.
+  const EMPTY_SCRAPED_PAGES_MAX_LIMIT = 200;
+  const EMPTY_SCRAPED_PAGES_DEFAULT_LIMIT = 100;
+
+  app.get('/api/projects/:id/empty-scraped-pages', async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ message: 'Invalid project ID' });
+      }
+      const minWordCount = Number(req.query.minWordCount ?? 15);
+      if (!Number.isFinite(minWordCount) || minWordCount < 0 || minWordCount > 1000) {
+        return res.status(400).json({ message: 'minWordCount must be a number between 0 and 1000' });
+      }
+      const offset = Math.max(0, Number(req.query.offset ?? 0) || 0);
+      const limit = Math.min(
+        EMPTY_SCRAPED_PAGES_MAX_LIMIT,
+        Math.max(1, Number(req.query.limit ?? EMPTY_SCRAPED_PAGES_DEFAULT_LIMIT) || EMPTY_SCRAPED_PAGES_DEFAULT_LIMIT),
+      );
+      // Optional regex to scope the scan to a known-affected URL template
+      // (e.g. a specific site's detail-page pattern), since a generic
+      // word-count check can under-detect pages whose real content was
+      // dropped but which still accumulated words from surrounding
+      // boilerplate (shared nav/ads/footer repeated on every page). Bounded
+      // in length to avoid a caller-supplied pathological regex.
+      let urlPattern: RegExp | undefined;
+      if (typeof req.query.urlPattern === 'string' && req.query.urlPattern.length > 0) {
+        if (req.query.urlPattern.length > 200) {
+          return res.status(400).json({ message: 'urlPattern must be at most 200 characters' });
+        }
+        try {
+          urlPattern = new RegExp(req.query.urlPattern);
+        } catch {
+          return res.status(400).json({ message: 'Invalid urlPattern regex' });
+        }
+      }
+      const project = await storage.getProject(id);
+      if (!project) {
+        return res.status(404).json({ message: 'Project not found' });
+      }
+      const results = project.results || [];
+      // Cheap in-memory filter first (no I/O) to build the candidate list,
+      // then only page `limit` of those through a filesystem read each -
+      // the expensive part is bounded per request regardless of project size.
+      const candidates = (results as any[]).filter(
+        r => r.hasScrapedData && !r.removedFromSource && (!urlPattern || urlPattern.test(r.loc)),
+      );
+      const page = candidates.slice(offset, offset + limit);
+
+      const affected: string[] = [];
+      for (const r of page) {
+        try {
+          const pageDir = fileStorage.getProjectPageDir(id, project.domain, r.loc);
+          const meta = await fileStorage.readPageMeta(pageDir);
+          const wordCount = meta?.wordCount ?? 0;
+          const hasStructuredRows = Array.isArray(meta?.structuredData?.rows) && meta.structuredData.rows.length > 0;
+          // With urlPattern set, the caller has already scoped this to a
+          // known-affected template, so every matching page qualifies
+          // regardless of word count (word count alone isn't a reliable
+          // signal when boilerplate padding masks missing real content).
+          if (urlPattern || (!hasStructuredRows && wordCount < minWordCount)) {
+            affected.push(r.loc);
+          }
+        } catch {
+          // Missing/unreadable meta counts as affected too - nothing to show for it
+          affected.push(r.loc);
+        }
+      }
+      const nextOffset = offset + page.length;
+      res.json({
+        total: results.length,
+        candidateCount: candidates.length,
+        scannedCount: page.length,
+        affectedCount: affected.length,
+        affectedUrls: affected,
+        offset,
+        limit,
+        done: nextOffset >= candidates.length,
+        nextOffset: nextOffset < candidates.length ? nextOffset : null,
+      });
+    } catch (err) {
+      console.error('[EmptyScrapedPages] Error:', err);
+      res.status(500).json({ message: 'Failed to scan project for empty scraped pages' });
+    }
+  });
+
+  // Bounds how many URLs a single /requeue-pages call re-scrapes. This route
+  // performs the re-scrape synchronously (via the same code path as the
+  // interactive crawl loop) rather than only marking state for a browser tab
+  // to pick up later, so a call to this endpoint is a complete, provable
+  // backfill step on its own. Large backfills page through multiple calls.
+  const REQUEUE_PAGES_MAX_BATCH = 25;
+
+  // Re-scrapes a specific set of already-scraped-but-broken URLs (e.g. as
+  // returned by GET /empty-scraped-pages), persisting the result through the
+  // exact same fetch/extract/filesystem-save/CAS-write path the interactive
+  // crawl loop uses, so a fixed extractor is retroactively applied to
+  // historical pages without touching the rest of the project's data.
+  app.post('/api/projects/:id/requeue-pages', async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ message: 'Invalid project ID' });
+      }
+      const urls: string[] = Array.isArray(req.body?.urls) ? req.body.urls : [];
+      if (urls.length === 0) {
+        return res.status(400).json({ message: 'urls (non-empty array) is required' });
+      }
+      if (urls.length > REQUEUE_PAGES_MAX_BATCH) {
+        return res.status(400).json({
+          message: `At most ${REQUEUE_PAGES_MAX_BATCH} urls per call; call again with the remaining urls to process a larger backfill`,
+        });
+      }
+      const lockOwner: string = typeof req.body?.lockOwner === 'string' && req.body.lockOwner
+        ? req.body.lockOwner
+        : `backfill-${crypto.randomUUID()}`;
+
+      const project = await storage.getProject(id);
+      if (!project) {
+        return res.status(404).json({ message: 'Project not found' });
+      }
+      const requeueLock = (project as any).scrapeLock as { owner: string; expiresAt: number } | null;
+      if (requeueLock && requeueLock.expiresAt > Date.now() && requeueLock.owner !== lockOwner) {
+        return res.status(409).json({
+          message: 'Project is being processed by another session',
+          reason: 'locked',
+        });
+      }
+
+      const knownUrls = new Set((project.results || []).map((r: any) => r.loc));
+      const matchedUrls = urls.filter(u => knownUrls.has(u));
+      if (matchedUrls.length === 0) {
+        return res.status(400).json({ message: 'None of the given urls exist in this project' });
+      }
+
+      // Take the lock for the duration of this synchronous re-scrape batch,
+      // exactly like the interactive loop does before calling fetchContent.
+      const locked = await storage.updateProject(
+        id,
+        { scrapeLock: { owner: lockOwner, expiresAt: Date.now() + 70000 } },
+        { expectedVersion: (project as any).version, enforceLockOwner: lockOwner },
+      );
+      if (!locked) {
+        return res.status(409).json({
+          message: 'Project was modified concurrently; try again',
+          reason: 'version_conflict',
+        });
+      }
+
+      const outcome = await runContentScrapeBatch(id, locked, matchedUrls, lockOwner);
+
+      // Always release the lock we took, regardless of outcome, so a
+      // backfill call never leaves the project stuck for other sessions.
+      try {
+        const afterProject = await storage.getProject(id);
+        const currentLock = (afterProject as any)?.scrapeLock as { owner: string; expiresAt: number } | null;
+        if (afterProject && currentLock?.owner === lockOwner) {
+          await storage.updateProject(
+            id,
+            { scrapeLock: null },
+            { expectedVersion: (afterProject as any).version, enforceLockOwner: lockOwner },
+          );
+        }
+      } catch (releaseErr) {
+        console.error('[RequeuePages] Failed to release lock:', releaseErr);
+      }
+
+      if (!outcome.ok) {
+        return res.status(outcome.status).json(outcome.body);
+      }
+
+      const batchResults = (outcome.body.results || []) as Array<{ url: string; success: boolean; error: string | null }>;
+      const succeededCount = batchResults.filter(r => r.success).length;
+      console.log(`[RequeuePages] Re-scraped ${succeededCount}/${matchedUrls.length} page(s) for project ${id}`);
+      res.json({
+        requestedCount: matchedUrls.length,
+        succeededCount,
+        failedCount: matchedUrls.length - succeededCount,
+        results: batchResults,
+      });
+    } catch (err) {
+      console.error('[RequeuePages] Error:', err);
+      res.status(500).json({ message: 'Failed to requeue pages' });
+    }
+  });
+
   // Incremental update ("Aktualisieren"): re-discover URLs and re-scrape only
   // new/changed pages. Sitemap projects diff synchronously here; crawl
   // projects transition to a re-crawl (status 'crawling' with updateRun) and
@@ -5103,41 +5298,22 @@ export async function registerRoutes(
     }
   });
 
-  app.post(api.scrape.fetchContent.path, async (req, res) => {
-    try {
-      const input = api.scrape.fetchContent.input.parse(req.body);
-      const projectId = input.projectId;
-      const lockOwner = input.lockOwner;
-      
-      // Validate projectId is required for content scraping (data persistence)
-      if (!projectId) {
-        return res.status(400).json({ message: 'projectId is required for content scraping' });
-      }
-      
-      // Get project - validate it exists
-      const project = await storage.getProject(projectId);
-      if (!project) {
-        return res.status(404).json({ message: `Project ${projectId} not found` });
-      }
+  type ScrapeBatchOutcome =
+    | { ok: true; body: Record<string, any> }
+    | { ok: false; status: number; body: Record<string, any> };
 
-      // Scrape lock: refuse to process/persist for a batch initiated by a tab
-      // that doesn't own the active lease (another tab is driving extraction).
-      const existingLock = (project as any).scrapeLock as { owner: string; expiresAt: number } | null;
-      if (existingLock && existingLock.expiresAt > Date.now() && existingLock.owner !== (lockOwner ?? '')) {
-        return res.status(409).json({
-          message: 'Project is being processed by another session',
-          reason: 'locked',
-        });
-      }
-      
-      // Effective concurrency: respect parallelRequests from project settings,
-      // capped at MAX_CONCURRENCY for safety.
-      const effectiveConcurrency = Math.min(
-        project.projectSettings?.scraping?.parallelRequests ?? 10,
-        MAX_CONCURRENCY,
-      );
-      const urls = input.urls.slice(0, effectiveConcurrency);
-
+  // Core content-scrape-and-persist batch, shared by the interactive
+  // /api/scrape/content route (driven by an open browser tab) and the
+  // server-side backfill route below (driven by a direct API call, no tab
+  // required). Keeping this as one function means both call sites share the
+  // exact same fetch/extract/filesystem-save/CAS-write behavior instead of
+  // two versions drifting apart.
+  async function runContentScrapeBatch(
+    projectId: number,
+    project: NonNullable<Awaited<ReturnType<typeof storage.getProject>>>,
+    urls: string[],
+    lockOwner: string | undefined,
+  ): Promise<ScrapeBatchOutcome> {
       // Get project settings for rate limiting/proxy support
       let rateLimiter: RateLimiter | undefined;
       let proxyRotator: ProxyRotator | undefined;
@@ -5295,10 +5471,12 @@ export async function registerRoutes(
           const currentLock = (currentProject as any).scrapeLock as { owner: string; expiresAt: number } | null;
           if (currentLock && currentLock.expiresAt > Date.now() && currentLock.owner !== (lockOwner ?? '')) {
             await cleanupBatchFiles();
-            return res.status(409).json({
-              message: 'Project is being processed by another session',
-              reason: 'locked',
-            });
+            return {
+              ok: false, status: 409, body: {
+                message: 'Project is being processed by another session',
+                reason: 'locked',
+              },
+            };
           }
           const updatedResults = (currentProject.results || []).map(existing => {
             const update = urlUpdates.get(existing.loc);
@@ -5322,10 +5500,12 @@ export async function registerRoutes(
           }
           if (attempt === MAX_CAS_RETRIES) {
             await cleanupBatchFiles();
-            return res.status(409).json({
-              message: 'Project was modified concurrently; batch not saved',
-              reason: 'version_conflict',
-            });
+            return {
+              ok: false, status: 409, body: {
+                message: 'Project was modified concurrently; batch not saved',
+                reason: 'version_conflict',
+              },
+            };
           }
         }
       }
@@ -5350,22 +5530,67 @@ export async function registerRoutes(
       // error path and should not reduce the user's configured parallelism.
       const rateLimitDetected = batchHad429FromFetch || batchHad429FromError;
 
-      res.json({ 
-        results,
-        version: savedVersion,
-        rateLimitState,
-        // Signal to the client that the server is throttling.  The client
-        // should roll back parallelRequests to avoid a silent stuck loop.
-        rateLimitDetected,
-        suggestedParallelRequests: rateLimitDetected
-          ? Math.max(1, Math.floor(effectiveConcurrency / 2))
-          : undefined,
-        proxyInfo: proxyRotator ? {
-          enabled: proxyRotator.isEnabled(),
-          totalProxies: proxyRotator.getProxyCount(),
-          availableProxies: proxyRotator.getAvailableProxyCount(),
-        } : undefined,
-      });
+      return {
+        ok: true,
+        body: {
+          results,
+          version: savedVersion,
+          rateLimitState,
+          // Signal to the client that the server is throttling.  The client
+          // should roll back parallelRequests to avoid a silent stuck loop.
+          rateLimitDetected,
+          suggestedParallelRequests: rateLimitDetected
+            ? Math.max(1, Math.floor(urls.length / 2))
+            : undefined,
+          proxyInfo: proxyRotator ? {
+            enabled: proxyRotator.isEnabled(),
+            totalProxies: proxyRotator.getProxyCount(),
+            availableProxies: proxyRotator.getAvailableProxyCount(),
+          } : undefined,
+        },
+      };
+  }
+
+  app.post(api.scrape.fetchContent.path, async (req, res) => {
+    try {
+      const input = api.scrape.fetchContent.input.parse(req.body);
+      const projectId = input.projectId;
+      const lockOwner = input.lockOwner;
+
+      // Validate projectId is required for content scraping (data persistence)
+      if (!projectId) {
+        return res.status(400).json({ message: 'projectId is required for content scraping' });
+      }
+
+      // Get project - validate it exists
+      const project = await storage.getProject(projectId);
+      if (!project) {
+        return res.status(404).json({ message: `Project ${projectId} not found` });
+      }
+
+      // Scrape lock: refuse to process/persist for a batch initiated by a tab
+      // that doesn't own the active lease (another tab is driving extraction).
+      const existingLock = (project as any).scrapeLock as { owner: string; expiresAt: number } | null;
+      if (existingLock && existingLock.expiresAt > Date.now() && existingLock.owner !== (lockOwner ?? '')) {
+        return res.status(409).json({
+          message: 'Project is being processed by another session',
+          reason: 'locked',
+        });
+      }
+
+      // Effective concurrency: respect parallelRequests from project settings,
+      // capped at MAX_CONCURRENCY for safety.
+      const effectiveConcurrency = Math.min(
+        project.projectSettings?.scraping?.parallelRequests ?? 10,
+        MAX_CONCURRENCY,
+      );
+      const urls = input.urls.slice(0, effectiveConcurrency);
+
+      const outcome = await runContentScrapeBatch(projectId, project, urls, lockOwner);
+      if (!outcome.ok) {
+        return res.status(outcome.status).json(outcome.body);
+      }
+      res.json(outcome.body);
     } catch (err) {
       if (err instanceof z.ZodError) {
         return res.status(400).json({

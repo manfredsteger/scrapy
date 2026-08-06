@@ -1,6 +1,7 @@
 import fs from "fs/promises";
 import path from "path";
 import crypto from "crypto";
+import { resolveMediaRefs, emptySharedImagesRegistry, sharedImageId, legacyMediaFilename, type SharedImagesRegistry } from "./content-extraction/image-refs";
 
 const BASE_DIR = path.resolve("./data");
 
@@ -86,6 +87,140 @@ export async function saveMedia(dir: string, filename: string, buffer: Buffer): 
   return filePath;
 }
 
+// Project-wide, content-addressed store for downloaded media binaries
+// (server/routes.ts writes here instead of a per-page `media/` copy). A
+// recurring image (logo, badge, nav banner) referenced by thousands of pages
+// is fetched from its source and written to disk exactly once per project,
+// keyed by a caller-supplied id (a hash of the source URL) + extension,
+// instead of once per page that references it.
+function getSharedMediaDir(projectDir: string): string {
+  return path.join(projectDir, "shared-media");
+}
+
+/** Returns the on-disk path if this id+ext was already downloaded for the project, else null. */
+export async function sharedMediaExists(projectDir: string, id: string, ext: string): Promise<string | null> {
+  const filePath = path.join(getSharedMediaDir(projectDir), `${id}${ext}`);
+  try {
+    await fs.access(filePath);
+    return filePath;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveSharedMedia(projectDir: string, id: string, ext: string, buffer: Buffer): Promise<string> {
+  const dir = getSharedMediaDir(projectDir);
+  await ensureDir(dir);
+  const filePath = path.join(dir, `${id}${ext}`);
+  await fs.writeFile(filePath, buffer);
+  return filePath;
+}
+
+/**
+ * Backfill for projects scraped before shared-media storage existed: sweeps
+ * every page's per-page `media/` directory and moves each file into the
+ * project-wide shared store, reclaiming disk space for an already-scraped
+ * project like kitanetz.de, where the same logo/badge file was downloaded
+ * once per page.
+ *
+ * Files are re-keyed by `sharedImageId(sourceUrl)` - the exact same id the
+ * live scrape path (server/routes.ts runContentScrapeBatch) uses - so both
+ * paths resolve through one consistent id and any consumer can look up a
+ * page's media by recomputing the id from its `src`, with no separate
+ * index file to keep in sync. The source URL for each on-disk file is
+ * recovered by matching the page's own orderedElements media `src` values
+ * against the filename fileStorage.saveMedia used to derive (see
+ * image-refs.legacyMediaFilename). A file that can't be matched to any
+ * `src` on its page (should be rare - e.g. an image later removed from the
+ * page) falls back to content-hash keying so it's still deduplicated and
+ * disk is still reclaimed, just not resolvable by URL.
+ */
+export async function consolidateProjectMedia(
+  projectId: number,
+  domain: string,
+  options: { renewLock?: () => Promise<boolean> } = {},
+): Promise<{ filesScanned: number; pagesWithMedia: number; uniqueFiles: number; bytesBefore: number; bytesReclaimed: number; unmatched: number }> {
+  const projectDir = getProjectDir(projectId, domain);
+  const pageDirs = await listPageDirs(projectDir);
+  let filesScanned = 0, pagesWithMedia = 0, uniqueFiles = 0, bytesBefore = 0, bytesReclaimed = 0, unmatched = 0;
+  // Same lease-renewal concern as computeAndApplyImageDedup in
+  // server/routes.ts: this walks every page's media dir under the caller's
+  // scrape lock, which a large project can outlive.
+  const renewLock = options.renewLock;
+  const RENEW_EVERY_N_PAGES = 200;
+  let pagesProcessed = 0;
+  for (const dir of pageDirs) {
+    const files = await listMedia(dir);
+    pagesProcessed++;
+    if (renewLock && pagesProcessed % RENEW_EVERY_N_PAGES === 0) {
+      const stillHeld = await renewLock();
+      if (!stillHeld) {
+        throw new Error('Lost the project scrape lock mid-consolidation; aborting to avoid overwriting concurrent changes');
+      }
+    }
+    if (files.length === 0) continue;
+    pagesWithMedia++;
+
+    // Map this page's already-downloaded legacy filenames back to the
+    // source URL that produced them, using the same naming scheme
+    // saveMedia used to derive the file from the URL.
+    const meta = await readPageMeta(dir);
+    // A legacy filename only unambiguously identifies a source URL if
+    // exactly one distinct src on the page derives that filename. Two
+    // different URLs can collide on the same sanitized legacy filename
+    // (different hosts/paths/query strings, or old sanitization quirks);
+    // the page's on-disk storage could only ever hold one file for that
+    // name, so there's no way to tell which URL actually produced its
+    // bytes. Track every distinct src seen per filename, not just the last.
+    const filenameToSrcs = new Map<string, Set<string>>();
+    for (const el of meta?.orderedElements || []) {
+      if (el?.type === "media" && typeof el.src === "string" && !el.src.startsWith("data:")) {
+        const filename = legacyMediaFilename(el.src);
+        let set = filenameToSrcs.get(filename);
+        if (!set) { set = new Set(); filenameToSrcs.set(filename, set); }
+        set.add(el.src);
+      }
+    }
+
+    for (const filePath of files) {
+      let buffer: Buffer;
+      try {
+        buffer = await fs.readFile(filePath);
+      } catch {
+        continue;
+      }
+      filesScanned++;
+      bytesBefore += buffer.length;
+
+      const srcs = filenameToSrcs.get(path.basename(filePath));
+      const src = srcs && srcs.size === 1 ? [...srcs][0] : undefined;
+      if (!src) {
+        // Can't confidently match this file to a single source URL (its
+        // element was removed from the page, or two distinct URLs collided
+        // on this legacy filename). Leave it exactly where it is rather
+        // than migrating it under a key nothing can resolve back to -
+        // listResolvedMedia still finds it via the page's legacy media/
+        // dir, so it's never lost, just not deduplicated across pages.
+        unmatched++;
+        continue;
+      }
+
+      const id = sharedImageId(src);
+      const ext = (path.extname(src.split("?")[0]) || ".jpg").toLowerCase();
+      const existing = await sharedMediaExists(projectDir, id, ext);
+      if (existing) {
+        await fs.unlink(filePath).catch(() => {});
+        bytesReclaimed += buffer.length;
+      } else {
+        await saveSharedMedia(projectDir, id, ext, buffer);
+        await fs.unlink(filePath).catch(() => {});
+        uniqueFiles++;
+      }
+    }
+  }
+  return { filesScanned, pagesWithMedia, uniqueFiles, bytesBefore, bytesReclaimed, unmatched };
+}
+
 export async function readPageContent(dir: string): Promise<string | null> {
   try {
     return await fs.readFile(path.join(dir, "content.md"), "utf-8");
@@ -94,10 +229,31 @@ export async function readPageContent(dir: string): Promise<string | null> {
   }
 }
 
+// Derives a page's project directory from its page directory (both are
+// produced by getProjectPageDir/getProjectDir), so readPageMeta can look up
+// the project's shared-images registry without every call site having to
+// pass projectId/domain through. Falls back to null for non-project page
+// dirs (e.g. single-page imports), which simply skip ref resolution.
+function projectDirFromPageDir(pageDir: string): string | null {
+  const marker = `${path.sep}pages${path.sep}`;
+  const idx = pageDir.indexOf(marker);
+  return idx === -1 ? null : pageDir.slice(0, idx);
+}
+
 export async function readPageMeta(dir: string): Promise<any | null> {
   try {
     const raw = await fs.readFile(path.join(dir, "meta.json"), "utf-8");
-    return JSON.parse(raw);
+    const meta = JSON.parse(raw);
+    if (Array.isArray(meta?.orderedElements)) {
+      const projectDir = projectDirFromPageDir(dir);
+      if (projectDir) {
+        const registry = await readSharedImages(projectDir);
+        if (registry) {
+          meta.orderedElements = resolveMediaRefs(meta.orderedElements, registry);
+        }
+      }
+    }
+    return meta;
   } catch {
     return null;
   }
@@ -111,6 +267,33 @@ export async function readProjectMeta(dir: string): Promise<any | null> {
     return null;
   }
 }
+
+function getSharedImagesFilePath(projectDir: string): string {
+  return path.join(projectDir, "shared-images.json");
+}
+
+/**
+ * Reads a project's shared-images registry (recurring/boilerplate images
+ * detected across its pages). Returns null if it hasn't been computed yet
+ * (no project has had /dedupe-images run) - callers should treat that the
+ * same as "no shared images known".
+ */
+export async function readSharedImages(projectDir: string): Promise<SharedImagesRegistry | null> {
+  try {
+    const raw = await fs.readFile(getSharedImagesFilePath(projectDir), "utf-8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+export async function writeSharedImages(projectDir: string, registry: SharedImagesRegistry): Promise<void> {
+  await ensureDir(projectDir);
+  await fs.writeFile(getSharedImagesFilePath(projectDir), JSON.stringify(registry, null, 2), "utf-8");
+}
+
+export { emptySharedImagesRegistry };
+export type { SharedImagesRegistry };
 
 export async function listPageDirs(projectDir: string): Promise<string[]> {
   const pagesDir = path.join(projectDir, "pages");
@@ -153,6 +336,58 @@ export async function listMedia(dir: string): Promise<string[]> {
   } catch {
     return [];
   }
+}
+
+/**
+ * Lists the downloaded media files that belong to a page, resolved per
+ * `src` rather than as an all-or-nothing choice between "legacy" and
+ * "shared", because consolidateProjectMedia only ever moves a file it can
+ * confidently match to a `src` (see legacyMediaFilename) - anything it
+ * can't match is deliberately left in the page's own `media/` dir rather
+ * than migrated, so it's never silently lost. For each media element:
+ * prefer a still-present legacy per-page file if one matches its expected
+ * filename, else resolve it against the project-wide shared store via
+ * sharedImageId(url) (the id both the live scrape and backfill paths write
+ * under). Any legacy file left over that doesn't match a current `src`
+ * (e.g. an image later removed from the page) is still included, so
+ * nothing already-downloaded silently disappears from a consumer's view.
+ */
+export async function listResolvedMedia(projectDir: string, pageDir: string, orderedElements: any[]): Promise<string[]> {
+  const legacyFiles = await listMedia(pageDir);
+  const legacyBasenames = new Set(legacyFiles.map((f) => path.basename(f)));
+  const consumedLegacy = new Set<string>();
+  const paths: string[] = [];
+  const seen = new Set<string>();
+
+  for (const el of orderedElements || []) {
+    if (el?.type === "media" && typeof el.src === "string" && !el.src.startsWith("data:")) {
+      const legacyName = legacyMediaFilename(el.src);
+      if (legacyBasenames.has(legacyName)) {
+        consumedLegacy.add(legacyName);
+        const filePath = path.join(pageDir, "media", legacyName);
+        if (!seen.has(filePath)) {
+          seen.add(filePath);
+          paths.push(filePath);
+        }
+        continue;
+      }
+      const id = sharedImageId(el.src);
+      const ext = (path.extname(el.src.split("?")[0]) || ".jpg").toLowerCase();
+      const filePath = await sharedMediaExists(projectDir, id, ext);
+      if (filePath && !seen.has(filePath)) {
+        seen.add(filePath);
+        paths.push(filePath);
+      }
+    }
+  }
+
+  for (const filePath of legacyFiles) {
+    if (!consumedLegacy.has(path.basename(filePath)) && !seen.has(filePath)) {
+      seen.add(filePath);
+      paths.push(filePath);
+    }
+  }
+  return paths;
 }
 
 export async function readPdf(filePath: string): Promise<Buffer | null> {

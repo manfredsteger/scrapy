@@ -21,6 +21,7 @@ import { diffSitemapUpdate, diffCrawlFinish } from './update-diff';
 import { decodeResponse } from './utils/decode-response';
 import { resolveSeedUrls } from './utils/seed-urls';
 import { scrapePageContent, shouldSkipUrl } from './content-extraction/page-content-extractor';
+import { collapseSharedImages, sharedImageId, emptySharedImagesRegistry, type SharedImagesRegistry } from './content-extraction/image-refs';
 import multer from 'multer';
 
 // Hard cap on server-side concurrency per batch (safety valve; actual value
@@ -3331,7 +3332,8 @@ export async function registerRoutes(
           ]);
           if (markdownContent && meta) {
             const pdfs = await fileStorage.listPdfs(pageDir);
-            const media = await fileStorage.listMedia(pageDir);
+            const projectDirForMedia = fileStorage.getProjectDir(projectId, project.domain);
+            const media = await fileStorage.listResolvedMedia(projectDirForMedia, pageDir, meta.orderedElements || []);
             return res.json({
               loc: urlLoc,
               scrapedData: {
@@ -3780,6 +3782,249 @@ export async function registerRoutes(
     } catch (err) {
       console.error('[RequeuePages] Error:', err);
       res.status(500).json({ message: 'Failed to requeue pages' });
+    }
+  });
+
+  // Scans every scraped page in a project, counts how often each <img> src
+  // repeats, and folds any image crossing the recurrence threshold into the
+  // project's shared-images registry - collapsing its full entry into a
+  // compact `media-ref` on every page it appears on. Safe to re-run: it only
+  // ever adds to the registry (never removes), so previously-collapsed pages
+  // stay resolvable, and pages are only rewritten when something actually
+  // changed. This is the mechanism for both "handle existing data" (run once
+  // against an already-scraped project) and ongoing maintenance (re-run
+  // after a big update/backfill to catch newly-recurring images).
+  async function computeAndApplyImageDedup(
+    projectId: number,
+    domain: string,
+    options: { minOccurrences?: number; minSharePercent?: number; renewLock?: () => Promise<boolean> } = {},
+  ) {
+    const minOccurrences = options.minOccurrences ?? 8;
+    const minSharePercent = options.minSharePercent ?? 15;
+    const projectDir = fileStorage.getProjectDir(projectId, domain);
+    const pageDirs = await fileStorage.listPageDirs(projectDir);
+    if (pageDirs.length === 0) {
+      return {
+        scannedPages: 0, distinctImages: 0, sharedImageCount: 0,
+        newlyDetected: 0, pagesRewritten: 0, collapsedElementsTotal: 0,
+      };
+    }
+
+    // This pass reads every page's meta.json and, in pass 2 below, rewrites
+    // the ones that qualify - which only stays safe against a concurrent
+    // crawl/rescrape for as long as this call still holds the project's
+    // scrape lock (see the dedupe-images route). On a large project the full
+    // scan can run long enough to outlive the lock's lease, so periodically
+    // renew it; if renewal fails, the lock was lost to someone else and
+    // continuing would risk overwriting their fresh writes with our stale
+    // in-memory copy, so abort loudly instead.
+    const renewLock = options.renewLock;
+    const RENEW_EVERY_N_PAGES = 200;
+    async function renewLockOrThrow(pagesProcessed: number) {
+      if (!renewLock || pagesProcessed % RENEW_EVERY_N_PAGES !== 0) return;
+      const stillHeld = await renewLock();
+      if (!stillHeld) {
+        throw new Error('Lost the project scrape lock mid-scan; aborting to avoid overwriting concurrent changes');
+      }
+    }
+
+    // Pass 1: read every page once (already ref-resolved by readPageMeta) and
+    // count how many DISTINCT pages each <img> src appears on.
+    const freq = new Map<string, { count: number; alt?: string }>();
+    const perPage: Array<{ dir: string; meta: any }> = [];
+    let pagesReadInPass1 = 0;
+    for (const dir of pageDirs) {
+      const meta = await fileStorage.readPageMeta(dir);
+      const elements = meta?.orderedElements || [];
+      perPage.push({ dir, meta });
+      const seenInPage = new Set<string>();
+      for (const el of elements) {
+        if (el?.type === 'media' && el.tag === 'img' && typeof el.src === 'string' && !seenInPage.has(el.src)) {
+          seenInPage.add(el.src);
+          const rec = freq.get(el.src) ?? { count: 0, alt: el.alt };
+          rec.count++;
+          freq.set(el.src, rec);
+        }
+      }
+      pagesReadInPass1++;
+      await renewLockOrThrow(pagesReadInPass1);
+    }
+
+    const totalPages = pageDirs.length;
+    const registry: SharedImagesRegistry = (await fileStorage.readSharedImages(projectDir)) ?? emptySharedImagesRegistry();
+    const now = new Date().toISOString();
+    let newlyDetected = 0;
+    for (const [src, rec] of freq) {
+      const sharePercent = (rec.count / totalPages) * 100;
+      const qualifies = rec.count >= minOccurrences && sharePercent >= minSharePercent;
+      const id = sharedImageId(src);
+      const existing = registry.images[id];
+      if (existing) {
+        existing.occurrenceCount = rec.count;
+        existing.lastComputedAt = now;
+      } else if (qualifies) {
+        registry.images[id] = { id, src, alt: rec.alt, tag: 'img', occurrenceCount: rec.count, firstDetectedAt: now, lastComputedAt: now };
+        newlyDetected++;
+      }
+    }
+    registry.lastComputedAt = now;
+    registry.threshold = { minOccurrences, minSharePercent };
+    await fileStorage.writeSharedImages(projectDir, registry);
+
+    // Pass 2: rewrite only the pages that actually contain a now-shared image.
+    const sharedSrcToId = new Map(Object.values(registry.images).map(e => [e.src, e.id]));
+    let pagesRewritten = 0;
+    let collapsedElementsTotal = 0;
+    let pagesProcessedInPass2 = 0;
+    for (const { dir, meta } of perPage) {
+      pagesProcessedInPass2++;
+      if (!meta) {
+        await renewLockOrThrow(pagesProcessedInPass2);
+        continue;
+      }
+      const { elements: collapsed, collapsedCount } = collapseSharedImages(meta.orderedElements || [], sharedSrcToId);
+      if (collapsedCount > 0) {
+        await fileStorage.savePageMeta(dir, { ...meta, orderedElements: collapsed });
+        pagesRewritten++;
+        collapsedElementsTotal += collapsedCount;
+      }
+      await renewLockOrThrow(pagesProcessedInPass2);
+    }
+
+    return {
+      scannedPages: totalPages,
+      distinctImages: freq.size,
+      sharedImageCount: Object.keys(registry.images).length,
+      newlyDetected,
+      pagesRewritten,
+      collapsedElementsTotal,
+    };
+  }
+
+  // Triggers the shared-image detection/collapse pass for a project. Read-
+  // only on the project's DB row (image dedup only touches filesystem
+  // meta.json + the shared-images.json registry) so it needs no scrape lock.
+  app.post('/api/projects/:id/dedupe-images', async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ message: 'Invalid project ID' });
+      }
+      const minOccurrences = req.body?.minOccurrences !== undefined ? Number(req.body.minOccurrences) : undefined;
+      const minSharePercent = req.body?.minSharePercent !== undefined ? Number(req.body.minSharePercent) : undefined;
+      if (minOccurrences !== undefined && (!Number.isFinite(minOccurrences) || minOccurrences < 1)) {
+        return res.status(400).json({ message: 'minOccurrences must be a positive number' });
+      }
+      if (minSharePercent !== undefined && (!Number.isFinite(minSharePercent) || minSharePercent < 0 || minSharePercent > 100)) {
+        return res.status(400).json({ message: 'minSharePercent must be between 0 and 100' });
+      }
+      const project = await storage.getProject(id);
+      if (!project) {
+        return res.status(404).json({ message: 'Project not found' });
+      }
+
+      // This scans every page's meta.json, then later rewrites those exact
+      // pages. A concurrent crawl/rescrape could save a page in between and
+      // have that fresh extraction overwritten by our stale in-memory copy,
+      // so this needs the same exclusion as an actual scrape batch - take
+      // the project's scrape lock for the whole pass, not just at the end.
+      const lockOwner: string = typeof req.body?.lockOwner === 'string' && req.body.lockOwner
+        ? req.body.lockOwner
+        : `dedupe-images-${crypto.randomUUID()}`;
+      const existingLock = (project as any).scrapeLock as { owner: string; expiresAt: number } | null;
+      if (existingLock && existingLock.expiresAt > Date.now() && existingLock.owner !== lockOwner) {
+        return res.status(409).json({ message: 'Project is being processed by another session', reason: 'locked' });
+      }
+      // Large projects (thousands of pages) can take a couple of minutes to
+      // scan+rewrite; give the lock enough headroom for that.
+      const locked = await storage.updateProject(
+        id,
+        { scrapeLock: { owner: lockOwner, expiresAt: Date.now() + 15 * 60 * 1000 } },
+        { expectedVersion: (project as any).version, enforceLockOwner: lockOwner },
+      );
+      if (!locked) {
+        return res.status(409).json({ message: 'Project was modified concurrently; try again', reason: 'version_conflict' });
+      }
+
+      let responseBody: Record<string, any>;
+      // Renews the lease we took above so a long scan on a huge project
+      // can't outlive it; returns false (and stops renewing further calls
+      // for this run) if some other session has since taken the lock.
+      let lockLost = false;
+      const renewLock = async (): Promise<boolean> => {
+        if (lockLost) return false;
+        const current = await storage.getProject(id);
+        if (!current) return false;
+        const renewed = await storage.updateProject(
+          id,
+          { scrapeLock: { owner: lockOwner, expiresAt: Date.now() + 15 * 60 * 1000 } },
+          { expectedVersion: (current as any).version, enforceLockOwner: lockOwner },
+        );
+        if (!renewed) lockLost = true;
+        return !!renewed;
+      };
+
+      try {
+        const stats = await computeAndApplyImageDedup(id, project.domain, { minOccurrences, minSharePercent, renewLock });
+        console.log(`[ImageDedup] Project ${id}: ${stats.sharedImageCount} shared image(s) (${stats.newlyDetected} new), collapsed ${stats.collapsedElementsTotal} element(s) across ${stats.pagesRewritten}/${stats.scannedPages} page(s)`);
+
+        // Backfill: consolidate already-downloaded per-page media files (from
+        // before shared-media storage existed) into the project-wide,
+        // content-addressed store, reclaiming disk for duplicate binaries.
+        const mediaStats = await fileStorage.consolidateProjectMedia(id, project.domain, { renewLock });
+        console.log(`[ImageDedup] Project ${id}: consolidated media - ${mediaStats.uniqueFiles} unique file(s), reclaimed ${(mediaStats.bytesReclaimed / 1024 / 1024).toFixed(1)}MB across ${mediaStats.filesScanned} file(s)`);
+
+        responseBody = { ...stats, media: mediaStats };
+      } finally {
+        // Always release the lock we took, regardless of outcome, so a
+        // dedupe call never leaves the project stuck for other sessions.
+        // Released BEFORE responding (not in a fire-and-forget after
+        // res.json) so a caller that immediately re-reads the project after
+        // this call resolves never observes a stale locked state.
+        try {
+          const afterProject = await storage.getProject(id);
+          const currentLock = (afterProject as any)?.scrapeLock as { owner: string; expiresAt: number } | null;
+          if (afterProject && currentLock?.owner === lockOwner) {
+            await storage.updateProject(
+              id,
+              { scrapeLock: null },
+              { expectedVersion: (afterProject as any).version, enforceLockOwner: lockOwner },
+            );
+          }
+        } catch (releaseErr) {
+          console.error('[ImageDedup] Failed to release lock:', releaseErr);
+        }
+      }
+      res.json(responseBody);
+    } catch (err) {
+      console.error('[ImageDedup] Error:', err);
+      res.status(500).json({ message: 'Failed to deduplicate images' });
+    }
+  });
+
+  // Inspects which images a project currently treats as shared boilerplate
+  // (from the last /dedupe-images run), so the effect is visible rather than
+  // an opaque internal optimization.
+  app.get('/api/projects/:id/shared-images', async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ message: 'Invalid project ID' });
+      }
+      const project = await storage.getProject(id);
+      if (!project) {
+        return res.status(404).json({ message: 'Project not found' });
+      }
+      const projectDir = fileStorage.getProjectDir(id, project.domain);
+      const registry = await fileStorage.readSharedImages(projectDir);
+      if (!registry) {
+        return res.json({ computed: false, lastComputedAt: null, threshold: null, images: [] });
+      }
+      const images = Object.values(registry.images).sort((a: any, b: any) => b.occurrenceCount - a.occurrenceCount);
+      res.json({ computed: true, lastComputedAt: registry.lastComputedAt, threshold: registry.threshold, images });
+    } catch (err) {
+      console.error('[SharedImages] Error:', err);
+      res.status(500).json({ message: 'Failed to read shared images' });
     }
   });
 
@@ -5333,6 +5578,26 @@ export async function registerRoutes(
       // DB persistence below is rejected, so no orphan files become visible.
       const newPageDirs: string[] = [];
 
+      // If this project already has a shared-images registry (from a prior
+      // /dedupe-images run), apply it to freshly-scraped pages immediately -
+      // known-boilerplate images are stored compact from the start instead of
+      // waiting for the next compaction pass. Loaded once per batch, not per
+      // URL. Detecting *new* recurring images still requires seeing many
+      // pages, so that discovery stays a periodic/on-demand compaction step.
+      const projectDirForImages = fileStorage.getProjectDir(projectId, project.domain);
+      const sharedImagesRegistry = await fileStorage.readSharedImages(projectDirForImages);
+      const sharedSrcToId = new Map<string, string>(
+        Object.values(sharedImagesRegistry?.images || {}).map((entry: any) => [entry.src, entry.id]),
+      );
+
+      // URLs in this batch are fetched concurrently (Promise.all below), so
+      // several pages can discover the *same* not-yet-downloaded media URL
+      // in the same tick. Without coordination each would pass the
+      // sharedMediaExists check (still false) and independently fetch+write
+      // the same file. This map makes concurrent callers within one batch
+      // await a single in-flight download instead of duplicating it.
+      const inFlightMediaDownloads = new Map<string, Promise<void>>();
+
       // Tracks whether ANY URL in this batch received an HTTP 429 response,
       // even if a proxy retry later succeeded.  Set atomically via array push
       // from parallel promises so no lock is needed.
@@ -5376,6 +5641,11 @@ export async function registerRoutes(
               if (!existedBefore) newPageDirs.push(pageDir);
               const markdown = orderedElementsToMarkdown(data.orderedElements || []);
               await fileStorage.savePageContent(pageDir, markdown);
+              // Store already-known-shared images (logos, badges, ...) as a
+              // compact reference instead of the full entry - see
+              // content-extraction/image-refs.ts. New recurring images are
+              // still only detected by the periodic /dedupe-images scan.
+              const { elements: storedElements } = collapseSharedImages(data.orderedElements || [], sharedSrcToId);
               await fileStorage.savePageMeta(pageDir, {
                 url,
                 title: data.title,
@@ -5383,7 +5653,7 @@ export async function registerRoutes(
                 wordCount: data.wordCount,
                 structuredData: data.structuredData,
                 linkedPdfs: data.linkedPdfs,
-                orderedElements: data.orderedElements,
+                orderedElements: storedElements,
               });
               fileStorage.invalidatePagePdfCountsCache(projectId);
               
@@ -5412,22 +5682,40 @@ export async function registerRoutes(
                 }
               }
               
-              // Download media (images, max 10MB each, max 50 per page)
+              // Download media (images, max 10MB each, max 50 per page).
+              // Stored project-wide, content-addressed by source URL (not
+              // per-page) so a recurring logo/badge/banner referenced by
+              // thousands of pages is fetched and written to disk once per
+              // project, not once per page - see fileStorage.saveSharedMedia.
               const mediaElements = (data.orderedElements || []).filter((el: any) => el.type === 'media' && el.src);
               for (const media of mediaElements.slice(0, 50)) {
                 try {
                   const mediaUrl = media.src;
                   if (!mediaUrl || mediaUrl.startsWith('data:')) continue;
-                  const mediaResponse = await fetch(mediaUrl, {
-                    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SitemapScraper/1.0)' },
-                    signal: AbortSignal.timeout(15000),
-                  });
-                  if (mediaResponse.ok) {
-                    const mediaBuffer = Buffer.from(await mediaResponse.arrayBuffer());
-                    if (mediaBuffer.length > 10 * 1024 * 1024) continue;
-                    const mediaFilename = mediaUrl.split('/').pop()?.split('?')[0] || 'image.jpg';
-                    await fileStorage.saveMedia(pageDir, mediaFilename, mediaBuffer);
+                  const mediaId = sharedImageId(mediaUrl);
+                  const mediaExt = (path.extname(mediaUrl.split('?')[0]) || '.jpg').toLowerCase();
+                  const alreadyDownloaded = await fileStorage.sharedMediaExists(projectDirForImages, mediaId, mediaExt);
+                  if (alreadyDownloaded) continue;
+
+                  // Coordinate with any other page in this same batch that's
+                  // already fetching this exact URL, so only one network
+                  // request/write happens per distinct media URL per batch.
+                  let inFlight = inFlightMediaDownloads.get(mediaId);
+                  if (!inFlight) {
+                    inFlight = (async () => {
+                      const mediaResponse = await fetch(mediaUrl, {
+                        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SitemapScraper/1.0)' },
+                        signal: AbortSignal.timeout(15000),
+                      });
+                      if (mediaResponse.ok) {
+                        const mediaBuffer = Buffer.from(await mediaResponse.arrayBuffer());
+                        if (mediaBuffer.length > 10 * 1024 * 1024) return;
+                        await fileStorage.saveSharedMedia(projectDirForImages, mediaId, mediaExt, mediaBuffer);
+                      }
+                    })();
+                    inFlightMediaDownloads.set(mediaId, inFlight);
                   }
+                  await inFlight;
                 } catch {
                   // Silently skip failed media downloads
                 }

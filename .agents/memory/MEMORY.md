@@ -2,3 +2,5 @@
 - [Incremental project update](incremental-update.md) — removal is a reversible flag, never a delete; abort diffs on incomplete discovery; pin jsonb insert types via .extend().
 - [Normalized crawl results](normalized-results.md) — results live in project_results rows (unique project_id+loc), not projects.results jsonb; only write via the storage layer.
 - [Project write concurrency](project-write-concurrency.md) — scrape progress writes must be atomically guarded (lease + version) in the UPDATE itself; treat conflicts as "discard batch and refetch".
+- [Scraped image storage split](scraped-image-storage.md) — sitemap images[] (DB), orderedElements media (filesystem meta.json, what renders), and downloaded binaries (dominant disk size) are three unrelated things.
+- [Shared/boilerplate image interning](shared-image-dedup.md) — append-only per-project registry + resolve-on-read centralized in one function, so recurring images collapse without touching every consumer.

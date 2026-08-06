@@ -655,6 +655,43 @@ export default function Home() {
     pendingKickRef.current.set(projectId, timer);
   }, []);
 
+  // Fire-and-forget: re-runs image dedup after a crawl/scrape finishes so
+  // newly-recurring images are collapsed automatically without requiring a
+  // manual /dedupe-images trigger. Ignores 409 conflicts (another tab is
+  // already doing it) and any other transient errors to keep the caller's
+  // completion path clean. Runs fully in the background — does not block
+  // the transition to idle or show blocking UI.
+  const triggerImageDedupAsync = useCallback((projectId: number) => {
+    fetch(`/api/projects/${projectId}/dedupe-images`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lockOwner: `auto-dedup-${TAB_ID}` }),
+      credentials: 'include',
+    })
+      .then(async res => {
+        if (res.ok) {
+          const data = await res.json().catch(() => ({}));
+          console.log(
+            `[ImageDedup] Project ${projectId}: auto-dedup complete — ` +
+            `${data.sharedImageCount ?? '?'} shared image(s), ` +
+            `${data.newlyDetected ?? '?'} new, ` +
+            `${data.collapsedElementsTotal ?? '?'} element(s) collapsed`,
+          );
+          queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
+          queryClient.invalidateQueries({ queryKey: ['/api/projects', projectId] });
+        } else if (res.status === 409) {
+          // Another tab or session is already running dedup — that's fine.
+          console.log(`[ImageDedup] Project ${projectId}: dedup skipped (locked by another session)`);
+        } else {
+          console.warn(`[ImageDedup] Project ${projectId}: dedup returned ${res.status}`);
+        }
+      })
+      .catch(err => {
+        // Network error — not critical, user can always run it manually.
+        console.warn(`[ImageDedup] Project ${projectId}: dedup request failed:`, err);
+      });
+  }, [queryClient]);
+
   // Processes ONE batch for ONE project. Only called by the dispatcher
   // (processStep) below, which guarantees per-project mutual exclusion via
   // processingProjectsRef.
@@ -683,6 +720,9 @@ export default function Home() {
             stats: { ...scrapingProject.stats!, endTime: Date.now() }
           } 
         });
+        // Auto-run image dedup now that scraping is complete so newly-recurring
+        // images are collapsed without requiring a manual trigger.
+        triggerImageDedupAsync(scrapingProject.id);
         return;
       }
 
@@ -860,6 +900,12 @@ export default function Home() {
                   ? t('updateNoChanges')
                   : `${s.newUrls} ${t('updateSummaryNew')}, ${s.removedUrls} ${t('updateSummaryRemoved')}`,
               });
+              // When there's nothing new to scrape the project is already idle;
+              // trigger dedup now. When there IS content to scrape, the
+              // content_scraping completion branch will trigger it instead.
+              if (s.queued === 0) {
+                triggerImageDedupAsync(crawlingProject.id);
+              }
             } else if (res.status === 409) {
               // Another tab holds the lease or a concurrent write happened —
               // refetch and let whoever owns the project finish the update.
@@ -889,6 +935,8 @@ export default function Home() {
             stats: { ...crawlingProject.stats!, endTime: Date.now() }
           } 
         });
+        // Auto-run image dedup now that the crawl is complete.
+        triggerImageDedupAsync(crawlingProject.id);
         return;
       }
 
@@ -1145,6 +1193,8 @@ export default function Home() {
             stats: { ...contentScrapingProject.stats!, endTime: Date.now() }
           } 
         });
+        // Auto-run image dedup now that content extraction is complete.
+        triggerImageDedupAsync(contentScrapingProject.id);
         return;
       }
 

@@ -1,7 +1,14 @@
-import { useState, useMemo } from 'react';
-import { ExternalLink, CheckCircle, Clock, Search, Eye, ChevronDown, Loader2, XCircle, AlertCircle, RotateCcw, FileDown } from 'lucide-react';
+import { useState } from 'react';
+import { ExternalLink, CheckCircle, Clock, Search, Eye, ChevronDown, Loader2, XCircle, AlertCircle, RotateCcw, FileDown, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import {
   Tooltip,
   TooltipContent,
@@ -11,23 +18,53 @@ import ContentPreview from './ContentPreview';
 import { apiRequest } from '@/lib/queryClient';
 import type { SitemapUrlEntry, RagChunk } from '@shared/schema';
 
+const PAGE_SIZE_OPTIONS = [100, 500, 1000, 5000, 25000, 100000];
+
 interface UrlListProps {
   urls: SitemapUrlEntry[];
+  totalCount: number;
   projectId: number;
   t: (key: any) => string;
   chunks?: RagChunk[];
   onRescrapeUrl?: (url: string) => void;
+  isLoading?: boolean;
+  page: number;
+  pageSize: number;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (size: number) => void;
+  search: string;
+  onSearchChange: (search: string) => void;
+  activeFolder: string | null;
+  onFolderChange: (folder: string | null) => void;
+  folderStats: Array<[string, number]>;
 }
 
-export default function UrlList({ urls, projectId, t, chunks = [], onRescrapeUrl }: UrlListProps) {
-  const [filter, setFilter] = useState('');
-  const [activeFolder, setActiveFolder] = useState<string | null>(null);
+export default function UrlList({
+  urls,
+  totalCount,
+  projectId,
+  t,
+  chunks = [],
+  onRescrapeUrl,
+  isLoading = false,
+  page,
+  pageSize,
+  onPageChange,
+  onPageSizeChange,
+  search,
+  onSearchChange,
+  activeFolder,
+  onFolderChange,
+  folderStats,
+}: UrlListProps) {
   const [previewEntry, setPreviewEntry] = useState<SitemapUrlEntry | null>(null);
   const [showFolders, setShowFolders] = useState(false);
   const [loadingPreview, setLoadingPreview] = useState<string | null>(null);
   const [contentCache, setContentCache] = useState<Map<string, SitemapUrlEntry>>(new Map());
   const [rescrapingUrl, setRescrapingUrl] = useState<string | null>(null);
-  
+
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+
   const handleRescrape = async (url: string) => {
     if (rescrapingUrl) return;
     
@@ -82,52 +119,6 @@ export default function UrlList({ urls, projectId, t, chunks = [], onRescrapeUrl
       setLoadingPreview(null);
     }
   };
-  
-  const folderStats = useMemo(() => {
-    const stats: Record<string, number> = {};
-    urls.forEach(url => {
-      try {
-        const path = new URL(url.loc).pathname;
-        const segments = path.split('/').filter(s => s.length > 0);
-        if (segments.length > 0) {
-          const firstSegment = `/${segments[0]}/`;
-          stats[firstSegment] = (stats[firstSegment] || 0) + 1;
-        } else {
-          stats['/'] = (stats['/'] || 0) + 1;
-        }
-      } catch {}
-    });
-    return Object.entries(stats).sort((a, b) => b[1] - a[1]);
-  }, [urls]);
-
-  const filteredUrls = useMemo(() => {
-    let result = urls;
-    if (activeFolder) {
-      if (activeFolder === '/') {
-        result = result.filter(u => {
-          try {
-            const path = new URL(u.loc).pathname;
-            return path === '/' || path === '';
-          } catch {
-            return false;
-          }
-        });
-      } else {
-        result = result.filter(u => {
-          try {
-            return new URL(u.loc).pathname.startsWith(activeFolder);
-          } catch {
-            return false;
-          }
-        });
-      }
-    }
-    if (filter) {
-      const lower = filter.toLowerCase();
-      result = result.filter(u => u.loc.toLowerCase().includes(lower));
-    }
-    return result;
-  }, [urls, filter, activeFolder]);
 
   return (
     <div className="flex flex-col h-full">
@@ -149,8 +140,8 @@ export default function UrlList({ urls, projectId, t, chunks = [], onRescrapeUrl
               type="text" 
               placeholder={t('searchPlaceholder')}
               className="pl-9 bg-input border-border"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
+              value={search}
+              onChange={(e) => onSearchChange(e.target.value)}
               data-testid="search-input"
             />
           </div>
@@ -167,7 +158,7 @@ export default function UrlList({ urls, projectId, t, chunks = [], onRescrapeUrl
         {showFolders && (
           <div className="flex flex-wrap gap-2">
             <button
-              onClick={() => setActiveFolder(null)}
+              onClick={() => onFolderChange(null)}
               className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
                 !activeFolder 
                   ? 'bg-primary text-primary-foreground' 
@@ -175,12 +166,12 @@ export default function UrlList({ urls, projectId, t, chunks = [], onRescrapeUrl
               }`}
               data-testid="filter-all"
             >
-              Alle ({urls.length})
+              Alle ({totalCount.toLocaleString()})
             </button>
             {folderStats.slice(0, 12).map(([folder, count]) => (
               <button
                 key={folder}
-                onClick={() => setActiveFolder(activeFolder === folder ? null : folder)}
+                onClick={() => onFolderChange(activeFolder === folder ? null : folder)}
                 className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
                   activeFolder === folder 
                     ? 'bg-primary text-primary-foreground' 
@@ -188,14 +179,22 @@ export default function UrlList({ urls, projectId, t, chunks = [], onRescrapeUrl
                 }`}
                 data-testid={`filter-${folder}`}
               >
-                {folder} ({count})
+                {folder} ({count.toLocaleString()})
               </button>
             ))}
           </div>
         )}
       </div>
 
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-auto relative">
+        {isLoading && (
+          <div className="absolute inset-0 bg-card/60 backdrop-blur-[1px] z-20 flex items-start justify-center pt-16">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground bg-card border border-border rounded-lg px-4 py-2 shadow-sm">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              {t('loading')}
+            </div>
+          </div>
+        )}
         <table className="data-table w-full table-fixed">
           <thead className="sticky top-0 bg-card z-10">
             <tr>
@@ -206,7 +205,7 @@ export default function UrlList({ urls, projectId, t, chunks = [], onRescrapeUrl
             </tr>
           </thead>
           <tbody>
-            {filteredUrls.slice(0, 500).map((url, idx) => {
+            {urls.map((url, idx) => {
               let displayPath = url.loc;
               try {
                 const parsedUrl = new URL(url.loc);
@@ -237,7 +236,7 @@ export default function UrlList({ urls, projectId, t, chunks = [], onRescrapeUrl
               const needsTruncation = displayPath.length > maxLength;
               
               return (
-                <tr key={idx} data-testid={`url-row-${idx}`}>
+                <tr key={url.loc || idx} data-testid={`url-row-${idx}`}>
                   <td className="overflow-hidden">
                     <div className="flex items-center gap-2 min-w-0">
                       {needsTruncation ? (
@@ -407,20 +406,55 @@ export default function UrlList({ urls, projectId, t, chunks = [], onRescrapeUrl
           </tbody>
         </table>
         
-        {filteredUrls.length === 0 && (
+        {!isLoading && urls.length === 0 && (
           <div className="py-16 text-center">
             <p className="text-muted-foreground">{t('noProjects')}</p>
           </div>
         )}
-        
-        {filteredUrls.length > 500 && (
-          <div className="py-4 text-center border-t border-border">
-            <p className="text-sm text-muted-foreground">
-              Showing 500 of {filteredUrls.length} URLs
-            </p>
-          </div>
-        )}
       </div>
+
+      {totalCount > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 p-3 border-t border-border bg-card text-sm">
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <span data-testid="text-results-range">
+              {(page * pageSize + 1).toLocaleString()}–{Math.min((page + 1) * pageSize, totalCount).toLocaleString()} von {totalCount.toLocaleString()}
+            </span>
+            <Select value={String(pageSize)} onValueChange={(v) => onPageSizeChange(Number(v))}>
+              <SelectTrigger className="h-8 w-[110px]" data-testid="select-page-size">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PAGE_SIZE_OPTIONS.map(size => (
+                  <SelectItem key={size} value={String(size)}>{size.toLocaleString()} / Seite</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onPageChange(Math.max(0, page - 1))}
+              disabled={page === 0}
+              data-testid="button-prev-page"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </Button>
+            <span className="text-xs text-muted-foreground whitespace-nowrap" data-testid="text-page-indicator">
+              Seite {page + 1} / {totalPages}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onPageChange(Math.min(totalPages - 1, page + 1))}
+              disabled={page >= totalPages - 1}
+              data-testid="button-next-page"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

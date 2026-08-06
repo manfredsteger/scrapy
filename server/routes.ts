@@ -3191,7 +3191,13 @@ export async function registerRoutes(
 
   app.get(api.projects.get.path, async (req, res) => {
     try {
-      const project = await storage.getProjectLite(Number(req.params.id));
+      // The table body is paginated separately via /api/projects/:id/results —
+      // skip the (potentially tens-of-MB) results array here so opening a
+      // huge project stays fast. Pass ?full=true for the legacy payload shape
+      // (still lite per-result fields, no scrapedData) for any old caller
+      // that expects it; genuine full-fidelity exports use /export instead.
+      const skipResults = req.query.full !== 'true';
+      const project = await storage.getProjectLite(Number(req.params.id), { skipResults });
       if (!project) {
         return res.status(404).json({ message: 'Project not found' });
       }
@@ -3202,18 +3208,105 @@ export async function registerRoutes(
         }
       }
       const pdfCounts = await fileStorage.getPagePdfCounts(project.id, project.domain);
-      if (pdfCounts.size > 0 && project.results) {
-        for (const r of project.results) {
-          const loc = r.loc;
-          if (loc && pdfCounts.has(loc)) {
-            r.pdfCount = pdfCounts.get(loc);
+      if (pdfCounts.size > 0) {
+        if (project.results) {
+          for (const r of project.results) {
+            const loc = r.loc;
+            if (loc && pdfCounts.has(loc)) {
+              r.pdfCount = pdfCounts.get(loc);
+            }
           }
         }
+        let total = 0;
+        for (const count of pdfCounts.values()) total += count;
+        project.attachmentCount = total;
       }
       res.json(project);
     } catch (error) {
       console.error('Error fetching project:', error);
       res.status(500).json({ message: 'Failed to fetch project' });
+    }
+  });
+
+  // Genuine full-fidelity export (includes each result's real scrapedData,
+  // unlike the lite `?full=true` project payload above, which deliberately
+  // omits scrapedData for transfer-size reasons). Used only by the explicit
+  // JSON/CSV export actions, which are infrequent, so it's fine to load the
+  // whole project here even for large projects.
+  app.get('/api/projects/:id/export', async (req, res) => {
+    try {
+      const project = await storage.getProject(Number(req.params.id));
+      if (!project) {
+        return res.status(404).json({ message: 'Project not found' });
+      }
+      res.json(project);
+    } catch (error) {
+      console.error('Error exporting project:', error);
+      res.status(500).json({ message: 'Failed to export project' });
+    }
+  });
+
+  // Paginated + server-filtered slice of a project's results, used by the
+  // results table so opening a huge project (10k+ pages, each with dozens of
+  // images) never has to transfer or parse the full result set.
+  app.get('/api/projects/:id/results', async (req, res) => {
+    try {
+      const projectId = Number(req.params.id);
+      if (isNaN(projectId)) {
+        return res.status(400).json({ message: 'Invalid project ID' });
+      }
+      const offset = Math.max(0, parseInt(req.query.offset as string) || 0);
+      const limit = Math.min(100000, Math.max(1, parseInt(req.query.limit as string) || 500));
+      const search = typeof req.query.search === 'string' && req.query.search.trim() ? req.query.search.trim() : undefined;
+      const folder = typeof req.query.folder === 'string' && req.query.folder ? req.query.folder : undefined;
+      const tab = req.query.tab === 'errors' ? 'errors' as const : 'results' as const;
+
+      const { results, total } = await storage.getProjectResultsPage(projectId, { offset, limit, search, folder, tab });
+
+      // pdfCount is stored per-file in the filesystem, not in the jsonb row —
+      // enrich just this page's locs rather than the whole project.
+      const domainRow = await db.execute(sql`SELECT domain FROM projects WHERE id = ${projectId}`);
+      const domain = (domainRow.rows[0] as any)?.domain;
+      if (domain) {
+        const pdfCounts = await fileStorage.getPagePdfCounts(projectId, domain);
+        if (pdfCounts.size > 0) {
+          for (const r of results) {
+            if (r.loc && pdfCounts.has(r.loc)) {
+              r.pdfCount = pdfCounts.get(r.loc);
+            }
+          }
+        }
+      }
+
+      res.json({ results, total, offset, limit });
+    } catch (error) {
+      console.error('Error fetching project results page:', error);
+      res.status(500).json({ message: 'Failed to fetch project results' });
+    }
+  });
+
+  // Lightweight summary counts for a project's results (urls/scraped/failed/
+  // pending/attachments), computed in SQL so the client doesn't need the
+  // full results array just to render the stat cards.
+  app.get('/api/projects/:id/results-summary', async (req, res) => {
+    try {
+      const projectId = Number(req.params.id);
+      if (isNaN(projectId)) {
+        return res.status(400).json({ message: 'Invalid project ID' });
+      }
+      const summary = await storage.getProjectResultsSummary(projectId);
+      const domainRow = await db.execute(sql`SELECT domain FROM projects WHERE id = ${projectId}`);
+      const domain = (domainRow.rows[0] as any)?.domain;
+      if (domain) {
+        const pdfCounts = await fileStorage.getPagePdfCounts(projectId, domain);
+        let total = 0;
+        for (const count of pdfCounts.values()) total += count;
+        summary.attachmentCount = total;
+      }
+      res.json(summary);
+    } catch (error) {
+      console.error('Error fetching project results summary:', error);
+      res.status(500).json({ message: 'Failed to fetch results summary' });
     }
   });
 
@@ -3972,6 +4065,7 @@ export async function registerRoutes(
 
       const directPdfCount = directPdfUrls.size;
       totalPdfsFound += directPdfCount;
+      fileStorage.invalidatePagePdfCountsCache(id);
 
       console.log(`[SyncAttachments] Completed for project ${id}: ${totalSynced} HTML pages, ${directPdfCount} direct PDFs, ${totalPdfsFound} total PDFs, ${totalErrors} errors`);
 
@@ -5115,6 +5209,7 @@ export async function registerRoutes(
                 linkedPdfs: data.linkedPdfs,
                 orderedElements: data.orderedElements,
               });
+              fileStorage.invalidatePagePdfCountsCache(projectId);
               
               // Download linked PDFs (max 50MB each, max 10 per page)
               if (data.linkedPdfs && data.linkedPdfs.length > 0) {
@@ -6844,6 +6939,7 @@ export async function registerRoutes(
             linkedPdfs: data.linkedPdfs,
             orderedElements: data.orderedElements,
           });
+          fileStorage.invalidatePagePdfCountsCache(projectId);
 
           migrated++;
           sendEvent('progress', { current: migrated, total: results.length, skipped, url: url.slice(0, 80), message: `Migriert: ${url.slice(0, 60)}` });

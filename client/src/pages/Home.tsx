@@ -195,6 +195,15 @@ export default function Home() {
   const [liveFeed, setLiveFeed] = useState<Record<number, LiveActivityEntry[]>>({});
   const [sessionStats, setSessionStats] = useState<Record<number, { startTime: number; processedCount: number }>>({});
 
+  // Paginated results table state (kept in the parent so switching tabs/pages
+  // doesn't lose position, and so page size / filters can be reset when the
+  // active project changes).
+  const [resultsPage, setResultsPage] = useState(0);
+  const [resultsPageSize, setResultsPageSize] = useState(500);
+  const [resultsSearch, setResultsSearch] = useState('');
+  const [resultsFolder, setResultsFolder] = useState<string | null>(null);
+  const [activeResultsTab, setActiveResultsTab] = useState<'urls' | 'errors'>('urls');
+
   const recordActivity = useCallback((projectId: number, entries: LiveActivityEntry[]) => {
     if (entries.length === 0) return;
     setLiveFeed(prev => ({
@@ -219,11 +228,57 @@ export default function Home() {
     staleTime: 1000, // Consider data stale after 1 second
   });
 
-  // Separate query for active project detail - loads full results array
+  // Separate query for active project detail - lightweight metadata + counts
+  // only; the results table body is fetched separately (paginated) below so
+  // opening a huge project never has to transfer its whole result set.
   const { data: activeProjectDetail, refetch: refetchActiveProject } = useQuery<Project>({
     queryKey: ['/api/projects', activeProjectId],
     enabled: activeProjectId !== null,
     refetchOnMount: true,
+    staleTime: 2000,
+  });
+
+  // Reset pagination/filters whenever the active project or tab changes.
+  useEffect(() => {
+    setResultsPage(0);
+    setResultsSearch('');
+    setResultsFolder(null);
+  }, [activeProjectId, activeResultsTab]);
+
+  // Debounce the search box so every keystroke doesn't trigger a fresh
+  // server query.
+  const [resultsSearchDebounced, setResultsSearchDebounced] = useState('');
+  useEffect(() => {
+    const handle = setTimeout(() => setResultsSearchDebounced(resultsSearch), 300);
+    return () => clearTimeout(handle);
+  }, [resultsSearch]);
+  useEffect(() => {
+    setResultsPage(0);
+  }, [resultsSearchDebounced, resultsFolder]);
+
+  const resultsQueryUrl = useMemo(() => {
+    if (activeProjectId == null || activeResultsTab !== 'urls') return null;
+    const params = new URLSearchParams({
+      offset: String(resultsPage * resultsPageSize),
+      limit: String(resultsPageSize),
+    });
+    if (resultsSearchDebounced) params.set('search', resultsSearchDebounced);
+    if (resultsFolder) params.set('folder', resultsFolder);
+    return `/api/projects/${activeProjectId}/results?${params.toString()}`;
+  }, [activeProjectId, resultsPage, resultsPageSize, resultsSearchDebounced, resultsFolder, activeResultsTab]);
+
+  const { data: resultsPageData, isLoading: isResultsPageLoading, isFetching: isResultsPageFetching } = useQuery<{ results: SitemapUrlEntry[]; total: number }>({
+    queryKey: [resultsQueryUrl],
+    enabled: resultsQueryUrl !== null,
+    staleTime: 2000,
+  });
+
+  const { data: resultsSummary } = useQuery<{
+    urlCount: number; scrapedCount: number; failedCount: number; pendingCount: number; attachmentCount: number;
+    folders: Array<[string, number]>;
+  }>({
+    queryKey: [`/api/projects/${activeProjectId}/results-summary`],
+    enabled: activeProjectId !== null,
     staleTime: 2000,
   });
 
@@ -1666,14 +1721,27 @@ export default function Home() {
     }
   }, [activeProject, updateProjectMutation, processAction]);
 
-  const exportProject = useCallback(() => {
+  // The project detail query is intentionally lite (no results array) so
+  // opening a huge project stays fast; a full export is an explicit,
+  // infrequent action, so it's fine to fetch the full payload on demand here.
+  const [isExportingProject, setIsExportingProject] = useState(false);
+  const exportProject = useCallback(async () => {
     if (!activeProject) return;
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(activeProject, null, 2));
-    const a = document.createElement('a');
-    a.href = dataStr;
-    a.download = `${(activeProject.displayName || activeProject.domain).replace(/[^a-z0-9]/gi, '_')}-export.json`;
-    a.click();
-  }, [activeProject]);
+    setIsExportingProject(true);
+    try {
+      const res = await apiRequest('GET', `/api/projects/${activeProject.id}/export`);
+      const fullProject = await res.json();
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(fullProject, null, 2));
+      const a = document.createElement('a');
+      a.href = dataStr;
+      a.download = `${(activeProject.displayName || activeProject.domain).replace(/[^a-z0-9]/gi, '_')}-export.json`;
+      a.click();
+    } catch (error) {
+      toast({ title: t('error'), variant: 'destructive' });
+    } finally {
+      setIsExportingProject(false);
+    }
+  }, [activeProject, t, toast]);
 
   const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1787,15 +1855,17 @@ export default function Home() {
   const remainingUrls = (activeProject?.status === 'content_scraping'
     ? contentQueueRef.current.get(activeProject.id)?.length
     : undefined) ?? (activeProject?.queue?.length || 0);
-  // Use API-computed counts when available (more reliable), fallback to client-side calculation
-  const scrapedCount = (activeProject as any)?.scrapedCount ?? (activeProject?.results || []).filter(r => r.scrapedData || r.hasScrapedData).length;
-  const failedCount = (activeProject as any)?.failedCount ?? (activeProject?.results || []).filter((r: any) => r.errorStatus === 'failed' || r.errorStatus === 'skipped').length;
-  const urlCount = (activeProject as any)?.urlCount ?? (activeProject?.results || []).length;
+  // Use the dedicated (always-fresh, whole-dataset) summary query first, then
+  // fall back to whatever counts came back with the project detail payload,
+  // then to a client-side count over the (lite) results array if present.
+  const scrapedCount = resultsSummary?.scrapedCount ?? (activeProject as any)?.scrapedCount ?? (activeProject?.results || []).filter(r => r.scrapedData || r.hasScrapedData).length;
+  const failedCount = resultsSummary?.failedCount ?? (activeProject as any)?.failedCount ?? (activeProject?.results || []).filter((r: any) => r.errorStatus === 'failed' || r.errorStatus === 'skipped').length;
+  const urlCount = resultsSummary?.urlCount ?? (activeProject as any)?.urlCount ?? (activeProject?.results || []).length;
   // During active processing, use queue length as source of truth for pending
   // Otherwise use math-based calculation (more accurate for completed projects)
   const isActivelyProcessing = activeProject?.status === 'content_scraping' || activeProject?.status === 'content_paused';
   const pendingContentScrape = isActivelyProcessing ? remainingUrls : Math.max(0, urlCount - scrapedCount - failedCount);
-  const attachmentCount = (activeProject?.results || []).reduce((sum, r: any) => {
+  const attachmentCount = resultsSummary?.attachmentCount ?? (activeProject?.results || []).reduce((sum, r: any) => {
     return sum + (r.pdfCount || 0);
   }, 0);
   const errorsArrayCount = (activeProject?.errors || []).length;
@@ -1860,7 +1930,7 @@ export default function Home() {
       <div className="flex-1 flex flex-col min-w-0">
         <Header 
           title={activeProject ? (activeProject.displayName || activeProject.domain) : 'Dashboard'}
-          subtitle={activeProject ? `${activeProject.results?.length || 0} URLs` : undefined}
+          subtitle={activeProject ? `${urlCount.toLocaleString()} URLs` : undefined}
           language={language}
           onLanguageChange={setLanguage}
           t={t}
@@ -2175,6 +2245,13 @@ export default function Home() {
                 )}
               </div>
             </div>
+          ) : !activeProject ? (
+            <div className="flex items-center justify-center py-24" data-testid="project-loading">
+              <div className="text-center">
+                <Loader2 className="w-8 h-8 animate-spin mx-auto mb-3 text-primary" />
+                <p className="text-sm text-muted-foreground">{t('loading')}</p>
+              </div>
+            </div>
           ) : (
             <div className="space-y-6">
               <div className="flex items-center justify-between">
@@ -2242,15 +2319,14 @@ export default function Home() {
                       </DropdownMenuItem>
                       <DropdownMenuItem 
                         onClick={() => {
-                          const scrapedCount = activeProject?.results?.filter(r => r.scrapedData || r.hasScrapedData).length || 0;
                           if (scrapedCount === 0) {
                             toast({ title: t('deepScrapingRequired'), variant: 'destructive' });
                             return;
                           }
                           setShowChunkingProgress(true);
                         }}
-                        className={`gap-2 ${(activeProject?.results?.filter(r => r.scrapedData || r.hasScrapedData).length || 0) === 0 ? 'opacity-50' : ''}`}
-                        disabled={(activeProject?.results?.filter(r => r.scrapedData || r.hasScrapedData).length || 0) === 0}
+                        className={`gap-2 ${scrapedCount === 0 ? 'opacity-50' : ''}`}
+                        disabled={scrapedCount === 0}
                       >
                         <Layers className="w-4 h-4" />
                         {t('generateChunks')}
@@ -2318,8 +2394,8 @@ export default function Home() {
 
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button variant="outline" size="sm" className="gap-2" data-testid="export-button">
-                        <Download className="w-4 h-4" />
+                      <Button variant="outline" size="sm" className="gap-2" disabled={isExportingProject} data-testid="export-button">
+                        {isExportingProject ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
                         {t('exportJson')}
                       </Button>
                     </DropdownMenuTrigger>
@@ -2329,26 +2405,35 @@ export default function Home() {
                         {t('exportJson')}
                       </DropdownMenuItem>
                       <DropdownMenuItem 
-                        onClick={() => {
+                        onClick={async () => {
                           if (!activeProject) return;
-                          const results = activeProject.results || [];
-                          const csvData = results.map(r => ({
-                            url: r.loc,
-                            lastmod: r.lastmod || '',
-                            title: r.scrapedData?.title || '',
-                            wordCount: r.scrapedData?.wordCount || 0,
-                            images: r.images?.length || 0,
-                          }));
-                          const headers = ['url', 'lastmod', 'title', 'wordCount', 'images'];
-                          const csv = [
-                            headers.join(','),
-                            ...csvData.map(row => headers.map(h => `"${String((row as any)[h]).replace(/"/g, '""')}"`).join(','))
-                          ].join('\n');
-                          const dataStr = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
-                          const a = document.createElement('a');
-                          a.href = dataStr;
-                          a.download = `${(activeProject.displayName || activeProject.domain).replace(/[^a-z0-9]/gi, '_')}-export.csv`;
-                          a.click();
+                          setIsExportingProject(true);
+                          try {
+                            const res = await apiRequest('GET', `/api/projects/${activeProject.id}/export`);
+                            const fullProject = await res.json();
+                            const results = fullProject.results || [];
+                            const csvData = results.map((r: any) => ({
+                              url: r.loc,
+                              lastmod: r.lastmod || '',
+                              title: r.scrapedData?.title || '',
+                              wordCount: r.scrapedData?.wordCount || 0,
+                              images: r.images?.length || 0,
+                            }));
+                            const headers = ['url', 'lastmod', 'title', 'wordCount', 'images'];
+                            const csv = [
+                              headers.join(','),
+                              ...csvData.map((row: any) => headers.map(h => `"${String(row[h]).replace(/"/g, '""')}"`).join(','))
+                            ].join('\n');
+                            const dataStr = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
+                            const a = document.createElement('a');
+                            a.href = dataStr;
+                            a.download = `${(activeProject.displayName || activeProject.domain).replace(/[^a-z0-9]/gi, '_')}-export.csv`;
+                            a.click();
+                          } catch (error) {
+                            toast({ title: t('error'), variant: 'destructive' });
+                          } finally {
+                            setIsExportingProject(false);
+                          }
                         }} 
                         className="gap-2" 
                         data-testid="export-csv"
@@ -2575,31 +2660,43 @@ export default function Home() {
               />
 
               <div className="bg-card border border-border rounded-xl overflow-hidden">
-                <Tabs defaultValue="urls" className="flex flex-col">
+                <Tabs value={activeResultsTab} onValueChange={(v) => setActiveResultsTab(v as 'urls' | 'errors')} className="flex flex-col">
                   <TabsList className="w-full justify-start border-b border-border rounded-none bg-transparent p-0">
                     <TabsTrigger 
                       value="urls" 
                       className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent px-6 py-3"
                       data-testid="tab-urls"
                     >
-                      {t('analyzedPages')} ({activeProject?.results?.length || 0})
+                      {t('analyzedPages')} ({urlCount.toLocaleString()})
                     </TabsTrigger>
                     <TabsTrigger 
                       value="errors" 
                       className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent px-6 py-3"
                       data-testid="tab-errors"
                     >
-                      {t('crawlFailures')} ({activeProject?.errors?.length || 0})
+                      {t('crawlFailures')} ({errorsArrayCount})
                     </TabsTrigger>
                   </TabsList>
                   <TabsContent value="urls" className="m-0 min-h-[400px]">
                     <UrlList 
-                      urls={activeProject?.results || []} 
+                      urls={activeResultsTab === 'urls' ? (resultsPageData?.results || []) : []}
+                      totalCount={activeResultsTab === 'urls' ? (resultsPageData?.total ?? urlCount) : 0}
+                      isLoading={activeResultsTab === 'urls' && (isResultsPageLoading || isResultsPageFetching)}
+                      page={resultsPage}
+                      pageSize={resultsPageSize}
+                      onPageChange={setResultsPage}
+                      onPageSizeChange={(size) => { setResultsPageSize(size); setResultsPage(0); }}
+                      search={resultsSearch}
+                      onSearchChange={setResultsSearch}
+                      activeFolder={resultsFolder}
+                      onFolderChange={setResultsFolder}
+                      folderStats={resultsSummary?.folders || []}
                       projectId={activeProject?.id || 0} 
                       t={t} 
                       chunks={activeProject?.chunks || []} 
                       onRescrapeUrl={() => {
-                        queryClient.invalidateQueries({ queryKey: ['/api/projects', activeProjectId] });
+                        queryClient.invalidateQueries({ queryKey: [resultsQueryUrl] });
+                        queryClient.invalidateQueries({ queryKey: [`/api/projects/${activeProjectId}/results-summary`] });
                       }}
                     />
                   </TabsContent>
@@ -2632,7 +2729,7 @@ export default function Home() {
           open={showChunkingProgress}
           onClose={() => setShowChunkingProgress(false)}
           projectId={activeProject.id}
-          totalPages={activeProject.results?.filter(r => r.scrapedData || r.hasScrapedData).length || 0}
+          totalPages={scrapedCount}
           onComplete={(result) => {
             queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
             toast({ 

@@ -270,7 +270,25 @@ export async function countProjectAttachments(projectId: number, domain: string)
   return total;
 }
 
+// getPagePdfCounts scans every page directory on disk (readdir + read meta.json
+// per page), which is O(pageCount) I/O. On large projects (10k+ pages) that
+// alone takes tens of seconds, and it's called on every project-detail /
+// results-page / results-summary request. Cache the result briefly per
+// project so opening a huge project doesn't repeat that scan on every
+// request; callers that just changed PDF data (attachment sync, rescrape)
+// must call invalidatePagePdfCountsCache() explicitly.
+const pdfCountsCache = new Map<number, { counts: Map<string, number>; expiresAt: number }>();
+const PDF_COUNTS_CACHE_TTL_MS = 30_000;
+
+export function invalidatePagePdfCountsCache(projectId: number): void {
+  pdfCountsCache.delete(projectId);
+}
+
 export async function getPagePdfCounts(projectId: number, domain: string): Promise<Map<string, number>> {
+  const cached = pdfCountsCache.get(projectId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.counts;
+  }
   const projectDir = getProjectDir(projectId, domain);
   const pageDirs = await listPageDirs(projectDir);
   const counts = new Map<string, number>();
@@ -282,6 +300,7 @@ export async function getPagePdfCounts(projectId: number, domain: string): Promi
       }
     } catch {}
   }
+  pdfCountsCache.set(projectId, { counts, expiresAt: Date.now() + PDF_COUNTS_CACHE_TTL_MS });
   return counts;
 }
 

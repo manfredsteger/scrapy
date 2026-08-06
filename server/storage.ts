@@ -131,14 +131,14 @@ export class DatabaseStorage implements IStorage {
 
   // Optimized: Get single project with results stripped of scrapedData (computed in SQL)
   // Does NOT load chunks or full scrapedData to minimize data transfer
-  async getProjectLite(id: number): Promise<any | undefined> {
-    const result = await db.execute(sql`
-      SELECT 
-        id, domain, display_name, status, queue, crawl_depths, processed, errors, stats, 
-        project_settings, last_exported_at, exported_chunk_hashes,
-        last_scraped, created_at, version, scrape_lock, update_run,
-        jsonb_array_length(COALESCE(chunks, '[]'::jsonb)) as chunk_count,
-        (
+  // `skipResults` omits the (potentially huge — images/videos arrays for
+  // every page) results array entirely; callers that only need project
+  // metadata plus counts should set it and fetch result rows separately via
+  // getProjectResultsPage, keeping this call cheap even on 10k+ page projects.
+  async getProjectLite(id: number, opts: { skipResults?: boolean } = {}): Promise<any | undefined> {
+    const resultsSelect = opts.skipResults
+      ? sql`'[]'::jsonb as results`
+      : sql`(
           SELECT jsonb_agg(
             jsonb_build_object(
               'loc', pr.entry->>'loc',
@@ -158,7 +158,24 @@ export class DatabaseStorage implements IStorage {
           )
           FROM project_results pr
           WHERE pr.project_id = projects.id
-        ) as results
+        ) as results`;
+    const result = await db.execute(sql`
+      SELECT
+        id, domain, display_name, status, queue, crawl_depths, processed, errors, stats,
+        project_settings, last_exported_at, exported_chunk_hashes,
+        last_scraped, created_at, version, scrape_lock, update_run,
+        jsonb_array_length(COALESCE(chunks, '[]'::jsonb)) as chunk_count,
+        (SELECT count(*) FROM project_results pr WHERE pr.project_id = projects.id) as url_count,
+        (SELECT count(*) FROM project_results pr
+         WHERE pr.project_id = projects.id
+           AND ((pr.entry->>'hasScrapedData')::boolean = true
+            OR (pr.entry->'scrapedData' IS NOT NULL AND jsonb_typeof(pr.entry->'scrapedData') = 'object'))) as scraped_count,
+        (SELECT count(*) FROM project_results pr
+         WHERE pr.project_id = projects.id
+           AND (pr.entry->>'status' = 'failed'
+            OR pr.entry->>'errorStatus' IS NOT NULL
+            OR (pr.entry->>'errorMessage' IS NOT NULL AND (pr.entry->>'hasScrapedData')::boolean IS NOT TRUE AND (pr.entry->'scrapedData' IS NULL OR jsonb_typeof(pr.entry->'scrapedData') != 'object')))) as failed_count,
+        ${resultsSelect}
       FROM projects 
       WHERE id = ${id}
     `);
@@ -166,6 +183,9 @@ export class DatabaseStorage implements IStorage {
     if (result.rows.length === 0) return undefined;
     
     const row = result.rows[0] as any;
+    const urlCount = parseInt(row.url_count) || 0;
+    const scrapedCount = parseInt(row.scraped_count) || 0;
+    const failedCount = parseInt(row.failed_count) || 0;
     return {
       id: row.id,
       domain: row.domain,
@@ -187,6 +207,13 @@ export class DatabaseStorage implements IStorage {
       scrapeLock: row.scrape_lock || null,
       updateRun: row.update_run || null,
       results: row.results || [],
+      urlCount,
+      scrapedCount,
+      failedCount,
+      pendingCount: Math.max(0, urlCount - scrapedCount - failedCount),
+      // attachmentCount (PDF count) is filled in by the route handler from
+      // fileStorage, which is the source of truth for per-page PDF counts.
+      attachmentCount: 0,
     };
   }
 
@@ -384,6 +411,118 @@ export class DatabaseStorage implements IStorage {
       await tx.delete(projectResults).where(eq(projectResults.projectId, id));
       await tx.delete(projects).where(eq(projects.id, id));
     });
+  }
+
+  // Lightweight summary counts for a project's results, computed entirely in
+  // SQL so the client never has to download the full results array just to
+  // render the stat cards. Mirrors the per-row classification used elsewhere
+  // (getProjectsLite, getProjectLite) so numbers stay consistent.
+  async getProjectResultsSummary(projectId: number): Promise<{
+    urlCount: number; scrapedCount: number; failedCount: number; pendingCount: number; attachmentCount: number;
+    folders: Array<[string, number]>;
+  }> {
+    const [countsResult, foldersResult] = await Promise.all([
+      db.execute(sql`
+        SELECT
+          count(*) as url_count,
+          count(*) FILTER (
+            WHERE (pr.entry->>'hasScrapedData')::boolean = true
+               OR (pr.entry->'scrapedData' IS NOT NULL AND jsonb_typeof(pr.entry->'scrapedData') = 'object')
+          ) as scraped_count,
+          count(*) FILTER (
+            WHERE pr.entry->>'status' = 'failed'
+               OR pr.entry->>'errorStatus' IS NOT NULL
+               OR (pr.entry->>'errorMessage' IS NOT NULL
+                   AND (pr.entry->>'hasScrapedData')::boolean IS NOT TRUE
+                   AND (pr.entry->'scrapedData' IS NULL OR jsonb_typeof(pr.entry->'scrapedData') != 'object'))
+          ) as failed_count
+        FROM project_results pr
+        WHERE pr.project_id = ${projectId}
+      `),
+      // Top-level path segment counts (mirrors the client's previous
+      // `new URL(loc).pathname` folder grouping), computed in SQL so it
+      // covers the whole dataset instead of whatever page is loaded.
+      db.execute(sql`
+        SELECT first_segment, count(*) as cnt FROM (
+          SELECT CASE
+            WHEN split_part(regexp_replace(pr.loc, '^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]*', ''), '/', 2) = ''
+            THEN '/'
+            ELSE '/' || split_part(regexp_replace(pr.loc, '^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]*', ''), '/', 2) || '/'
+          END as first_segment
+          FROM project_results pr
+          WHERE pr.project_id = ${projectId}
+        ) t
+        GROUP BY first_segment
+        ORDER BY cnt DESC
+        LIMIT 12
+      `),
+    ]);
+    const row = (countsResult.rows[0] || {}) as any;
+    const urlCount = parseInt(row.url_count) || 0;
+    const scrapedCount = parseInt(row.scraped_count) || 0;
+    const failedCount = parseInt(row.failed_count) || 0;
+    return {
+      urlCount,
+      scrapedCount,
+      failedCount,
+      pendingCount: Math.max(0, urlCount - scrapedCount - failedCount),
+      // PDF attachment count comes from the filesystem (fileStorage), not
+      // the jsonb rows — filled in by the route handler.
+      attachmentCount: 0,
+      folders: foldersResult.rows.map((r: any) => [r.first_segment as string, parseInt(r.cnt) || 0]),
+    };
+  }
+
+  // Paginated, optionally filtered slice of a project's lite results — used
+  // by the results table so opening a huge project never has to transfer or
+  // parse the entire result set (which can be tens of MB with image/video
+  // arrays included). Filtering runs in SQL so it applies to the whole
+  // dataset, not just whatever page happens to be loaded client-side.
+  async getProjectResultsPage(
+    projectId: number,
+    opts: { offset: number; limit: number; search?: string; folder?: string; tab?: 'results' | 'errors' },
+  ): Promise<{ results: any[]; total: number }> {
+    const { offset, limit, search, folder, tab = 'results' } = opts;
+    const searchPattern = search ? `%${search.toLowerCase()}%` : null;
+    // Path portion of the URL, stripped of scheme+host, mirrors the
+    // client's `new URL(loc).pathname` folder matching.
+    const pathExpr = sql`regexp_replace(pr.loc, '^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]*', '')`;
+    const folderCondition = folder
+      ? (folder === '/'
+        ? sql`(${pathExpr} = '' OR ${pathExpr} = '/')`
+        : sql`${pathExpr} LIKE ${folder + '%'}`)
+      : sql`TRUE`;
+    const searchCondition = searchPattern ? sql`lower(pr.loc) LIKE ${searchPattern}` : sql`TRUE`;
+    const tabCondition = tab === 'errors'
+      ? sql`(pr.entry->>'errorStatus' IS NOT NULL OR pr.entry->>'status' = 'failed')`
+      : sql`TRUE`;
+    const whereClause = sql`pr.project_id = ${projectId} AND ${folderCondition} AND ${searchCondition} AND ${tabCondition}`;
+
+    const [countResult, rowsResult] = await Promise.all([
+      db.execute(sql`SELECT count(*) as total FROM project_results pr WHERE ${whereClause}`),
+      db.execute(sql`
+        SELECT
+          pr.entry->>'loc' as loc,
+          pr.entry->>'lastmod' as lastmod,
+          pr.entry->>'changefreq' as changefreq,
+          pr.entry->>'priority' as priority,
+          COALESCE((pr.entry->>'hasScrapedData')::boolean, pr.entry->'scrapedData' IS NOT NULL AND jsonb_typeof(pr.entry->'scrapedData') = 'object') as "hasScrapedData",
+          COALESCE(pr.entry->>'status', CASE WHEN (pr.entry->>'hasScrapedData')::boolean = true THEN 'scraped' WHEN pr.entry->>'errorMessage' IS NOT NULL THEN 'failed' ELSE 'pending' END) as status,
+          pr.entry->>'errorStatus' as "errorStatus",
+          pr.entry->>'errorMessage' as "errorMessage",
+          COALESCE((pr.entry->>'removedFromSource')::boolean, false) as "removedFromSource",
+          jsonb_array_length(COALESCE(pr.entry->'images', '[]'::jsonb)) as "imageCount",
+          jsonb_array_length(COALESCE(pr.entry->'videos', '[]'::jsonb)) as "videoCount"
+        FROM project_results pr
+        WHERE ${whereClause}
+        ORDER BY pr.id
+        OFFSET ${offset} LIMIT ${limit}
+      `),
+    ]);
+    return {
+      total: parseInt((countResult.rows[0] as any)?.total) || 0,
+      results: rowsResult.rows as any[],
+    };
   }
 
   // Get scraped data for a single URL in a project (lazy loading for content preview)

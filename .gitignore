@@ -5,3 +5,7 @@ server/public
 vite.config.ts.*
 *.tar.gz
 data/projects/
+.env
+.env.local
+.env.*.local
+backups/

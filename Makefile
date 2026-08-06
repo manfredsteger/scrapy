@@ -52,7 +52,7 @@ dev: ## Startet Entwicklungsumgebung (Docker Compose)
 start: ## Startet Container im Hintergrund
 	@echo "$(CYAN)► Starte Container im Hintergrund...$(RESET)"
 	docker compose up -d --build
-	@echo "$(GREEN)✓ MapScraper Pro läuft auf http://localhost:5000$(RESET)"
+	@echo "$(GREEN)✓ MapScraper Pro läuft auf http://localhost:3333$(RESET)"
 
 stop: ## Stoppt alle Container
 	@echo "$(YELLOW)► Stoppe Container...$(RESET)"
@@ -132,7 +132,7 @@ build: ## Baut Produktions-Image
 prod: ## Startet Produktionsumgebung
 	@echo "$(CYAN)► Starte Produktionsumgebung...$(RESET)"
 	docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
-	@echo "$(GREEN)✓ Produktion läuft auf http://localhost:5000$(RESET)"
+	@echo "$(GREEN)✓ Produktion läuft auf http://localhost:3333$(RESET)"
 
 prod-stop: ## Stoppt Produktionsumgebung
 	docker compose -f docker-compose.yml -f docker-compose.prod.yml down
@@ -176,4 +176,4 @@ health: ## Prüft Gesundheit aller Services
 	@docker compose exec db pg_isready -U mapscraper && echo "$(GREEN)✓ Datenbank OK$(RESET)" || echo "$(RED)✗ Datenbank nicht erreichbar$(RESET)"
 	@echo ""
 	@echo "$(CYAN)► Teste App-Endpunkt...$(RESET)"
-	@curl -s -o /dev/null -w "%{http_code}" http://localhost:5000 | grep -q "200" && echo "$(GREEN)✓ App OK (HTTP 200)$(RESET)" || echo "$(YELLOW)! App antwortet nicht mit 200$(RESET)"
+	@curl -s -o /dev/null -w "%{http_code}" http://localhost:3333 | grep -q "200" && echo "$(GREEN)✓ App OK (HTTP 200)$(RESET)" || echo "$(YELLOW)! App antwortet nicht mit 200$(RESET)"

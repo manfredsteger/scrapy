@@ -47,11 +47,18 @@ services:
       DATABASE_URL: postgresql://mapscraper:mapscraper_secret@db:5432/mapscraper
       SESSION_SECRET: local-dev-session-secret-change-in-production
       PORT: 5000
-    volumes:
-      # Mount source code for hot reload
-      - .:/app
-      # Preserve node_modules from container
-      - /app/node_modules
+      # Optional: enables AI features (keyword/entity extraction, embeddings,
+      # metadata enrichment). The app runs fine without it - those features
+      # are just skipped. Set it in your shell or a .env file next to this
+      # file (docker compose reads .env automatically) before `make dev`.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    # Dev-only source bind mount lives in docker-compose.override.yml, which
+    # `docker compose up` merges in automatically but an explicit `-f`
+    # invocation (as docker-compose.prod.yml uses) does not. Compose merges
+    # `volumes:` lists across -f files rather than letting a later file
+    # clear them, so this split - not an empty `volumes: []` in the prod
+    # override - is what actually keeps the host source tree out of the
+    # production image.
     ports:
       - "3333:5000"  # Externer Port 3333 um Konflikte zu vermeiden
     networks:

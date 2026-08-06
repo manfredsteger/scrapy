@@ -1,0 +1,20 @@
+# MapScraper Pro - Local Development Overrides
+#
+# Docker Compose loads this file automatically for plain `docker compose ...`
+# invocations (e.g. `make dev`, `make start`) - it's what gives the dev
+# container hot reload. An invocation that passes explicit -f flags, like
+# `docker compose -f docker-compose.yml -f docker-compose.prod.yml ...`
+# (`make prod`, `make build`), does NOT auto-load this file, so production
+# never gets the host source tree bind-mounted over its built /app.
+#
+# Do not add anything here that production should also get - put that in
+# docker-compose.yml instead.
+
+services:
+  app:
+    volumes:
+      # Mount source code for hot reload
+      - .:/app
+      # Preserve node_modules from container instead of shadowing it with
+      # the (likely absent or host-OS-built) node_modules on the host
+      - /app/node_modules

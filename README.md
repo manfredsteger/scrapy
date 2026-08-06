@@ -268,8 +268,9 @@ mapscraper-pro/
 ├── 📂 docker/                 # Docker-Konfiguration
 │   └── init-db.sql            # DB-Initialisierung
 ├── 🐳 Dockerfile              # Container-Definition
-├── 🐳 docker-compose.yml      # Entwicklung
-├── 🐳 docker-compose.prod.yml # Produktion
+├── 🐳 docker-compose.yml      # Basis-Setup (App + DB, alle Umgebungen)
+├── 🐳 docker-compose.override.yml # Dev-Zusatz (Hot-Reload-Mount), automatisch von `docker compose up` geladen
+├── 🐳 docker-compose.prod.yml # Produktions-Override (explizit per -f angegeben)
 └── 📋 Makefile                # Entwickler-Befehle
 ```
 

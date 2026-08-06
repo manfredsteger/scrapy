@@ -107,7 +107,7 @@ make build-multi
 | Parameter | Wert |
 |-----------|------|
 | Host | `localhost` |
-| Port | `5432` |
+| Port | `5433` (auf Container-Port 5432 gemappt, siehe `docker-compose.yml`) |
 | Datenbank | `mapscraper` |
 | Benutzer | `mapscraper` |
 | Passwort | `mapscraper_secret` |
@@ -151,14 +151,15 @@ make reset
 ### Port bereits belegt
 
 ```bash
-# Port 5000 oder 5432 wird bereits verwendet
+# Port 3333 (App) oder 5433 (Datenbank) wird bereits verwendet
 # Prozess finden:
-lsof -i :5000
-lsof -i :5432
+lsof -i :3333
+lsof -i :5433
 
-# Oder in docker-compose.yml andere Ports konfigurieren:
+# Oder in docker-compose.yml andere Ports konfigurieren (nur die linke
+# Zahl ist der Host-Port, die rechte ist der Container-interne Port):
 ports:
-  - "3000:5000"  # App auf Port 3000
+  - "3000:5000"  # App auf Port 3000 statt 3333
 ```
 
 ### Datenbank-Probleme
@@ -199,6 +200,8 @@ make prod-stop
 - Sichere Datenbank-Passwörter setzen
 - HTTPS konfigurieren
 
+Im Produktionsmodus (`docker-compose.prod.yml`) wird der Quellcode-Bind-Mount der Entwicklungsumgebung entfernt; gescrapte Projektdaten (`/app/data` im Container) bleiben stattdessen in einem eigenen benannten Volume (`app_data`) erhalten und überleben Neustarts/Updates des Containers.
+
 ## Entwicklung
 
 ### Hot Reload
@@ -234,7 +237,10 @@ Die wichtigsten Variablen in `docker-compose.yml`:
 | `DATABASE_URL` | PostgreSQL Verbindungs-URL | Automatisch gesetzt |
 | `SESSION_SECRET` | Session-Verschlüsselung | `local-dev-...` |
 | `NODE_ENV` | Umgebung | `development` |
-| `PORT` | App-Port | `5000` |
+| `PORT` | App-Port (Container-intern, siehe unten für den Host-Port) | `5000` |
+| `OPENAI_API_KEY` | Optional: aktiviert KI-Funktionen (Keyword-/Entity-Extraktion, Embeddings, Metadaten-Anreicherung). Ohne Key laufen diese Schritte einfach übersprungen weiter. In der Shell setzen oder in eine `.env`-Datei neben `docker-compose.yml` schreiben, bevor `make dev`/`make start` läuft. | nicht gesetzt |
+
+**Hinweis:** `PORT` ist der Port *innerhalb* des Containers. Von außen ist die App unter `http://localhost:3333` erreichbar (siehe Port-Mapping `3333:5000` in `docker-compose.yml`).
 
 ## Offline-Betrieb
 

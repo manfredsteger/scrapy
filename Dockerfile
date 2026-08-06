@@ -64,4 +64,4 @@ EXPOSE 5000
 ENV NODE_ENV=production
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["node", "dist/index.js"]
+CMD ["node", "dist/index.cjs"]

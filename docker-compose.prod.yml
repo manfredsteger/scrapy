@@ -7,5 +7,14 @@ services:
       target: production
     environment:
       NODE_ENV: production
-    volumes: []
+    # Drop the dev-only source-code bind mount (base compose file), but keep
+    # scraped project data persistent across container recreations/updates -
+    # without this, everything under /app/data would live only in the
+    # container's writable layer and be lost on the next `docker compose up`.
+    volumes:
+      - app_data:/app/data
     restart: always
+
+volumes:
+  app_data:
+    driver: local

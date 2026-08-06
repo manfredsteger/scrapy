@@ -4,3 +4,4 @@
 - [Project write concurrency](project-write-concurrency.md) — scrape progress writes must be atomically guarded (lease + version) in the UPDATE itself; treat conflicts as "discard batch and refetch".
 - [Scraped image storage split](scraped-image-storage.md) — sitemap images[] (DB), orderedElements media (filesystem meta.json, what renders), and downloaded binaries (dominant disk size) are three unrelated things.
 - [Shared/boilerplate image interning](shared-image-dedup.md) — append-only per-project registry + resolve-on-read centralized in one function, so recurring images collapse without touching every consumer.
+- [Docker Compose volume overrides](docker-compose-volume-overrides.md) — `volumes: []` in an override file doesn't clear the base file's list; use docker-compose.override.yml (auto-loaded only without -f) for dev-only mounts.

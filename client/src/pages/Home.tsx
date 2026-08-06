@@ -5,7 +5,7 @@ import {
   Play, Square, Loader2, Download, Settings, 
   Trash2, ScanText, Globe, ArrowLeft, Plus, RefreshCw, Pause, X,
   Layers, Package, Cog, FileText, AlertTriangle, Pencil, Paperclip,
-  CheckSquare, FolderPlus, History
+  CheckSquare, FolderPlus, History, Images
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -280,6 +280,38 @@ export default function Home() {
     queryKey: [`/api/projects/${activeProjectId}/results-summary`],
     enabled: activeProjectId !== null,
     staleTime: 2000,
+  });
+
+  const { data: sharedImagesData, refetch: refetchSharedImages } = useQuery<{
+    computed: boolean;
+    lastComputedAt: string | null;
+    threshold: number | null;
+    images: Array<{ id: string; count: number; url?: string }>;
+  }>({
+    queryKey: [`/api/projects/${activeProjectId}/shared-images`],
+    enabled: activeProjectId !== null,
+    staleTime: 10000,
+  });
+
+  const [isDeduping, setIsDeduping] = useState(false);
+
+  const dedupeImagesMutation = useMutation({
+    mutationFn: async (projectId: number) => {
+      const res = await apiRequest('POST', `/api/projects/${projectId}/dedupe-images`);
+      return res.json();
+    },
+    onSuccess: (data) => {
+      refetchSharedImages();
+      toast({
+        title: t('imageDedupResult'),
+        description: `${data.sharedImageCount} ${t('imageDedupSharedImages')} · ${data.collapsedElementsTotal} ${t('imageDedupSaved')}`,
+      });
+      setIsDeduping(false);
+    },
+    onError: () => {
+      toast({ title: t('error'), variant: 'destructive' });
+      setIsDeduping(false);
+    },
   });
 
   const { data: singlePages = [], isLoading: singlePagesLoading } = useQuery<SinglePage[]>({
@@ -2708,6 +2740,66 @@ export default function Home() {
                 attachmentCount={attachmentCount}
                 t={t} 
               />
+
+              {scrapedCount > 0 && (
+                <div className="bg-card border border-border rounded-xl p-4" data-testid="image-dedup-panel">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex items-start gap-3 min-w-0">
+                      <Images className="w-4 h-4 mt-0.5 text-muted-foreground shrink-0" />
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-foreground">{t('imageDedupTitle')}</p>
+                        {sharedImagesData?.computed ? (
+                          <div className="flex flex-wrap gap-x-4 gap-y-0.5 mt-1">
+                            <span className="text-xs text-muted-foreground">
+                              <span className="font-medium text-foreground">{sharedImagesData.images.length}</span>{' '}
+                              {t('imageDedupSharedImages')}
+                            </span>
+                            <span className="text-xs text-muted-foreground">
+                              <span className="font-medium text-foreground">
+                                {sharedImagesData.images.reduce((s, img) => s + img.count, 0)}
+                              </span>{' '}
+                              {t('imageDedupOccurrences')}
+                            </span>
+                            <span className="text-xs text-muted-foreground">
+                              <span className="font-medium text-foreground">
+                                {sharedImagesData.images.reduce((s, img) => s + Math.max(0, img.count - 1), 0)}
+                              </span>{' '}
+                              {t('imageDedupSaved')}
+                            </span>
+                            {sharedImagesData.lastComputedAt && (
+                              <span className="text-xs text-muted-foreground">
+                                {t('imageDedupLastRun')}:{' '}
+                                {new Date(sharedImagesData.lastComputedAt).toLocaleString()}
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-muted-foreground mt-0.5">{t('imageDedupNotRun')} · {t('imageDedupDesc')}</p>
+                        )}
+                      </div>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="shrink-0 gap-1.5"
+                      disabled={isDeduping || isProcessing}
+                      onClick={() => {
+                        if (!activeProject) return;
+                        setIsDeduping(true);
+                        dedupeImagesMutation.mutate(activeProject.id);
+                      }}
+                      data-testid="run-image-dedup-button"
+                    >
+                      {isDeduping ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <RefreshCw className="w-3.5 h-3.5" />
+                      )}
+                      {isDeduping ? t('imageDedupRunning') : t('imageDedupRun')}
+                    </Button>
+                  </div>
+                </div>
+              )}
 
               <div className="bg-card border border-border rounded-xl overflow-hidden">
                 <Tabs value={activeResultsTab} onValueChange={(v) => setActiveResultsTab(v as 'urls' | 'errors')} className="flex flex-col">

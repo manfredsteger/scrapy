@@ -32,3 +32,16 @@ therefore does not prove that the mounted development container can find
 **How to apply:** Verify executable availability in the built image and
 check volume renewal on development startup. Never use deletion of database
 volumes as a dependency repair.
+
+**Portable dependency builds:** Normalize Replit-internal registry URLs inside
+the Docker build before installing, rather than only editing the checked-in
+lockfile.
+
+**Why:** The user reported incomplete dependency installs outside Replit from
+unreachable `package-firewall.replit.local` URLs, including an npm failure that
+returned success. Internal URLs were confirmed in the lockfile; Replit updates
+can introduce them again.
+
+**How to apply:** Rewrite the internal npm prefix to the public npm registry
+before `npm ci`, preserve integrity hashes, and independently assert required
+executables exist so a false-success install cannot produce a broken image.

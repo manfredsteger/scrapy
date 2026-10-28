@@ -13,7 +13,9 @@ COPY package*.json ./
 
 # Install dependencies
 FROM base AS deps
-RUN npm ci --legacy-peer-deps --include=dev && \
+# Replit can rewrite lockfile URLs; keep builds portable outside its network.
+RUN sed -i 's#http://package-firewall.replit.local/npm/#https://registry.npmjs.org/#g' package-lock.json && \
+    npm ci --legacy-peer-deps --include=dev && \
     test -x node_modules/.bin/tsx && \
     test -x node_modules/.bin/drizzle-kit
 

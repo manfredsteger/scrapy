@@ -5,6 +5,28 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 describe('Docker startup', () => {
+  it('rewrites internal registry URLs before npm ci, preserving integrity and public URLs', () => {
+    const dockerfile = readFileSync('Dockerfile', 'utf8');
+    const rewrite = dockerfile.match(/sed -i '[^']+' package-lock.json/)?.[0];
+    expect(rewrite).toBeDefined();
+    expect(dockerfile.indexOf(rewrite!)).toBeLessThan(dockerfile.indexOf('npm ci'));
+    const dir = mkdtempSync(join(tmpdir(), 'docker-lockfile-'));
+    try {
+      const lock = { packages: {
+        a: { resolved: 'http://package-firewall.replit.local/npm/tsx/-/tsx-4.20.5.tgz', integrity: 'sha512-example' },
+        b: { resolved: 'https://registry.npmjs.org/pg/-/pg-8.16.3.tgz' },
+      } };
+      writeFileSync(join(dir, 'package-lock.json'), JSON.stringify(lock));
+      const result = spawnSync('sh', ['-c', rewrite!], { cwd: dir });
+      expect(result.status).toBe(0);
+      const rewritten = JSON.parse(readFileSync(join(dir, 'package-lock.json'), 'utf8'));
+      expect(rewritten.packages.a.resolved).toBe('https://registry.npmjs.org/tsx/-/tsx-4.20.5.tgz');
+      expect(rewritten.packages.a.integrity).toBe(lock.packages.a.integrity);
+      expect(rewritten.packages.b).toEqual(lock.packages.b);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
   it('replaces stale anonymous dependency volumes on development starts', () => {
     const makefile = readFileSync('Makefile', 'utf8');
     for (const target of ['dev', 'start']) {

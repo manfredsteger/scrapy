@@ -7,4 +7,10 @@ description: Project list/detail APIs return stripped "lite" objects; client rea
 
 **Why:** A perf optimization (lite projections) silently broke the crawl/sitemap loops in `Home.tsx`: they merged against lite objects, overwriting all prior results with each 10-URL batch (UI frozen at "URLs found: 10" while the queue drained). Also, nulls from SQL projections failed the strict zod PUT schema (`Expected string, received null`), so `sitemapUrlEntrySchema` uses `.nullish()` for those fields.
 
-**How to apply:** When adding endpoints or client loops that write `projects.results`/`processed`, merge against full data (or merge server-side), keep the PUT scrapedData re-attach logic, and make zod schemas null-tolerant for fields coming from SQL jsonb projections. Known limitation: batch PUTs are not concurrency-safe (no CAS); two tabs can still clobber each other.
+**How to apply:** When adding endpoints or client loops that write `projects.results`/`processed`, merge against full data (or merge server-side), keep the PUT scrapedData re-attach logic, and make zod schemas null-tolerant for fields coming from SQL jsonb projections. Progress writes must also follow the atomic lease/version rules in `project-write-concurrency.md`.
+
+**Cache rule:** Separately fetched result pages and summaries must participate in project progress invalidation, not just metadata.
+
+**Why:** A cached zero summary took precedence over fresh metadata counts, hiding both discovered URLs and the extraction action even though discovery succeeded. A finite staleTime alone does not trigger refetching.
+
+**How to apply:** When splitting a project view into new queries, test a mounted empty view transitioning to populated results through the same invalidation used by progress writes, without navigation or reload.

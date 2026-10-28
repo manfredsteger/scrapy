@@ -39,6 +39,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { useLanguage } from '@/hooks/use-language';
 import { useToast } from '@/hooks/use-toast';
 import { apiRequest, queryClient } from '@/lib/queryClient';
+import { projectResultsQuery, projectResultsSummaryQuery } from '@/lib/project-result-queries';
 import type { Project, SitemapUrlEntry, ProjectSettings as ProjectSettingsType, SinglePage } from '@shared/schema';
 import { addDiscoveredLinks } from '@shared/crawl-depth';
 
@@ -267,20 +268,11 @@ export default function Home() {
     return `/api/projects/${activeProjectId}/results?${params.toString()}`;
   }, [activeProjectId, resultsPage, resultsPageSize, resultsSearchDebounced, resultsFolder, activeResultsTab]);
 
-  const { data: resultsPageData, isLoading: isResultsPageLoading, isFetching: isResultsPageFetching } = useQuery<{ results: SitemapUrlEntry[]; total: number }>({
-    queryKey: [resultsQueryUrl],
-    enabled: resultsQueryUrl !== null,
-    staleTime: 2000,
-  });
+  const { data: resultsPageData, isLoading: isResultsPageLoading, isFetching: isResultsPageFetching } = useQuery(
+    projectResultsQuery(activeProjectId, resultsQueryUrl),
+  );
 
-  const { data: resultsSummary } = useQuery<{
-    urlCount: number; scrapedCount: number; failedCount: number; pendingCount: number; attachmentCount: number;
-    folders: Array<[string, number]>;
-  }>({
-    queryKey: [`/api/projects/${activeProjectId}/results-summary`],
-    enabled: activeProjectId !== null,
-    staleTime: 2000,
-  });
+  const { data: resultsSummary } = useQuery(projectResultsSummaryQuery(activeProjectId));
 
   const { data: sharedImagesData, refetch: refetchSharedImages } = useQuery<{
     computed: boolean;
@@ -2837,8 +2829,8 @@ export default function Home() {
                       t={t} 
                       chunks={activeProject?.chunks || []} 
                       onRescrapeUrl={() => {
-                        queryClient.invalidateQueries({ queryKey: [resultsQueryUrl] });
-                        queryClient.invalidateQueries({ queryKey: [`/api/projects/${activeProjectId}/results-summary`] });
+                        queryClient.invalidateQueries({ queryKey: ['/api/projects', activeProjectId, 'results'] });
+                        queryClient.invalidateQueries({ queryKey: projectResultsSummaryQuery(activeProjectId).queryKey });
                       }}
                     />
                   </TabsContent>

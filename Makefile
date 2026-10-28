@@ -47,11 +47,11 @@ install: ## Installiert Abhängigkeiten lokal (ohne Docker)
 
 dev: ## Startet Entwicklungsumgebung (Docker Compose)
 	@echo "$(CYAN)► Starte MapScraper Pro Entwicklungsumgebung...$(RESET)"
-	docker compose up --build
+	docker compose up --build --force-recreate --renew-anon-volumes
 
 start: ## Startet Container im Hintergrund
 	@echo "$(CYAN)► Starte Container im Hintergrund...$(RESET)"
-	docker compose up -d --build
+	docker compose up -d --build --force-recreate --renew-anon-volumes
 	@echo "$(GREEN)✓ MapScraper Pro läuft auf http://localhost:3333$(RESET)"
 
 stop: ## Stoppt alle Container
@@ -131,7 +131,7 @@ build: ## Baut Produktions-Image
 
 prod: ## Startet Produktionsumgebung
 	@echo "$(CYAN)► Starte Produktionsumgebung...$(RESET)"
-	docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+	docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 	@echo "$(GREEN)✓ Produktion läuft auf http://localhost:3333$(RESET)"
 
 prod-stop: ## Stoppt Produktionsumgebung

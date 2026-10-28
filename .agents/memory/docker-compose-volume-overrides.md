@@ -20,3 +20,15 @@ file. `docker compose up` (no `-f` flags) auto-loads `docker-compose.yml` +
 `override.yml`, so prod naturally never inherits the dev volumes. Confirm
 with `docker compose config` (default vs. explicit `-f` invocation) before
 trusting it.
+
+**Dependency-volume rule:** Development starts that rebuild the image must
+also recreate the container with a renewed anonymous dependency volume.
+
+**Why:** Compose can reuse the old anonymous `/app/node_modules` volume,
+masking correctly installed image dependencies. A successful image build
+therefore does not prove that the mounted development container can find
+`tsx` or `drizzle-kit`.
+
+**How to apply:** Verify executable availability in the built image and
+check volume renewal on development startup. Never use deletion of database
+volumes as a dependency repair.

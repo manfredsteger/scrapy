@@ -49,3 +49,10 @@ logs
 
 # Backups
 backups
+
+# Runtime data and workspace tooling must never enter images/build context.
+data
+attached_assets
+.local
+.agents
+generated-artifacts

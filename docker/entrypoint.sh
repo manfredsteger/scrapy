@@ -15,10 +15,10 @@ echo "✅ Datenbank ist bereit!"
 
 # Run database migrations
 echo "📦 Führe Datenbank-Migrationen aus..."
-npm run db:push || {
-  echo "⚠️ Migrationen fehlgeschlagen, versuche mit --force..."
-  npm run db:push --force || echo "❌ Migrationen konnten nicht ausgeführt werden"
-}
+if ! npm run db:push; then
+  echo "❌ Datenbank-Migration fehlgeschlagen. Start abgebrochen; keine erzwungene Migration."
+  exit 1
+fi
 echo "✅ Datenbank-Schema aktualisiert!"
 
 # Start the application

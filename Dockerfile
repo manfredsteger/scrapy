@@ -13,7 +13,9 @@ COPY package*.json ./
 
 # Install dependencies
 FROM base AS deps
-RUN npm ci --legacy-peer-deps
+RUN npm ci --legacy-peer-deps --include=dev && \
+    test -x node_modules/.bin/tsx && \
+    test -x node_modules/.bin/drizzle-kit
 
 # Development image
 FROM base AS development
@@ -51,12 +53,16 @@ WORKDIR /app
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/drizzle.config.ts ./
+COPY --from=builder /app/shared ./shared
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # Create non-root user for security
 RUN addgroup --system --gid 1001 nodejs && \
-    adduser --system --uid 1001 mapscraper
+    adduser --system --uid 1001 mapscraper && \
+    mkdir -p /app/data /app/migrations && \
+    chown -R mapscraper:nodejs /app/data /app/migrations
 USER mapscraper
 
 EXPOSE 5000

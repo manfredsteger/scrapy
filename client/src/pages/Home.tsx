@@ -40,6 +40,7 @@ import { useLanguage } from '@/hooks/use-language';
 import { useToast } from '@/hooks/use-toast';
 import { apiRequest, queryClient } from '@/lib/queryClient';
 import { projectResultsQuery, projectResultsSummaryQuery } from '@/lib/project-result-queries';
+import { activeProjectsForDispatch, refreshAfterProjectWrite, scheduleAfterStep } from '@/lib/crawl-dispatch';
 import type { Project, SitemapUrlEntry, ProjectSettings as ProjectSettingsType, SinglePage } from '@shared/schema';
 import { addDiscoveredLinks } from '@shared/crawl-depth';
 
@@ -480,11 +481,9 @@ export default function Home() {
       });
       return res.json();
     },
-    onSuccess: (data) => {
+    onSuccess: async (data) => {
       // Only invalidate if we actually updated something (not aborted)
-      if (data !== null) {
-        queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
-      }
+      await refreshAfterProjectWrite(queryClient, data);
     },
   });
 
@@ -1477,8 +1476,7 @@ export default function Home() {
     // Fair admission: serve the least-recently-dispatched project first so a
     // fourth (or later) active project is never starved by list order while
     // the first three keep re-dispatching themselves.
-    const actives = projects
-      .filter(p => p.status === 'scraping' || p.status === 'crawling' || p.status === 'content_scraping')
+    const actives = activeProjectsForDispatch(queryClient, projects)
       .sort((a, b) =>
         (lastDispatchedAtRef.current.get(a.id) ?? 0) - (lastDispatchedAtRef.current.get(b.id) ?? 0)
       );
@@ -1511,14 +1509,13 @@ export default function Home() {
         })
         .finally(() => {
           running.delete(project.id);
-          // A slot was freed — re-dispatch so a project that was waiting on
-          // capacity (not on its delay) gets admitted immediately.
-          processStepRef.current().catch(err => {
-            console.error('[Process] Step failed, will retry:', err);
-          });
+          // Never immediately recurse on a stale render after completion or
+          // failure. That cancels in-flight refetches over and over and can
+          // repeatedly finish the same project (including expensive dedup).
+          scheduleAfterStep(project.id, pendingKickRef.current, scheduleProjectKick, MIN_BATCH_DELAY_MS);
         });
     }
-  }, [projects, processProjectStep]);
+  }, [projects, processProjectStep, scheduleProjectKick]);
   // Keep ref current every render so setTimeout callbacks inside processStep
   // always invoke the latest closure (with fresh projects/settings state).
   processStepRef.current = processStep;

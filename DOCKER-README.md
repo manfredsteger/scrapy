@@ -202,7 +202,19 @@ make prod-stop
 
 Im Produktionsmodus (`docker-compose.prod.yml`) wird der Quellcode-Bind-Mount der Entwicklungsumgebung entfernt; gescrapte Projektdaten (`/app/data` im Container) bleiben stattdessen in einem eigenen benannten Volume (`app_data`) erhalten und überleben Neustarts/Updates des Containers.
 
+`make prod` baut das Image vor dem Start neu, damit Änderungen übernommen werden.
+Beim Start wird das Datenbankschema aktualisiert. Schlägt das fehl, bricht der
+Container mit einer Fehlermeldung ab; eine erzwungene Migration erfolgt nicht.
+Zur Diagnose: `docker compose -f docker-compose.yml -f docker-compose.prod.yml logs --tail=60 app`.
+Zum Aktualisieren keine Volumes löschen (`down -v` oder `make clean-all` vermeiden).
+
 ## Entwicklung
+
+`make dev` und `make start` bauen das Image und erneuern das anonyme
+`node_modules`-Volume. So überdecken alte oder unvollständige Abhängigkeiten
+nicht die Pakete des neuen Images. Installiere zusätzliche Pakete über
+`make npm-install PKG=paketname`, damit sie auch in den Paketdateien stehen.
+Das benannte PostgreSQL-Volume und die gescrapten Dateien bleiben erhalten.
 
 ### Hot Reload
 

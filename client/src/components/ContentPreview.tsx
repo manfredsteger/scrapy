@@ -10,6 +10,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import type { SitemapUrlEntry, ScrapedElement, RagChunk } from '@shared/schema';
+import { safeHref } from '@/lib/utils';
 
 interface ContentPreviewProps {
   entry: SitemapUrlEntry;
@@ -280,7 +281,7 @@ function renderElement(el: ScrapedElement, idx: number) {
             <div className="min-w-0 flex-1">
               <p className="text-xs text-muted-foreground uppercase">Image (failed to load)</p>
               <a 
-                href={el.src} 
+                href={safeHref(el.src)} 
                 target="_blank" 
                 rel="noopener noreferrer"
                 className="text-xs text-primary truncate block hover:underline"
@@ -301,7 +302,7 @@ function renderElement(el: ScrapedElement, idx: number) {
         <div className="min-w-0 flex-1">
           <p className="text-xs text-muted-foreground uppercase">Video</p>
           <a 
-            href={el.src} 
+            href={safeHref(el.src)} 
             target="_blank" 
             rel="noopener noreferrer"
             className="text-xs text-primary truncate block hover:underline"
@@ -580,7 +581,7 @@ export default function ContentPreview({ entry, onClose, t, chunks = [], project
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
                         <a
-                          href={pdf.url}
+                          href={safeHref(pdf.url)}
                           download={pdf.url.split('/').pop() || 'document.pdf'}
                           target="_blank"
                           rel="noopener noreferrer"
@@ -591,7 +592,7 @@ export default function ContentPreview({ entry, onClose, t, chunks = [], project
                           </Button>
                         </a>
                         <a 
-                          href={pdf.url} 
+                          href={safeHref(pdf.url)} 
                           target="_blank" 
                           rel="noopener noreferrer"
                           data-testid={`link-pdf-open-${i}`}

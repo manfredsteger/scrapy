@@ -18,6 +18,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { useLanguage } from '@/hooks/use-language';
 import type { SinglePage, ScrapedElement, RagChunk } from '@shared/schema';
+import { safeHref } from '@/lib/utils';
 
 // Markdown conversion helpers
 function elementToMarkdown(el: ScrapedElement): string {
@@ -168,7 +169,7 @@ function renderElement(el: ScrapedElement, idx: number) {
         <div className="min-w-0 flex-1">
           <p className="text-xs text-muted-foreground uppercase">{el.tag === 'img' ? 'Image' : 'Video'}</p>
           <a 
-            href={el.src} 
+            href={safeHref(el.src)} 
             target="_blank" 
             rel="noopener noreferrer"
             className="text-xs text-primary truncate block hover:underline"

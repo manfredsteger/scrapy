@@ -241,6 +241,7 @@ export function scrapePageContent(html: string, url: string, extractStructuredDa
       if (!href) return;
       try {
         const absoluteUrl = new URL(href, effectiveBaseUrl).href;
+        if (!/^https?:/i.test(absoluteUrl)) return; // no javascript:/data: links
         const lowerUrl = absoluteUrl.toLowerCase();
         if (lowerUrl.endsWith('.pdf') || lowerUrl.includes('.pdf?') || lowerUrl.includes('/pluginfile.php/') && lowerUrl.includes('pdf')) {
           if (!seenMoodlePdfUrls.has(absoluteUrl)) {
@@ -801,6 +802,7 @@ export function scrapePageContent(html: string, url: string, extractStructuredDa
 
     try {
       const absoluteUrl = new URL(href, effectiveBaseUrl).href;
+      if (!/^https?:/i.test(absoluteUrl)) return; // no javascript:/data: links
       const lowerUrl = absoluteUrl.toLowerCase();
 
       if (lowerUrl.endsWith('.pdf') || lowerUrl.includes('.pdf?') || lowerUrl.includes('/pdf/')) {

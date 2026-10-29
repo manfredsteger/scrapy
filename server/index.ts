@@ -49,8 +49,12 @@ app.use((req, res, next) => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+      // Only error bodies are logged, and truncated: success responses like
+      // GET /api/projects/:id can be tens of MB, and stringifying them on
+      // every request cost CPU and flooded the logs.
+      if (capturedJsonResponse && res.statusCode >= 400) {
+        const body = JSON.stringify(capturedJsonResponse);
+        logLine += ` :: ${body.length > 500 ? body.slice(0, 500) + '…' : body}`;
       }
 
       log(logLine);

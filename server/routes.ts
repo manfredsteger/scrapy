@@ -202,9 +202,9 @@ async function fetchWithRateLimitAndProxy(
     await rateLimiter.waitBeforeRequest();
   }
   
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeout);
-  
+  // Each attempt gets its own timeout (see signal below). A single shared
+  // timer used to span all attempts plus any Retry-After sleep, so a retry
+  // could start with an already-aborted signal and fail instantly.
   let lastError: Error | null = null;
   let attemptCount = 0;
   // Track whether ANY attempt received an HTTP 429 response, even if a
@@ -228,7 +228,7 @@ async function fetchWithRateLimitAndProxy(
         // Use undici fetch with ProxyAgent
         const agent = new ProxyAgent(currentProxyInfo.proxyUrl);
         response = await undiciFetch(url, {
-          signal: controller.signal,
+          signal: AbortSignal.timeout(timeout),
           headers: {
             'User-Agent': 'Mozilla/5.0 (compatible; SitemapScraper/1.0)',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -238,7 +238,7 @@ async function fetchWithRateLimitAndProxy(
       } else {
         // Direct fetch without proxy
         response = await fetch(url, {
-          signal: controller.signal,
+          signal: AbortSignal.timeout(timeout),
           headers: {
             'User-Agent': 'Mozilla/5.0 (compatible; SitemapScraper/1.0)',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -254,7 +254,9 @@ async function fetchWithRateLimitAndProxy(
         // Check for Retry-After header
         const retryAfter = response.headers.get('Retry-After');
         if (retryAfter) {
-          const waitMs = parseInt(retryAfter) * 1000 || 5000;
+          // Capped: an unbounded Retry-After (e.g. 3600) would block this
+          // batch slot for an hour.
+          const waitMs = Math.min(parseInt(retryAfter) * 1000 || 5000, 30000);
           console.log(`[Fetch] Rate limited, waiting ${waitMs}ms (Retry-After header)`);
           await new Promise(resolve => setTimeout(resolve, waitMs));
         }
@@ -306,7 +308,6 @@ async function fetchWithRateLimitAndProxy(
     }
   }
   
-  clearTimeout(timeoutId);
   throw lastError || new Error('Fetch failed');
 }
 
@@ -1841,7 +1842,9 @@ function validateUrl(url: string, baseDomain?: string): boolean {
     if (baseDomain) {
       const host = u.hostname.toLowerCase();
       const target = baseDomain.toLowerCase().replace(/^www\./, '').split('/')[0];
-      return host.endsWith(target) || host.includes('.' + target);
+      // Exact host or a real subdomain; plain endsWith/includes also let
+      // evilexample.com and example.com.attacker.net through.
+      return host === target || host.endsWith('.' + target);
     }
     return true;
   } catch {
@@ -2237,6 +2240,19 @@ export async function registerRoutes(
     } catch {}
   }
 
+  // Converter session ids are generated as randomBytes(8).hex. They arrive
+  // from the client (URL param / body) and end up in filesystem paths, so
+  // anything else - e.g. "../../app" via %2F-encoding - must be rejected
+  // before it reaches fs.rm / writeFile.
+  const CONVERTER_ROOT = path.resolve('./data/converter');
+  function isValidConverterSessionId(id: unknown): id is string {
+    return typeof id === 'string' && /^[a-f0-9]{16}$/.test(id);
+  }
+  function converterSessionDir(id: string): string {
+    if (!isValidConverterSessionId(id)) throw new Error('Invalid converter session id');
+    return path.join(CONVERTER_ROOT, id);
+  }
+
   cleanupOldConverterSessions();
   setInterval(cleanupOldConverterSessions, 60 * 60 * 1000);
 
@@ -2248,8 +2264,11 @@ export async function registerRoutes(
       }
 
       const existingSessionId = req.body?.sessionId;
+      if (existingSessionId && !isValidConverterSessionId(existingSessionId)) {
+        return res.status(400).json({ error: 'Invalid sessionId' });
+      }
       const sessionId = existingSessionId || crypto.randomBytes(8).toString('hex');
-      const uploadsDir = path.resolve(`./data/converter/${sessionId}/uploads`);
+      const uploadsDir = path.join(converterSessionDir(sessionId), 'uploads');
       await fileStorage.ensureDir(uploadsDir);
 
       const fileInfos: { name: string; size: number; type: string }[] = [];
@@ -2274,7 +2293,10 @@ export async function registerRoutes(
 
   app.post('/api/converter/:sessionId/generate', async (req, res) => {
     const { sessionId } = req.params;
-    const uploadsDir = path.resolve(`./data/converter/${sessionId}/uploads`);
+    if (!isValidConverterSessionId(sessionId)) {
+      return res.status(400).json({ error: 'Invalid sessionId' });
+    }
+    const uploadsDir = path.join(converterSessionDir(sessionId), 'uploads');
 
     try {
       await fsPromises.access(uploadsDir);
@@ -2853,7 +2875,7 @@ export async function registerRoutes(
       const zipBuffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 
       const zipFilename = `rag_pack_converter_${timestamp}.zip`;
-      const sessionDir = path.resolve(`./data/converter/${sessionId}`);
+      const sessionDir = converterSessionDir(sessionId);
       await fileStorage.ensureDir(sessionDir);
       const zipPath = path.join(sessionDir, zipFilename);
       await fsPromises.writeFile(zipPath, zipBuffer);
@@ -2928,6 +2950,9 @@ export async function registerRoutes(
       if (!sessionId || !downloadId) {
         return res.status(400).json({ error: 'Missing sessionId or downloadId' });
       }
+      if (!isValidConverterSessionId(sessionId)) {
+        return res.status(400).json({ error: 'Invalid sessionId' });
+      }
 
       const entry = converterDownloads.get(downloadId);
       if (!entry) {
@@ -2937,7 +2962,7 @@ export async function registerRoutes(
       const stat = await fsPromises.stat(entry.path);
 
       let sourceFiles: string[] = [];
-      const uploadsDir = path.resolve(`./data/converter/${sessionId}/uploads`);
+      const uploadsDir = path.join(converterSessionDir(sessionId), 'uploads');
       try {
         sourceFiles = await fsPromises.readdir(uploadsDir);
       } catch {}
@@ -2981,7 +3006,10 @@ export async function registerRoutes(
       const exp = exports.find(e => e.id === id);
       if (!exp) return res.status(404).json({ error: 'Export not found' });
 
-      const uploadsDir = path.resolve(`./data/converter/${exp.sessionId}/uploads`);
+      if (!isValidConverterSessionId(exp.sessionId)) {
+        return res.json({ sessionId: exp.sessionId, downloadId: exp.downloadId, files: [] });
+      }
+      const uploadsDir = path.join(converterSessionDir(exp.sessionId), 'uploads');
       let files: { name: string; size: number; type: string }[] = [];
       try {
         const fileNames = await fsPromises.readdir(uploadsDir);
@@ -3048,7 +3076,10 @@ export async function registerRoutes(
 
   app.delete('/api/converter/:sessionId', async (req, res) => {
     const { sessionId } = req.params;
-    const sessionDir = path.resolve(`./data/converter/${sessionId}`);
+    if (!isValidConverterSessionId(sessionId)) {
+      return res.status(400).json({ error: 'Invalid sessionId' });
+    }
+    const sessionDir = converterSessionDir(sessionId);
 
     try {
       await fsPromises.rm(sessionDir, { recursive: true, force: true });
@@ -5626,6 +5657,9 @@ export async function registerRoutes(
               }
             } catch (fsErr) {
               console.error(`[FileStorage] Error saving page ${url}:`, (fsErr as Error).message);
+              // Without content on disk the page must not count as scraped -
+              // the outer catch marks it failed so it gets retried.
+              throw new Error(`Seite konnte nicht gespeichert werden: ${(fsErr as Error).message}`);
             }
           }
           

@@ -844,6 +844,7 @@ async function callOpenAIChat(
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
       const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        signal: AbortSignal.timeout(60000),
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -861,7 +862,9 @@ async function callOpenAIChat(
       
       if (response.status === 429) {
         const retryAfter = response.headers.get('Retry-After');
-        const waitMs = retryAfter ? parseInt(retryAfter) * 1000 : baseDelay * Math.pow(2, attempt);
+        // Retry-After may be seconds or an HTTP date; fall back to backoff, cap at 60 s.
+        const retrySec = retryAfter ? Number(retryAfter) : NaN;
+        const waitMs = Math.min(Number.isFinite(retrySec) ? retrySec * 1000 : baseDelay * Math.pow(2, attempt), 60000);
         console.log(`[Enrichment] Rate limited, waiting ${waitMs}ms before retry ${attempt + 1}/${retries}`);
         await new Promise(resolve => setTimeout(resolve, waitMs));
         continue;
@@ -1210,6 +1213,7 @@ async function generateEmbedding(
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
       const response = await fetch('https://api.openai.com/v1/embeddings', {
+        signal: AbortSignal.timeout(60000),
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1225,7 +1229,9 @@ async function generateEmbedding(
       if (response.status === 429) {
         // Rate limited - exponential backoff
         const retryAfter = response.headers.get('Retry-After');
-        const waitMs = retryAfter ? parseInt(retryAfter) * 1000 : baseDelay * Math.pow(2, attempt);
+        // Retry-After may be seconds or an HTTP date; fall back to backoff, cap at 60 s.
+        const retrySec = retryAfter ? Number(retryAfter) : NaN;
+        const waitMs = Math.min(Number.isFinite(retrySec) ? retrySec * 1000 : baseDelay * Math.pow(2, attempt), 60000);
         console.log(`[Embeddings] Rate limited, waiting ${waitMs}ms before retry ${attempt + 1}/${retries}`);
         await new Promise(resolve => setTimeout(resolve, waitMs));
         continue;
@@ -1857,6 +1863,7 @@ async function discoverWikiJsPages(baseUrl: string): Promise<string[]> {
   const urls: string[] = [];
   try {
     const response = await fetch(`${baseUrl}/graphql`, {
+      signal: AbortSignal.timeout(15000),
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -2209,7 +2216,7 @@ export async function registerRoutes(
 
   const converterUpload = multer({
     dest: './data/converter-uploads/',
-    limits: { fileSize: 100 * 1024 * 1024 },
+    limits: { fileSize: 100 * 1024 * 1024, files: 200 },
   });
 
   const converterDownloads = new Map<string, { path: string; filename: string; documents: number; chunks: number; assets: number }>();
@@ -2228,8 +2235,17 @@ export async function registerRoutes(
       const entries = await fsPromises.readdir(converterDir, { withFileTypes: true }).catch(() => []);
       const now = Date.now();
       const maxAge = 24 * 60 * 60 * 1000;
+      // Sessions with a saved export ("Speichern") must survive the cleanup,
+      // otherwise the saved zip silently turns into a 404 after 24 h.
+      const keep = new Set<string>();
+      try {
+        for (const exp of await storage.getConverterExports()) keep.add(exp.sessionId);
+      } catch {
+        return; // DB unavailable: better skip one cleanup round than lose saved exports
+      }
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
+        if (keep.has(entry.name)) continue;
         try {
           const stat = await fsPromises.stat(path.join(converterDir, entry.name));
           if (now - stat.mtimeMs > maxAge) {
@@ -4557,6 +4573,7 @@ export async function registerRoutes(
       // Scrape the page content
       try {
         const response = await fetch(parsedUrl.href, {
+          signal: AbortSignal.timeout(20000),
           headers: {
             'User-Agent': 'Mozilla/5.0 (compatible; SitemapScraper/1.0)',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -4595,7 +4612,7 @@ export async function registerRoutes(
                 });
                 if (pdfResponse.ok) {
                   const pdfBuffer = await readBodyLimited(pdfResponse, MAX_PDF_BYTES);
-                  const pdfFilename = pdf.url.split('/').pop()?.split('?')[0] || 'document.pdf';
+                  const pdfFilename = fileStorage.pdfFilenameForUrl(pdf.url);
                   await fileStorage.savePdf(spDir, pdfFilename, pdfBuffer);
                 }
               } catch (pdfErr) {
@@ -5041,7 +5058,7 @@ export async function registerRoutes(
               if (response.ok) {
                 buffer = await readBodyLimited(response, MAX_PDF_BYTES);
                 try {
-                  const urlFilename = pdf.url.split('/').pop()?.split('?')[0] || 'document.pdf';
+                  const urlFilename = fileStorage.pdfFilenameForUrl(pdf.url);
                   await fileStorage.savePdf(spDir, urlFilename, buffer);
                 } catch {}
               } else {
@@ -5608,7 +5625,7 @@ export async function registerRoutes(
                         continue;
                       }
                       const pdfBuffer = await readBodyLimited(pdfResponse, MAX_PDF_BYTES);
-                      const pdfFilename = pdf.url.split('/').pop()?.split('?')[0] || 'document.pdf';
+                      const pdfFilename = fileStorage.pdfFilenameForUrl(pdf.url);
                       await fileStorage.savePdf(pageDir, pdfFilename, pdfBuffer);
                     }
                   } catch (pdfErr) {

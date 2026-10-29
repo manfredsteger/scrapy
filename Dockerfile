@@ -1,7 +1,7 @@
 # Multi-architecture Dockerfile for MapScraper Pro
 # Supports: linux/amd64, linux/arm64, linux/arm/v7
 
-FROM node:20-alpine AS base
+FROM node:22-alpine AS base
 
 # Install dependencies for native modules and PostgreSQL client
 RUN apk add --no-cache libc6-compat python3 make g++ postgresql-client
@@ -44,7 +44,7 @@ COPY . .
 RUN npm run build
 
 # Production image
-FROM node:20-alpine AS production
+FROM node:22-alpine AS production
 
 # Install PostgreSQL client for migrations
 RUN apk add --no-cache postgresql-client

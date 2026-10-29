@@ -9,3 +9,10 @@ data/projects/
 .env.local
 .env.*.local
 backups/
+
+# Scrape-Ergebnisse, Uploads und Converter-Sitzungen gehoeren nicht ins Repo.
+# (Bereits eingecheckte Dateien unter data/single-pages/ und user-upload/
+# bleiben bewusst getrackt: ein Entfernen wuerde sie beim git pull auf
+# Replit loeschen.)
+data/
+user-upload/

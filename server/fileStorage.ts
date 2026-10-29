@@ -67,6 +67,18 @@ export async function saveProjectMeta(dir: string, meta: object): Promise<void> 
   await fs.writeFile(path.join(dir, "meta.json"), JSON.stringify(meta, null, 2), "utf-8");
 }
 
+// File name for a page-linked PDF. URLs that differ only in the query
+// (download.php?id=1 vs ?id=2 - common for CMS download endpoints) used to
+// map to the same file and overwrote each other; those get a URL hash.
+// Plain URLs keep the old name so existing files are still found.
+export function pdfFilenameForUrl(pdfUrl: string): string {
+  const [pathPart, query] = pdfUrl.split('?');
+  const last = pathPart.split('/').pop() || 'document.pdf';
+  const stem = sanitizeDirName(last.replace(/\.pdf$/i, '')) || 'document';
+  if (!query) return `${stem}.pdf`;
+  return `${stem.slice(0, 60)}-${urlHash(pdfUrl)}.pdf`;
+}
+
 export async function savePdf(dir: string, filename: string, buffer: Buffer): Promise<string> {
   const pdfDir = path.join(dir, "pdfs");
   await ensureDir(pdfDir);
@@ -401,14 +413,15 @@ export async function readPdf(filePath: string): Promise<Buffer | null> {
 export async function findPdfByUrl(pageDir: string, pdfUrl: string): Promise<Buffer | null> {
   const urlFilename = pdfUrl.split('/').pop()?.split('?')[0] || '';
   if (!urlFilename) return null;
-  const expectedName = sanitizeDirName(urlFilename.replace(/\.pdf$/i, '')) + '.pdf';
+  const legacyName = sanitizeDirName(urlFilename.replace(/\.pdf$/i, '')) + '.pdf';
   const pdfDir = path.join(pageDir, 'pdfs');
-  try {
-    const filePath = path.join(pdfDir, expectedName);
-    return await fs.readFile(filePath);
-  } catch {
-    return null;
+  // New (query-aware) name first, then the pre-hash name of older scrapes.
+  for (const name of Array.from(new Set([pdfFilenameForUrl(pdfUrl), legacyName]))) {
+    try {
+      return await fs.readFile(path.join(pdfDir, name));
+    } catch {}
   }
+  return null;
 }
 
 const pdfDownloadIndexCache = new Map<string, Map<string, string>>();
@@ -563,10 +576,13 @@ export async function buildProjectPdfsJson(projectId: number, domain: string): P
 
       for (const pdf of meta.linkedPdfs) {
         const urlFilename = pdf.url?.split('/').pop()?.split('?')[0] || '';
-        const matchedLocal = localPdfs.find((_, i) => {
-          const name = localNames[i];
-          return name === urlFilename || name.includes(sanitizeDirName(urlFilename.replace(/\.pdf$/i, '')));
-        });
+        const exactName = pdf.url ? pdfFilenameForUrl(pdf.url) : '';
+        const matchedLocal =
+          localPdfs.find((_, i) => localNames[i] === exactName) ??
+          localPdfs.find((_, i) => {
+            const name = localNames[i];
+            return name === urlFilename || name.includes(sanitizeDirName(urlFilename.replace(/\.pdf$/i, '')));
+          });
 
         allPdfs.push({
           url: pdf.url,

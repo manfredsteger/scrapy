@@ -19,6 +19,7 @@ import {
 import { useLanguage } from '@/hooks/use-language';
 import type { SinglePage, ScrapedElement, RagChunk } from '@shared/schema';
 import { safeHref } from '@/lib/utils';
+import ConfirmDialog from '@/components/ConfirmDialog';
 
 // Markdown conversion helpers
 function elementToMarkdown(el: ScrapedElement): string {
@@ -189,6 +190,7 @@ export default function SinglePageDetail() {
   const [, navigate] = useLocation();
   const { t, language } = useLanguage();
   const id = params?.id;
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
   const [copiedChunk, setCopiedChunk] = useState<number | null>(null);
   const [expandedChunk, setExpandedChunk] = useState<number | null>(null);
@@ -419,11 +421,7 @@ export default function SinglePageDetail() {
                 {t('exportRagPack')}
               </DropdownMenuItem>
               <DropdownMenuItem 
-                onClick={() => {
-                  if (confirm(t('confirmDelete'))) {
-                    deleteMutation.mutate();
-                  }
-                }} 
+                onClick={() => setDeleteConfirmOpen(true)} 
                 className="gap-2 text-destructive focus:text-destructive"
                 data-testid="action-delete"
               >
@@ -432,6 +430,16 @@ export default function SinglePageDetail() {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          <ConfirmDialog
+            open={deleteConfirmOpen}
+            onOpenChange={setDeleteConfirmOpen}
+            title={t('delete')}
+            description={t('confirmDelete')}
+            confirmText={t('delete')}
+            cancelText={t('cancel')}
+            variant="destructive"
+            onConfirm={() => deleteMutation.mutate()}
+          />
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>

@@ -110,6 +110,7 @@ export default function Home() {
     done: boolean;
   } | null>(null);
   const [singleUrlInput, setSingleUrlInput] = useState('');
+  const [wipeConfirmOpen, setWipeConfirmOpen] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<{ open: boolean; projectId: number | null; projectName: string }>({
     open: false,
     projectId: null,
@@ -2427,23 +2428,7 @@ export default function Home() {
                       </DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem 
-                        onClick={() => {
-                          if (confirm(t('wipeConfirm'))) {
-                            updateProjectMutation.mutate({
-                              id: activeProject!.id,
-                              updates: { 
-                                results: [], 
-                                chunks: [],
-                                stats: { 
-                                  ...activeProject!.stats!, 
-                                  totalUrls: 0, 
-                                  totalImages: 0, 
-                                  scrapedPages: 0 
-                                } 
-                              },
-                            });
-                          }
-                        }}
+                        onClick={() => setWipeConfirmOpen(true)}
                         className="gap-2 text-destructive focus:text-destructive"
                       >
                         <Trash2 className="w-4 h-4" />
@@ -2954,6 +2939,32 @@ export default function Home() {
           </Card>
         </div>
       )}
+
+      <ConfirmDialog
+        open={wipeConfirmOpen}
+        onOpenChange={setWipeConfirmOpen}
+        title={t('clearAllProgress')}
+        description={t('wipeConfirm')}
+        confirmText={t('delete')}
+        cancelText={t('cancel')}
+        variant="destructive"
+        onConfirm={() => {
+          if (!activeProject) return;
+          updateProjectMutation.mutate({
+            id: activeProject!.id,
+            updates: { 
+              results: [], 
+              chunks: [],
+              stats: { 
+                ...activeProject!.stats!, 
+                totalUrls: 0, 
+                totalImages: 0, 
+                scrapedPages: 0 
+              } 
+            },
+          });
+        }}
+      />
 
       <ConfirmDialog
         open={deleteConfirm.open}

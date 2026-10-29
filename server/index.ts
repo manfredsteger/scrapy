@@ -2,9 +2,13 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import { setupAuth } from "./auth";
 
 const app = express();
 const httpServer = createServer(app);
+// Replit (and most hosts) terminate TLS in a proxy; needed for req.ip and
+// for marking the session cookie Secure.
+app.set("trust proxy", 1);
 
 declare module "http" {
   interface IncomingMessage {
@@ -63,6 +67,9 @@ app.use((req, res, next) => {
 
   next();
 });
+
+// Must run before registerRoutes so every /api route sits behind the login.
+setupAuth(app);
 
 (async () => {
   // One-time (idempotent) migration: move legacy monolithic projects.results

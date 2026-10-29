@@ -52,6 +52,9 @@ services:
       # are just skipped. Set it in your shell or a .env file next to this
       # file (docker compose reads .env automatically) before `make dev`.
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # Optional locally: set to require a login (on Replit/production it is
+      # mandatory - without it the API refuses all requests).
+      APP_PASSWORD: ${APP_PASSWORD:-}
     # Dev-only source bind mount lives in docker-compose.override.yml, which
     # `docker compose up` merges in automatically but an explicit `-f`
     # invocation (as docker-compose.prod.yml uses) does not. Compose merges

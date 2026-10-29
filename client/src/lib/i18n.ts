@@ -336,6 +336,13 @@ export const translations = {
     imageDedupLastRun: 'Zuletzt analysiert',
     imageDedupSaved: 'Einträge eingespart',
     imageDedupResult: 'Analyse abgeschlossen',
+    loginTitle: 'Anmelden',
+    loginDescription: 'Diese Instanz ist passwortgeschützt.',
+    loginPassword: 'Passwort',
+    loginSubmit: 'Anmelden',
+    loginWrongPassword: 'Passwort falsch.',
+    loginNotConfigured: 'Login ist nicht eingerichtet. Bitte das Secret APP_PASSWORD setzen und die App neu starten.',
+    logout: 'Abmelden',
   },
   en: {
     appTitle: 'MapScraper Pro',
@@ -672,6 +679,13 @@ export const translations = {
     imageDedupLastRun: 'Last analyzed',
     imageDedupSaved: 'entries saved',
     imageDedupResult: 'Analysis complete',
+    loginTitle: 'Sign in',
+    loginDescription: 'This instance is password protected.',
+    loginPassword: 'Password',
+    loginSubmit: 'Sign in',
+    loginWrongPassword: 'Wrong password.',
+    loginNotConfigured: 'Login is not set up. Set the APP_PASSWORD secret and restart the app.',
+    logout: 'Sign out',
   },
 } as const;
 

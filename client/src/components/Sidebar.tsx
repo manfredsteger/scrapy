@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { 
   LayoutDashboard, Globe, Settings, FileText, 
-  ChevronLeft, ChevronRight, Network, Download, Upload, Package
+  ChevronLeft, ChevronRight, Network, Download, Upload, Package, LogOut
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
@@ -14,6 +14,19 @@ interface SidebarProps {
 
 export default function Sidebar({ activeView, onNavigate, onImport, t }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
+  const [authRequired, setAuthRequired] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/auth/status', { credentials: 'include' })
+      .then((r) => r.json())
+      .then((s) => setAuthRequired(!!s.authRequired))
+      .catch(() => {});
+  }, []);
+
+  const logout = async () => {
+    await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
+    window.location.reload();
+  };
 
   const menuItems = [
     { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard' },
@@ -76,6 +89,14 @@ export default function Sidebar({ activeView, onNavigate, onImport, t }: Sidebar
         </button>
       </nav>
 
+      {authRequired && (
+        <div className="p-2 border-t border-border">
+          <button onClick={logout} className="sidebar-item w-full" data-testid="nav-logout">
+            <LogOut className="w-5 h-5 shrink-0" />
+            {!collapsed && <span>{t('logout')}</span>}
+          </button>
+        </div>
+      )}
     </aside>
   );
 }

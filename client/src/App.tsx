@@ -7,6 +7,7 @@ import Home from "@/pages/Home";
 import SinglePageDetail from "@/pages/SinglePageDetail";
 import Converter from "@/pages/Converter";
 import NotFound from "@/pages/not-found";
+import { AuthGate } from "@/components/AuthGate";
 
 function Router() {
   return (
@@ -24,7 +25,9 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <Toaster />
-        <Router />
+        <AuthGate>
+          <Router />
+        </AuthGate>
       </TooltipProvider>
     </QueryClientProvider>
   );

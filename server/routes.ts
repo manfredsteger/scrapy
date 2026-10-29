@@ -5706,50 +5706,23 @@ export async function registerRoutes(
         }
       };
       if (urlUpdates.size > 0) {
-        const MAX_CAS_RETRIES = 3;
-        for (let attempt = 0; attempt <= MAX_CAS_RETRIES; attempt++) {
-          const currentProject = await storage.getProject(projectId);
-          if (!currentProject) break;
-          const currentLock = (currentProject as any).scrapeLock as { owner: string; expiresAt: number } | null;
-          if (currentLock && currentLock.expiresAt > Date.now() && currentLock.owner !== (lockOwner ?? '')) {
-            await cleanupBatchFiles();
-            return {
-              ok: false, status: 409, body: {
-                message: 'Project is being processed by another session',
-                reason: 'locked',
-              },
-            };
-          }
-          const updatedResults = (currentProject.results || []).map(existing => {
-            const update = urlUpdates.get(existing.loc);
-            if (update) {
-              return { ...existing, ...update };
-            }
-            return existing;
-          });
-          const saved = await storage.updateProject(
-            projectId,
-            {
-              results: updatedResults,
-              // Renew the lease for the driving tab while extraction is active
-              ...(lockOwner ? { scrapeLock: { owner: lockOwner, expiresAt: Date.now() + 70000 } } : {}),
+        // Patch only this batch's rows (see storage.patchProjectResults);
+        // the lock check runs atomically inside the UPDATE.
+        const saved = await storage.patchProjectResults(projectId, urlUpdates, {
+          enforceLockOwner: lockOwner ?? '',
+          // Renew the lease for the driving tab while extraction is active
+          ...(lockOwner ? { scrapeLock: { owner: lockOwner, expiresAt: Date.now() + 70000 } } : {}),
+        });
+        if (!saved) {
+          await cleanupBatchFiles();
+          return {
+            ok: false, status: 409, body: {
+              message: 'Project is being processed by another session',
+              reason: 'locked',
             },
-            { expectedVersion: (currentProject as any).version, enforceLockOwner: lockOwner ?? '' },
-          );
-          if (saved) {
-            savedVersion = (saved as any).version;
-            break;
-          }
-          if (attempt === MAX_CAS_RETRIES) {
-            await cleanupBatchFiles();
-            return {
-              ok: false, status: 409, body: {
-                message: 'Project was modified concurrently; batch not saved',
-                reason: 'version_conflict',
-              },
-            };
-          }
+          };
         }
+        savedVersion = saved.version;
       }
       
       try {

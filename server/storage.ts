@@ -44,6 +44,7 @@ export interface IStorage {
   ): Promise<{ version: number } | undefined>;
   createProject(project: InsertProject): Promise<Project>;
   updateProject(id: number, updates: Partial<InsertProject> & { scrapeLock?: { owner: string; expiresAt: number } | null }, guard?: { expectedVersion?: number; enforceLockOwner?: string }): Promise<Project | undefined>;
+  patchProjectResults(id: number, patches: Map<string, Record<string, any>>, opts: { enforceLockOwner: string; scrapeLock?: { owner: string; expiresAt: number } }): Promise<{ version: number } | undefined>;
   deleteProject(id: number): Promise<void>;
   getSetting(key: string): Promise<Settings | undefined>;
   setSetting(key: string, value: string): Promise<Settings>;
@@ -273,6 +274,62 @@ export class DatabaseStorage implements IStorage {
         return { ...project, results: Array.isArray(newResults) ? newResults : [] };
       }
       return { ...project, results: await this.loadResults(tx, id) };
+    });
+  }
+
+  // Merge field updates into individual result rows (scrape batches).
+  // Unlike updateProject({results}) this touches only the given rows instead
+  // of deleting and re-inserting every row of the project, and needs no prior
+  // full project load - a batch on a 50k-URL project no longer rewrites 50k
+  // rows. Keys whose value is undefined are removed from the entry (same as
+  // the old `{ ...existing, ...update }` + JSON serialisation). Rows for
+  // unknown locs are ignored. The scrape lock is enforced atomically.
+  async patchProjectResults(
+    id: number,
+    patches: Map<string, Record<string, any>>,
+    opts: { enforceLockOwner: string; scrapeLock?: { owner: string; expiresAt: number } },
+  ): Promise<{ version: number } | undefined> {
+    const now = Date.now();
+    const rows = Array.from(patches.entries()).map(([loc, patch]) => {
+      const set: Record<string, any> = {};
+      const remove: string[] = [];
+      for (const [k, v] of Object.entries(patch)) {
+        if (v === undefined) remove.push(k);
+        else set[k] = v;
+      }
+      return { loc, set, remove };
+    });
+    return await db.transaction(async (tx) => {
+      const [project] = await tx.update(projects)
+        .set({
+          lastScraped: new Date(),
+          version: sql`${projects.version} + 1`,
+          ...(opts.scrapeLock ? { scrapeLock: opts.scrapeLock } : {}),
+        } as any)
+        .where(and(
+          eq(projects.id, id),
+          sql`(
+            ${projects.scrapeLock} IS NULL
+            OR jsonb_typeof(${projects.scrapeLock}) = 'null'
+            OR COALESCE((${projects.scrapeLock}->>'expiresAt')::bigint, 0) <= ${now}
+            OR ${projects.scrapeLock}->>'owner' = ${opts.enforceLockOwner}
+          )`,
+        ))
+        .returning({ version: projects.version });
+      if (!project) return undefined;
+      for (let i = 0; i < rows.length; i += RESULT_INSERT_BATCH) {
+        const batch = rows.slice(i, i + RESULT_INSERT_BATCH);
+        await tx.execute(sql`
+          UPDATE project_results AS pr
+          SET entry = (pr.entry - v.remove) || v.set
+          FROM (
+            SELECT x.loc, x.set, ARRAY(SELECT jsonb_array_elements_text(x.remove)) AS remove
+            FROM jsonb_to_recordset(${JSON.stringify(batch)}::jsonb) AS x(loc text, set jsonb, remove jsonb)
+          ) AS v
+          WHERE pr.project_id = ${id} AND pr.loc = v.loc
+        `);
+      }
+      return { version: project.version };
     });
   }
 

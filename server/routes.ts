@@ -20,6 +20,7 @@ import { normalizeCrawlUrl } from './crawl-url';
 import { diffSitemapUpdate, diffCrawlFinish } from './update-diff';
 import { decodeResponse } from './utils/decode-response';
 import { resolveSeedUrls } from './utils/seed-urls';
+import { RateLimiter } from './utils/rate-limiter';
 import { scrapePageContent, shouldSkipUrl } from './content-extraction/page-content-extractor';
 import { collapseSharedImages, sharedImageId, emptySharedImagesRegistry, type SharedImagesRegistry } from './content-extraction/image-refs';
 import multer from 'multer';
@@ -70,107 +71,6 @@ async function loadSinglePageChunks(singlePage: any): Promise<any[]> {
   const fsChunks = await fileStorage.readSinglePageChunks(singlePage.id, singlePage.domain);
   if (fsChunks && fsChunks.length > 0) return fsChunks;
   return singlePage.chunks || [];
-}
-
-// Rate Limiter class for managing request delays with auto-adjustment
-class RateLimiter {
-  private currentDelay: number;
-  private baseDelay: number;
-  private maxDelay: number;
-  private backoffMultiplier: number;
-  private consecutiveErrors: number = 0;
-  private consecutiveSuccesses: number = 0;
-  private lastRequestTime: number = 0;
-  private enabled: boolean;
-
-  constructor(settings: ProjectSettings['scraping']['rateLimiting']) {
-    this.enabled = settings.enabled;
-    this.baseDelay = settings.baseDelayMs;
-    this.maxDelay = settings.maxDelayMs;
-    this.backoffMultiplier = settings.backoffMultiplier;
-    this.currentDelay = settings.baseDelayMs;
-  }
-
-  async waitBeforeRequest(): Promise<void> {
-    if (!this.enabled) return;
-    
-    const now = Date.now();
-    const timeSinceLastRequest = now - this.lastRequestTime;
-    const waitTime = Math.max(0, this.currentDelay - timeSinceLastRequest);
-    
-    if (waitTime > 0) {
-      await new Promise(resolve => setTimeout(resolve, waitTime));
-    }
-    
-    this.lastRequestTime = Date.now();
-  }
-
-  onSuccess(): void {
-    if (!this.enabled) return;
-    
-    this.consecutiveErrors = 0;
-    this.consecutiveSuccesses++;
-    
-    // Gradually decrease delay after 3 consecutive successes
-    if (this.consecutiveSuccesses >= 3 && this.currentDelay > this.baseDelay) {
-      const newDelay = Math.max(this.baseDelay, this.currentDelay / this.backoffMultiplier);
-      if (newDelay !== this.currentDelay) {
-        console.log(`[RateLimiter] Decreasing delay: ${this.currentDelay}ms -> ${newDelay}ms (${this.consecutiveSuccesses} consecutive successes)`);
-        this.currentDelay = newDelay;
-        this.consecutiveSuccesses = 0;
-      }
-    }
-  }
-
-  onRateLimit(): void {
-    if (!this.enabled) return;
-    
-    this.consecutiveSuccesses = 0;
-    this.consecutiveErrors++;
-    
-    const newDelay = Math.min(this.maxDelay, this.currentDelay * this.backoffMultiplier);
-    console.log(`[RateLimiter] Rate limit hit (429). Increasing delay: ${this.currentDelay}ms -> ${newDelay}ms`);
-    this.currentDelay = newDelay;
-  }
-
-  onError(): void {
-    if (!this.enabled) return;
-    
-    this.consecutiveSuccesses = 0;
-    this.consecutiveErrors++;
-    
-    // Only increase delay if we get multiple consecutive errors
-    if (this.consecutiveErrors >= 2) {
-      const newDelay = Math.min(this.maxDelay, this.currentDelay * 1.5);
-      console.log(`[RateLimiter] Multiple errors (${this.consecutiveErrors}). Adjusting delay: ${this.currentDelay}ms -> ${newDelay}ms`);
-      this.currentDelay = newDelay;
-    }
-  }
-
-  getState(): RateLimitState {
-    return {
-      currentDelay: this.currentDelay,
-      baseDelay: this.baseDelay,
-      maxDelay: this.maxDelay,
-      backoffMultiplier: this.backoffMultiplier,
-      consecutiveErrors: this.consecutiveErrors,
-      lastRequestTime: this.lastRequestTime,
-    };
-  }
-
-  getCurrentDelay(): number {
-    return this.currentDelay;
-  }
-
-  // Returns true when the server has significantly pushed back — either via
-  // explicit 429s or repeated fetch errors causing the delay to at least
-  // double from baseline.
-  // Returns true when the batch produced significant throttling signals.
-  // Works even when automatic delay adjustment is disabled — a 429 is always
-  // a rate-limit regardless of whether the user wants auto-backoff.
-  isRateLimited(): boolean {
-    return this.consecutiveErrors >= 2 || this.currentDelay >= this.baseDelay * 2;
-  }
 }
 
 // Proxy Rotator class for cycling through proxies
@@ -4357,8 +4257,10 @@ export async function registerRoutes(
 
       let rateLimiter: RateLimiter | undefined;
       let proxyRotator: ProxyRotator | undefined;
-      if (project.projectSettings?.scraping) {
-        const settings = project.projectSettings.scraping;
+      {
+        // Fall back to the defaults so projects without saved settings are
+        // throttled too, instead of firing every request of a batch at once.
+        const settings = project.projectSettings?.scraping ?? getDefaultSettings().scraping;
         rateLimiter = new RateLimiter(settings.rateLimiting);
         proxyRotator = new ProxyRotator(settings.proxies, settings.rotateProxies);
       }
@@ -5564,8 +5466,10 @@ export async function registerRoutes(
       let proxyRotator: ProxyRotator | undefined;
       let extractStructuredDataFlag = true; // Default to true
       
-      if (project.projectSettings?.scraping) {
-        const settings = project.projectSettings.scraping;
+      {
+        // Fall back to the defaults so projects without saved settings are
+        // throttled too, instead of firing every request of a batch at once.
+        const settings = project.projectSettings?.scraping ?? getDefaultSettings().scraping;
         rateLimiter = new RateLimiter(settings.rateLimiting);
         proxyRotator = new ProxyRotator(settings.proxies, settings.rotateProxies);
         extractStructuredDataFlag = settings.extractStructuredData ?? true;

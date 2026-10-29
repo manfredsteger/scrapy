@@ -21,6 +21,7 @@ import { diffSitemapUpdate, diffCrawlFinish } from './update-diff';
 import { decodeResponse } from './utils/decode-response';
 import { resolveSeedUrls } from './utils/seed-urls';
 import { RateLimiter } from './utils/rate-limiter';
+import { readBodyLimited, MAX_HTML_BYTES, MAX_PDF_BYTES, MAX_MEDIA_BYTES } from './utils/read-body';
 import { scrapePageContent, shouldSkipUrl } from './content-extraction/page-content-extractor';
 import { collapseSharedImages, sharedImageId, emptySharedImagesRegistry, type SharedImagesRegistry } from './content-extraction/image-refs';
 import multer from 'multer';
@@ -277,7 +278,7 @@ async function fetchWithRateLimitAndProxy(
         throw new Error(`HTTP ${response.status}`);
       }
       
-      const text = await response.text();
+      const text = new TextDecoder().decode(await readBodyLimited(response, MAX_HTML_BYTES));
       
       // Success - update rate limiter and proxy rotator
       rateLimiter?.onSuccess();
@@ -4593,7 +4594,7 @@ export async function registerRoutes(
                   signal: AbortSignal.timeout(30000),
                 });
                 if (pdfResponse.ok) {
-                  const pdfBuffer = Buffer.from(await pdfResponse.arrayBuffer());
+                  const pdfBuffer = await readBodyLimited(pdfResponse, MAX_PDF_BYTES);
                   const pdfFilename = pdf.url.split('/').pop()?.split('?')[0] || 'document.pdf';
                   await fileStorage.savePdf(spDir, pdfFilename, pdfBuffer);
                 }
@@ -5038,7 +5039,7 @@ export async function registerRoutes(
                 signal: AbortSignal.timeout(30000),
               });
               if (response.ok) {
-                buffer = Buffer.from(await response.arrayBuffer());
+                buffer = await readBodyLimited(response, MAX_PDF_BYTES);
                 try {
                   const urlFilename = pdf.url.split('/').pop()?.split('?')[0] || 'document.pdf';
                   await fileStorage.savePdf(spDir, urlFilename, buffer);
@@ -5606,8 +5607,7 @@ export async function registerRoutes(
                         console.log(`[FileStorage] Skipping large PDF (${(contentLength / 1024 / 1024).toFixed(1)}MB): ${pdf.url}`);
                         continue;
                       }
-                      const pdfBuffer = Buffer.from(await pdfResponse.arrayBuffer());
-                      if (pdfBuffer.length > 50 * 1024 * 1024) continue;
+                      const pdfBuffer = await readBodyLimited(pdfResponse, MAX_PDF_BYTES);
                       const pdfFilename = pdf.url.split('/').pop()?.split('?')[0] || 'document.pdf';
                       await fileStorage.savePdf(pageDir, pdfFilename, pdfBuffer);
                     }
@@ -5643,8 +5643,7 @@ export async function registerRoutes(
                         signal: AbortSignal.timeout(15000),
                       });
                       if (mediaResponse.ok) {
-                        const mediaBuffer = Buffer.from(await mediaResponse.arrayBuffer());
-                        if (mediaBuffer.length > 10 * 1024 * 1024) return;
+                        const mediaBuffer = await readBodyLimited(mediaResponse, MAX_MEDIA_BYTES);
                         await fileStorage.saveSharedMedia(projectDirForImages, mediaId, mediaExt, mediaBuffer);
                       }
                     })();
@@ -6826,7 +6825,7 @@ export async function registerRoutes(
                 signal: AbortSignal.timeout(30000),
               });
               if (response.ok) {
-                buffer = Buffer.from(await response.arrayBuffer());
+                buffer = await readBodyLimited(response, MAX_PDF_BYTES);
                 try {
                   await fileStorage.saveProjectPdf(projectId, project.domain, asset.url, buffer);
                 } catch {}
@@ -7455,8 +7454,12 @@ export async function registerRoutes(
           if (!contentType.includes('pdf') && !contentType.includes('octet-stream')) {
             return res.status(400).json({ message: 'Response is not a PDF' });
           }
-          fileBuffer = Buffer.from(await pdfResponse.arrayBuffer());
-          if (fileBuffer.length > 50 * 1024 * 1024) {
+          try {
+            fileBuffer = await readBodyLimited(pdfResponse, MAX_PDF_BYTES);
+          } catch {
+            return res.status(413).json({ message: 'PDF too large (>50MB)' });
+          }
+          if (fileBuffer.length > MAX_PDF_BYTES) {
             return res.status(413).json({ message: 'PDF too large (>50MB)' });
           }
           await fileStorage.savePdf(pageDir, filename, fileBuffer);

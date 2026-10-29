@@ -1,3 +1,4 @@
+import { readBodyLimited, MAX_HTML_BYTES } from './read-body';
 // Charset-correct decoding of fetch() Response bodies.
 //
 // `response.text()` (undici) always decodes as UTF-8 and ignores the
@@ -10,8 +11,9 @@
 // default (HTML5 spec default). The header wins even when it conflicts with
 // the markup — trusting the markup over the header produces mojibake when
 // they disagree.
-export async function decodeResponse(response: Response): Promise<string> {
-  const buf = Buffer.from(await response.arrayBuffer());
+
+export async function decodeResponse(response: Response, maxBytes = MAX_HTML_BYTES): Promise<string> {
+  const buf = await readBodyLimited(response, maxBytes);
 
   // 1. Charset from the HTTP header — takes precedence
   const ct = response.headers.get('content-type') ?? '';

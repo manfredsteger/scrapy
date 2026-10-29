@@ -3,6 +3,10 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import { setupAuth } from "./auth";
+import { installSafeFetch } from "./utils/safe-fetch";
+
+// Every outgoing fetch() refuses internal addresses (SSRF protection).
+installSafeFetch();
 
 const app = express();
 const httpServer = createServer(app);
